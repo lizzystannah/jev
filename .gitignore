@@ -1,0 +1,17 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Caches de runtime (recriados no arranque).
+.odds_api_cache.json
+.aiscore_context_cache.json
+
+# Bytecode Python.
+__pycache__/
+*.pyc
+*.pyo

@@ -1,0 +1,6 @@
+{
+  "name": "Bilheteria — Motor de Bilhetes de Apostas",
+  "description": "Motor de apostas desportivas com ingestão de odds de mercado via API externa ou simulador dinâmico, geração algorítmica de bilhetes por probabilidade, validação automática de resultados e análise com IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

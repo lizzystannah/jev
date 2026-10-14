@@ -1,0 +1,953 @@
+import fs from 'fs';
+import path from 'path';
+import { MatchItem, MatchOdds, MarketType, MarketProviderStatus } from './types.js';
+import {
+  aiscoreClient,
+  aiscoreYmd,
+  aiscoreDateKey,
+  parseKickoffMs,
+} from './aiscoreService.js';
+
+/** Ligas principais primeiro na ingestão/seleção (peso espelha ticketEngine). */
+export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: string }> = [
+  { test: /champions/i, exclude: /femen|women|mujer|youth|u ?19|juvenil/i, label: 'Champions League' },
+  { test: /europa league/i, exclude: /femen|women|mujer|conference/i, label: 'Europa League' },
+  // "Premier League del Norte", U21, Butão, etc. NÃO são a Premier League inglesa.
+  {
+    test: /premier league/i,
+    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer| de |del |kenya|kenia|bhutan|but[aã]o|mongol|nigeria|ghana|jamaica|burundi|shillong|estonia|irlanda|ireland|wales|gales|scotland|escocia/i,
+    label: 'Premier League',
+  },
+  // "Copa de la Liga" (Peru/Bolívia/Catar) não é a La Liga espanhola.
+  { test: /la liga|laliga/i, exclude: /copa de la liga/i, label: 'La Liga' },
+  { test: /spanish.*(rfef|federaci)|primera federaci/i, label: 'Espanha (base)' },
+  { test: /serie a/i, exclude: /serie [bcd]|femen|feminin|women|mujer/i, label: 'Serie A' },
+  { test: /bundesliga/i, exclude: /femen|feminin|women|mujer| ii\b| 2\b/i, label: 'Bundesliga' },
+  { test: /ligue 1/i, exclude: /femen|feminin|women|mujer/i, label: 'Ligue 1' },
+  {
+    test: /brasileir|liga portugal|primeira liga|conference/i,
+    exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil/i,
+    label: 'Outras top',
+  },
+];
+
+/** Penaliza feminino/base/obscuro — espelha _COMP_PENALTY_KEYS do bridge. */
+const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|u1\d|u2\d|juvenil|sub-?20|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal/i;
+
+export function leaguePriorityRank(league?: string | null): number {
+  const s = league || '';
+  const idx = LEAGUE_PRIORITY.findIndex((l) => l.test.test(s) && !(l.exclude && l.exclude.test(s)));
+  const rank = idx === -1 ? 99 : idx;
+  if (rank < 99 && LEAGUE_PENALTY.test(s)) return rank + 50;
+  return rank;
+}
+
+function impliedProb(odd: number): number {
+  return (1 / odd) * 100;
+}
+
+export const MARKET_LABELS: Record<MarketType, (ctx: { home: string; away: string }) => string> = {
+  home: ({ home }) => `Vitória ${home} (1)`,
+  draw: () => 'Empate (X)',
+  away: ({ away }) => `Vitória ${away} (2)`,
+  double_chance_1x: ({ home }) => `${home} ou Empate (1X)`,
+  double_chance_x2: ({ away }) => `Empate ou ${away} (X2)`,
+  double_chance_12: () => 'Qualquer equipa vence (12)',
+  over15: () => 'Mais de 1.5 golos (+1.5G)',
+  over25: () => 'Mais de 2.5 golos (+2.5G)',
+  over35: () => 'Mais de 3.5 golos (+3.5G)',
+  under25: () => 'Menos de 2.5 golos (-2.5G)',
+  under35: () => 'Menos de 3.5 golos (-3.5G)',
+  btts_yes: () => 'Ambas marcam — Sim (BTTS)',
+  btts_no: () => 'Ambas marcam — Não',
+  dnb_home: ({ home }) => `Empate Anula: ${home}`,
+  dnb_away: ({ away }) => `Empate Anula: ${away}`,
+};
+
+export function deriveCompleteOdds(odds: MatchOdds): Record<MarketType, number> {
+  const pHome = (1 / odds.home) * 100;
+  const pDraw = (1 / odds.draw) * 100;
+  const pAway = (1 / odds.away) * 100;
+  const pOver25 = (1 / odds.over25) * 100;
+  const pUnder25 = (1 / odds.under25) * 100;
+
+  const p1X = pHome + pDraw * 0.55;
+  const pX2 = pAway + pDraw * 0.55;
+  const p12 = pHome + pAway * 0.9;
+  const pOver15 = pOver25 * 1.35;
+  const pOver35 = pOver25 * 0.60;
+  const pUnder35 = pUnder25 * 1.30;
+
+  return {
+    home: odds.home,
+    draw: odds.draw,
+    away: odds.away,
+    double_chance_1x: Number(Math.max(1.05, Math.min(1.85, 1 / (p1X / 100) * 1.05)).toFixed(2)),
+    double_chance_x2: Number(Math.max(1.05, Math.min(1.85, 1 / (pX2 / 100) * 1.05)).toFixed(2)),
+    double_chance_12: Number(Math.max(1.05, Math.min(1.50, 1 / (p12 / 100) * 1.05)).toFixed(2)),
+    over15: Number(Math.max(1.10, Math.min(1.65, 1 / (Math.min(90, pOver15) / 100) * 1.05)).toFixed(2)),
+    over25: odds.over25,
+    over35: Number(Math.max(1.60, Math.min(4.50, 1 / (Math.min(90, pOver35) / 100) * 1.05)).toFixed(2)),
+    under25: odds.under25,
+    under35: Number(Math.max(1.10, Math.min(1.65, 1 / (Math.min(90, pUnder35) / 100) * 1.05)).toFixed(2)),
+    btts_yes: odds.btts_yes,
+    btts_no: odds.btts_no,
+    dnb_home: Number(Math.max(1.15, Math.min(3.50, odds.home * 0.72)).toFixed(2)),
+    dnb_away: Number(Math.max(1.15, Math.min(3.50, odds.away * 0.72)).toFixed(2)),
+  };
+}
+
+export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>): {
+  market: MarketType;
+  label: string;
+  odds: number;
+  prob: number;
+  reason: string;
+} {
+  const { odds, home, away } = match;
+  const pHome = impliedProb(odds.home);
+  const pDraw = impliedProb(odds.draw);
+  const pAway = impliedProb(odds.away);
+  const pOver = impliedProb(odds.over25);
+  const pUnder = impliedProb(odds.under25);
+  const pBtts = impliedProb(odds.btts_yes);
+
+  const candidates: { market: MarketType; prob: number; odds: number; reason: string }[] = [];
+
+  // Dupla Chance 1X
+  const p1X = pHome + pDraw * 0.55;
+  const odds1X = Number(Math.max(1.10, Math.min(1.80, 1 / (p1X / 100) * 1.05)).toFixed(2));
+  candidates.push({
+    market: 'double_chance_1x',
+    prob: Math.min(88, Math.round(p1X)),
+    odds: odds1X,
+    reason: `Forte favoritismo do ${home} em casa com cobertura de empate.`,
+  });
+
+  // Dupla Chance X2
+  const pX2 = pAway + pDraw * 0.55;
+  const oddsX2 = Number(Math.max(1.10, Math.min(1.85, 1 / (pX2 / 100) * 1.05)).toFixed(2));
+  candidates.push({
+    market: 'double_chance_x2',
+    prob: Math.min(85, Math.round(pX2)),
+    odds: oddsX2,
+    reason: `Boa consistência de ${away} fora com segurança em caso de empate.`,
+  });
+
+  // +1.5 Golos
+  const pOver15 = pOver * 1.35;
+  const oddsOver15 = Number(Math.max(1.12, Math.min(1.65, 1 / (Math.min(85, pOver15) / 100) * 1.05)).toFixed(2));
+  candidates.push({
+    market: 'over15',
+    prob: Math.min(85, Math.round(pOver15)),
+    odds: oddsOver15,
+    reason: `Expectativa alta de golos com linha protegida de mais de 1.5.`,
+  });
+
+  // -3.5 Golos
+  const pUnder35 = pUnder * 1.30;
+  const oddsUnder35 = Number(Math.max(1.12, Math.min(1.60, 1 / (Math.min(85, pUnder35) / 100) * 1.05)).toFixed(2));
+  candidates.push({
+    market: 'under35',
+    prob: Math.min(85, Math.round(pUnder35)),
+    odds: oddsUnder35,
+    reason: `Jogo de perfil tático com cobertura elástica de menos de 3.5 golos.`,
+  });
+
+  // BTTS
+  if (pBtts > 48) {
+    candidates.push({
+      market: 'btts_yes',
+      prob: Math.min(75, Math.round(pBtts)),
+      odds: odds.btts_yes,
+      reason: `Ambas as equipas apresentam padrão ofensivo regular e odds competitivas.`,
+    });
+  }
+
+  // 1X2 Direto
+  if (pHome > 55) {
+    candidates.push({
+      market: 'home',
+      prob: Math.round(pHome),
+      odds: odds.home,
+      reason: `Superioridade evidente do ${home} no confronto direto.`,
+    });
+  } else if (pAway > 52) {
+    candidates.push({
+      market: 'away',
+      prob: Math.round(pAway),
+      odds: odds.away,
+      reason: `Excelente fase de ${away} conferindo vantagem de mercado.`,
+    });
+  }
+
+  // Ordena por maior pontuação de segurança
+  candidates.sort((a, b) => {
+    const scoreA = a.prob * (a.odds >= 1.20 && a.odds <= 1.85 ? 1.2 : 0.9);
+    const scoreB = b.prob * (b.odds >= 1.20 && b.odds <= 1.85 ? 1.2 : 0.9);
+    return scoreB - scoreA;
+  });
+
+  const best = candidates[0];
+  const labelFn = MARKET_LABELS[best.market];
+  const label = labelFn ? labelFn({ home, away }) : best.market;
+
+  return {
+    market: best.market,
+    label,
+    odds: best.odds,
+    prob: best.prob,
+    reason: best.reason,
+  };
+}
+
+export function getCalendarDayDiff(targetMs: number, timezone = 'Africa/Luanda'): number {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const nowDateStr = formatter.format(new Date());
+    const targetDateStr = formatter.format(new Date(targetMs));
+
+    const d1 = new Date(`${nowDateStr}T00:00:00Z`).getTime();
+    const d2 = new Date(`${targetDateStr}T00:00:00Z`).getTime();
+
+    return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+  } catch (e) {
+    const diffMs = targetMs - Date.now();
+    return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+  }
+}
+
+const CACHE_FILE_PATH = path.join(process.cwd(), '.odds_api_cache.json');
+
+interface PersistedCache {
+  lastFetchTime: number;
+  rateLimitInfo?: {
+    requestsRemaining?: number;
+    requestsUsed?: number;
+  };
+  matches: MatchItem[];
+}
+
+export class MarketService {
+  private matches: MatchItem[] = [];
+  private lastFetchTime = 0;
+  private activeFetchPromise: Promise<void> | null = null;
+  private activeAiscorePromise: Promise<void> | null = null;
+  private aiscoreLastSync = 0;
+  private readonly AISCORE_TTL_MS = 15 * 60 * 1000;
+  private providerStatus: MarketProviderStatus = {
+    provider: 'the-odds-api',
+    isExternalApi: true,
+    apiKeyConfigured: false,
+    providerName: 'The Odds API (Dados Reais ao Vivo)',
+    lastUpdated: new Date().toISOString(),
+    totalMatches: 0,
+    activeLeagues: [],
+    message: 'A inicializar sincronização com API de dados desportivos reais...',
+  };
+
+  constructor() {
+    this.restoreDiskCache();
+  }
+
+  private restoreDiskCache(): void {
+    try {
+      if (fs.existsSync(CACHE_FILE_PATH)) {
+        const raw = fs.readFileSync(CACHE_FILE_PATH, 'utf-8');
+        const data: PersistedCache = JSON.parse(raw);
+        if (data && Array.isArray(data.matches)) {
+          const now = Date.now();
+          // Só restaura partidas com kickoff futuro e que venham da API real
+          const validMatches = data.matches.filter(
+            (m) => m.sourceProvider === 'the-odds-api' && m.kickoffAt > now - 2 * 60 * 60 * 1000
+          );
+          if (validMatches.length > 0 && now - data.lastFetchTime < 2 * 60 * 60 * 1000) {
+            this.matches = validMatches;
+            this.lastFetchTime = data.lastFetchTime;
+            if (data.rateLimitInfo) {
+              this.providerStatus.rateLimitInfo = data.rateLimitInfo;
+            }
+            console.log(`[MarketService] Cache em disco restaurado: ${this.matches.length} partidas reais ao vivo.`);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('[MarketService] Cache em disco ignorado:', e?.message);
+    }
+  }
+
+  private saveDiskCache(): void {
+    try {
+      const realMatchesOnly = this.matches.filter((m) => m.sourceProvider === 'the-odds-api');
+      const data: PersistedCache = {
+        lastFetchTime: this.lastFetchTime,
+        rateLimitInfo: this.providerStatus.rateLimitInfo,
+        matches: realMatchesOnly,
+      };
+      fs.writeFileSync(CACHE_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (e: any) {
+      console.warn('[MarketService] Erro ao gravar cache em disco:', e?.message);
+    }
+  }
+
+  public getProviderStatus(): MarketProviderStatus {
+    const oddsKey = process.env.ODDS_API_KEY?.trim();
+    const fbKey = process.env.FOOTBALL_DATA_API_KEY?.trim();
+
+    let provider: MarketProviderStatus['provider'] = 'the-odds-api';
+    let providerName = 'The Odds API (Dados Reais ao Vivo)';
+    let isExternalApi = true;
+    let apiKeyConfigured = Boolean(oddsKey && oddsKey.length > 5);
+    let message = 'Sincronização 100% em tempo real com dados de mercado reais.';
+
+    if (oddsKey && oddsKey !== 'sua_chave_the_odds_api_aqui' && oddsKey.length > 5) {
+      const remaining = this.providerStatus.rateLimitInfo?.requestsRemaining;
+      message = remaining !== undefined
+        ? `API Real ativa (Quota restante: ${remaining} requisições). Dados 100% oficiais de mercado.`
+        : 'Chave ODDS_API_KEY ativa no servidor. Apenas dados reais da API são exibidos.';
+    } else if (fbKey && fbKey.length > 5) {
+      provider = 'football-data';
+      providerName = 'Football-Data.org';
+      apiKeyConfigured = true;
+      message = 'Chave FOOTBALL_DATA_API_KEY ativa no servidor.';
+    } else {
+      apiKeyConfigured = Boolean(this.aiscoreLastSync > 0);
+      if (apiKeyConfigured) {
+        provider = 'aiscore';
+        providerName = 'AiScore API (day card + odds 1X2)';
+        message = `Fonte AiScore ativa (${this.matches.length} jogos). Lista do dia via bridge Python.`;
+      } else {
+        message = 'Nenhuma chave de dados desportivos configurada. Defina ODDS_API_KEY ou aguarde o sync AiScore.';
+      }
+    }
+
+    const leagues = Array.from(new Set(this.matches.map((m) => m.league)));
+
+    this.providerStatus = {
+      ...this.providerStatus,
+      provider,
+      providerName,
+      isExternalApi,
+      apiKeyConfigured,
+      message,
+      totalMatches: this.matches.length,
+      activeLeagues: leagues,
+      lastUpdated: new Date(this.lastFetchTime || Date.now()).toISOString(),
+    };
+
+    return this.providerStatus;
+  }
+
+  public async getMatches(forceRefresh = false): Promise<MatchItem[]> {
+    const oddsKey = process.env.ODDS_API_KEY?.trim();
+    const now = Date.now();
+    const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos
+
+    if (oddsKey && oddsKey !== 'sua_chave_the_odds_api_aqui' && oddsKey.length > 5) {
+      if (forceRefresh || now - this.lastFetchTime > CACHE_TTL_MS || this.matches.length === 0) {
+        if (!this.activeFetchPromise) {
+          this.activeFetchPromise = this.fetchFromOddsApi(oddsKey)
+            .then(() => {
+              this.lastFetchTime = Date.now();
+              this.saveDiskCache();
+            })
+            .catch((err) => {
+              console.error('[MarketService] Erro ao buscar The Odds API:', err);
+            })
+            .finally(() => {
+              this.activeFetchPromise = null;
+            });
+        }
+        await this.activeFetchPromise;
+      }
+    }
+
+    // Complementa / substitui com AiScore quando não há jogos "hoje" (ou sem chave Odds)
+    const hasToday = this.matches.some(
+      (m) =>
+        m.status !== 'resolved' &&
+        getCalendarDayDiff(m.kickoffAt) === 0 &&
+        m.kickoffAt > now - 2 * 60 * 60 * 1000
+    );
+    if (forceRefresh || !hasToday || now - this.aiscoreLastSync > this.AISCORE_TTL_MS) {
+      await this.syncFromAiscore(forceRefresh);
+    }
+
+    // Retorna estritamente as partidas com kickoff futuro ou partidas recém-resolvidas
+    const validMatches = this.matches.filter(
+      (m) => m.status === 'resolved' || m.kickoffAt > now - 2 * 60 * 60 * 1000
+    );
+
+    return validMatches;
+  }
+
+  /**
+   * Puxa o day card do AiScore (jogos do dia + 1X2) e funde no mercado.
+   * Dia 0 é aguardado (resposta rápida); dias 1..7 seguem em background para
+   * alimentar os escopos 2_3_dias/longo — com as ligas principais na frente.
+   * Evita duplicar jogos já vindos do The Odds API (match por home/away/data).
+   */
+  private async syncFromAiscore(force = false): Promise<void> {
+    if (this.activeAiscorePromise) {
+      await this.activeAiscorePromise;
+      return;
+    }
+    const now = Date.now();
+    if (!force && now - this.aiscoreLastSync < this.AISCORE_TTL_MS) {
+      return;
+    }
+
+    this.activeAiscorePromise = (async () => {
+      try {
+        const dayZero = this.matches.filter(
+          (m) => m.status !== 'resolved' && getCalendarDayDiff(m.kickoffAt) === 0
+        ).length;
+        if (!force && dayZero > 0 && now - this.aiscoreLastSync < this.AISCORE_TTL_MS) {
+          return;
+        }
+
+        // Dia 0: aguardado, com odds reais 1X2 para os 10 primeiros priorizados.
+        await this.syncAiscoreDay(0, { limit: 40, oddsLimit: 10 });
+        this.aiscoreLastSync = Date.now();
+
+        // Dias 1..7: background sequencial (respeita o throttle do bridge).
+        // Só os 4 primeiros priorizados de cada dia trazem odds (economia).
+        void (async () => {
+          for (let d = 1; d <= 7; d++) {
+            try {
+              await this.syncAiscoreDay(d, { limit: 40, oddsLimit: 4 });
+            } catch (err: any) {
+              console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
+            }
+          }
+          console.log('[MarketService] AiScore multi-dia (+1..+7) concluído.');
+        })().catch(() => undefined);
+      } catch (err: any) {
+        console.warn('[MarketService] AiScore sync falhou:', err?.message);
+      } finally {
+        this.activeAiscorePromise = null;
+      }
+    })();
+
+    await this.activeAiscorePromise;
+  }
+
+  /** Busca e funde o day card de UM dia (offset a partir de hoje). */
+  private async syncAiscoreDay(
+    offsetDays: number,
+    opts: { limit: number; oddsLimit: number }
+  ): Promise<number> {
+    const now = Date.now();
+    const ymd = aiscoreYmd(offsetDays);
+    const card = await aiscoreClient.getDayCard(ymd, {
+      upcoming: true,
+      limit: opts.limit,
+      withOdds: true,
+      oddsLimit: opts.oddsLimit,
+    });
+
+        const timezone = 'Africa/Luanda';
+        const existingKeys = new Set(
+          this.matches.map(
+            (m) => `${m.home.toLowerCase()}||${m.away.toLowerCase()}||${m.dateStr || ''}||${m.league.toLowerCase()}`
+          )
+        );
+        const added: MatchItem[] = [];
+
+        for (const meta of card.data) {
+          const kickoffAt = parseKickoffMs(meta.kickoff);
+          if (!kickoffAt || kickoffAt <= now - 2 * 60 * 60 * 1000) continue;
+          if (meta.statusId != null && meta.statusId !== 1) continue;
+
+          const home = (meta.home?.name || '').trim();
+          const away = (meta.away?.name || '').trim();
+          if (!home || !away) continue;
+
+          const league = meta.competition || 'AiScore';
+
+          const daysFromNow = getCalendarDayDiff(kickoffAt, timezone);
+          const kickoffInSeconds = Math.max(30, Math.round((kickoffAt - now) / 1000));
+          const matchDate = new Date(kickoffAt);
+          const dateStr = matchDate.toLocaleDateString('pt-PT', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            timeZone: timezone,
+          });
+
+          // Chave inclui data+liga (formato dia, não ms exato): mesmo confronto
+          // em dias diferentes não colide; OddsAPI vs AiScore fundem no dia.
+          const dedupeKey = `${home.toLowerCase()}||${away.toLowerCase()}||${dateStr}||${league.toLowerCase()}`;
+          if (existingKeys.has(dedupeKey)) continue;
+          existingKeys.add(dedupeKey);
+
+          const odds: MatchOdds = meta.odds?.home
+            ? {
+                home: meta.odds.home,
+                draw: meta.odds.draw,
+                away: meta.odds.away,
+                over25: 1.90,
+                under25: 1.90,
+                btts_yes: 1.85,
+                btts_no: 1.90,
+              }
+            : {
+                home: 2.10,
+                draw: 3.20,
+                away: 3.40,
+                over25: 1.90,
+                under25: 1.90,
+                btts_yes: 1.85,
+                btts_no: 1.90,
+              };
+
+          const timeStr = matchDate.toLocaleTimeString('pt-PT', {
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: timezone,
+          });
+
+          const rawItem = {
+            id: `aiscore_${meta.match_id}`,
+            league,
+            home,
+            away,
+            time: timeStr,
+            dateStr,
+            daysFromNow,
+            kickoffInSeconds,
+            kickoffAt,
+            odds,
+            context: null,
+          };
+
+          added.push({
+            ...rawItem,
+            tip: scoreMatch(rawItem),
+            status: 'pending',
+            result: null,
+            sourceProvider: 'aiscore',
+          });
+        }
+
+        if (added.length > 0) {
+          this.matches = [...this.matches, ...added];
+          console.log(`[MarketService] AiScore day_card: +${added.length} jogos (${ymd}).`);
+        }
+        this.updateProviderStatusAfterAiscore(card.oddsCount, added.length);
+        return added.length;
+  }
+
+  private updateProviderStatusAfterAiscore(oddsCount: number, added: number): void {
+    const hasOddsKey = Boolean(
+      process.env.ODDS_API_KEY?.trim() &&
+        process.env.ODDS_API_KEY!.trim().length > 5 &&
+        process.env.ODDS_API_KEY!.trim() !== 'sua_chave_the_odds_api_aqui'
+    );
+    if (hasOddsKey) {
+      const leagues = Array.from(new Set(this.matches.map((m) => m.league)));
+      this.providerStatus = {
+        ...this.providerStatus,
+        totalMatches: this.matches.length,
+        activeLeagues: leagues,
+        lastUpdated: new Date(this.aiscoreLastSync).toISOString(),
+        message:
+          `The Odds API + AiScore day card (${added} extra, ${oddsCount} odds 1X2). Jogos de hoje cobertos.`,
+      };
+      return;
+    }
+    this.providerStatus = {
+      ...this.providerStatus,
+      provider: 'aiscore',
+      providerName: 'AiScore API (day card + odds 1X2)',
+      isExternalApi: true,
+      apiKeyConfigured: true,
+      totalMatches: this.matches.length,
+      activeLeagues: Array.from(new Set(this.matches.map((m) => m.league))),
+      lastUpdated: new Date(this.aiscoreLastSync).toISOString(),
+      message: `Fonte ativa: AiScore (${this.matches.length} jogos, ${oddsCount} com odds 1X2 reais).`,
+    };
+  }
+
+  private averageH2hOdds(bookmakers: any[], homeTeam: string, awayTeam: string) {
+    let homeSum = 0, homeCount = 0;
+    let drawSum = 0, drawCount = 0;
+    let awaySum = 0, awayCount = 0;
+
+    for (const bm of bookmakers || []) {
+      const h2h = bm.markets?.find((m: any) => m.key === 'h2h');
+      if (!h2h?.outcomes) continue;
+
+      for (const outcome of h2h.outcomes) {
+        if (outcome.name === homeTeam) {
+          homeSum += outcome.price;
+          homeCount++;
+        } else if (outcome.name === awayTeam) {
+          awaySum += outcome.price;
+          awayCount++;
+        } else if (outcome.name === 'Draw' || outcome.name === 'Empate') {
+          drawSum += outcome.price;
+          drawCount++;
+        }
+      }
+    }
+
+    return {
+      home: homeCount ? homeSum / homeCount : null,
+      draw: drawCount ? drawSum / drawCount : null,
+      away: awayCount ? awaySum / awayCount : null,
+    };
+  }
+
+  private averageTotals25(bookmakers: any[]) {
+    let overSum = 0, overCount = 0, underSum = 0, underCount = 0;
+
+    for (const bm of bookmakers || []) {
+      const totals = bm.markets?.find((m: any) => m.key === 'totals');
+      if (!totals?.outcomes) continue;
+      for (const outcome of totals.outcomes) {
+        if (outcome.point !== 2.5) continue;
+        if (outcome.name === 'Over') {
+          overSum += outcome.price;
+          overCount++;
+        } else if (outcome.name === 'Under') {
+          underSum += outcome.price;
+          underCount++;
+        }
+      }
+    }
+
+    return {
+      over25: overCount ? overSum / overCount : null,
+      under25: underCount ? underSum / underCount : null,
+    };
+  }
+
+  private async fetchFromOddsApi(apiKey: string) {
+    const envSports = process.env.ODDS_API_SPORTS?.split(',').map((s) => s.trim()).filter(Boolean);
+    
+    const sports = envSports && envSports.length > 0 ? envSports : [
+      'soccer_epl',
+      'soccer_spain_la_liga',
+      'soccer_italy_serie_a',
+      'soccer_germany_bundesliga',
+      'soccer_france_ligue_one',
+      'soccer_brazil_campeonato',
+      'soccer_uefa_champs_league',
+      'soccer_uefa_europa_league',
+      'soccer_portugal_primeira_liga',
+    ];
+
+    const regions = process.env.ODDS_API_REGIONS || 'eu';
+    const markets = process.env.ODDS_API_MARKETS || 'h2h';
+    const newMatches: MatchItem[] = [];
+    const now = Date.now();
+    const timezone = 'Africa/Luanda';
+
+    const sportLeagueMap: Record<string, string> = {
+      soccer_epl: 'Premier League',
+      soccer_spain_la_liga: 'La Liga',
+      soccer_italy_serie_a: 'Serie A',
+      soccer_germany_bundesliga: 'Bundesliga',
+      soccer_france_ligue_one: 'Ligue 1',
+      soccer_brazil_campeonato: 'Brasileirão',
+      soccer_uefa_champs_league: 'Champions League',
+      soccer_uefa_europa_league: 'Europa League',
+      soccer_portugal_primeira_liga: 'Liga Portugal',
+    };
+
+    for (const sport of sports) {
+      try {
+        const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${apiKey}&regions=${regions}&markets=${markets}&oddsFormat=decimal&dateFormat=iso`;
+        const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+
+        const remaining = resp.headers.get('x-requests-remaining');
+        const used = resp.headers.get('x-requests-used');
+        if (remaining !== null || used !== null) {
+          const reqRemaining = remaining !== null ? parseInt(remaining, 10) : undefined;
+          const reqUsed = used !== null ? parseInt(used, 10) : undefined;
+          this.providerStatus.rateLimitInfo = {
+            requestsRemaining: reqRemaining,
+            requestsUsed: reqUsed,
+          };
+        }
+
+        if (resp.status === 429 || resp.status === 401) break;
+        if (!resp.ok) continue;
+
+        const data = await resp.json();
+        if (!Array.isArray(data)) continue;
+
+        for (const event of data) {
+          const commenceTime = new Date(event.commence_time).getTime();
+          // Ignora partidas do passado
+          if (commenceTime <= now - 2 * 60 * 60 * 1000) continue;
+
+          const h2h = this.averageH2hOdds(event.bookmakers, event.home_team, event.away_team);
+          const totals = this.averageTotals25(event.bookmakers);
+
+          if (h2h.home === null || h2h.draw === null || h2h.away === null) continue;
+
+          const daysFromNow = getCalendarDayDiff(commenceTime, timezone);
+          const diffMs = commenceTime - now;
+          const kickoffInSeconds = Math.max(30, Math.round(diffMs / 1000));
+
+          const odds = {
+            home: Number(h2h.home.toFixed(2)),
+            draw: Number(h2h.draw.toFixed(2)),
+            away: Number(h2h.away.toFixed(2)),
+            over25: totals.over25 ? Number(totals.over25.toFixed(2)) : 1.90,
+            under25: totals.under25 ? Number(totals.under25.toFixed(2)) : 1.90,
+            btts_yes: 1.85,
+            btts_no: 1.90,
+          };
+
+          const matchDate = new Date(commenceTime);
+          const dateStr = matchDate.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: timezone });
+          const timeStr = matchDate.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', timeZone: timezone });
+
+          const rawItem = {
+            id: `oddsapi_${event.id}`,
+            league: sportLeagueMap[sport] || event.sport_title || 'Internacional',
+            home: event.home_team,
+            away: event.away_team,
+            time: timeStr,
+            dateStr,
+            daysFromNow,
+            kickoffInSeconds,
+            kickoffAt: commenceTime,
+            odds,
+            context: null,
+          };
+
+          newMatches.push({
+            ...rawItem,
+            tip: scoreMatch(rawItem),
+            status: 'pending',
+            result: null,
+            sourceProvider: 'the-odds-api',
+          });
+        }
+      } catch (err: any) {
+        console.warn(`[MarketService] Falha ao sincronizar esporte ${sport}:`, err?.message);
+      }
+    }
+
+    if (newMatches.length > 0) {
+      // Merge (não overwrite): preserva jogos AiScore e pernas de slips pendentes.
+      // Nunca rebaixa estado: live/resolved existente vence pending recém-chegado.
+      const matchMap = new Map<string, MatchItem>();
+      for (const m of this.matches) {
+        matchMap.set(m.id, m);
+      }
+      for (const m of newMatches) {
+        const existing = matchMap.get(m.id);
+        if (!existing || existing.status === 'pending') {
+          matchMap.set(m.id, m);
+        }
+      }
+      this.matches = Array.from(matchMap.values());
+    }
+  }
+
+  public getMatchById(id: string): MatchItem | undefined {
+    return this.matches.find((m) => m.id === id);
+  }
+
+  /** Cache matchId interno -> aiscore match_id (evita re-resolve por nomes). */
+  private aiscoreIdCache = new Map<string, string>();
+
+  /** Falhas de resolução (evita head-of-line blocking no tick). */
+  private resolveFails = new Map<string, { n: number; at: number }>();
+
+  private async resolveAiscoreId(match: MatchItem): Promise<string | null> {
+    if (match.id.startsWith('aiscore_')) return match.id.slice('aiscore_'.length);
+    const cached = this.aiscoreIdCache.get(match.id);
+    if (cached) return cached;
+    try {
+      const dateKey = aiscoreDateKey(match.kickoffAt);
+      const meta = await aiscoreClient.resolveMatchId(match.home, match.away, dateKey);
+      if (meta?.match_id) {
+        this.aiscoreIdCache.set(match.id, meta.match_id);
+        return meta.match_id;
+      }
+    } catch {
+      /* sem id real -> sem resolução (nunca inventar) */
+    }
+    return null;
+  }
+
+  /**
+   * Aplica um placar REAL (FT) a uma partida. Puro e síncrono.
+   * É a ÚNICA via de resolução — nada aqui gera resultado aleatório.
+   */
+  public applyRealResult(id: string, ftHome: number, ftAway: number): MatchItem | null {
+    const match = this.matches.find((m) => m.id === id);
+    if (!match || match.status === 'resolved') return match || null;
+    if (!Number.isFinite(ftHome) || !Number.isFinite(ftAway)) return null;
+
+    const homeScore = ftHome;
+    const awayScore = ftAway;
+    const totalGoals = homeScore + awayScore;
+    const isHomeWin = homeScore > awayScore;
+    const isAwayWin = awayScore > homeScore;
+    const isDraw = homeScore === awayScore;
+
+    const outcome1x2 = isHomeWin ? 'home' : isAwayWin ? 'away' : 'draw';
+    const outcomeOU = totalGoals >= 3 ? 'over25' : 'under25';
+    const outcomeBtts = homeScore > 0 && awayScore > 0 ? 'btts_yes' : 'btts_no';
+
+    const actual: Record<MarketType, boolean> = {
+      home: isHomeWin,
+      draw: isDraw,
+      away: isAwayWin,
+      double_chance_1x: isHomeWin || isDraw,
+      double_chance_x2: isAwayWin || isDraw,
+      double_chance_12: isHomeWin || isAwayWin,
+      over15: totalGoals >= 2,
+      over25: totalGoals >= 3,
+      over35: totalGoals >= 4,
+      under25: totalGoals <= 2,
+      under35: totalGoals <= 3,
+      btts_yes: homeScore > 0 && awayScore > 0,
+      btts_no: homeScore === 0 || awayScore === 0,
+      dnb_home: isHomeWin,
+      dnb_away: isAwayWin,
+    };
+
+    // Empate no DNB = push (reembolso). Sem modelo de void no BetSlip, a perna
+    // conta como acerto para não derrubar injustamente o bilhete inteiro.
+    let tipWon = !!actual[match.tip.market];
+    let pushed = false;
+    if (isDraw && (match.tip.market === 'dnb_home' || match.tip.market === 'dnb_away')) {
+      tipWon = true;
+      pushed = true;
+    }
+
+    match.status = 'resolved';
+    match.result = {
+      homeScore,
+      awayScore,
+      outcome1x2,
+      outcomeOU,
+      outcomeBtts,
+      tipWon,
+      pushed,
+    };
+    return match;
+  }
+
+  /**
+   * Tenta resolver UMA partida com o placar real do AiScore (match/data).
+   * - Jogo terminado (statusId 8) com FT válido -> resolved.
+   * - Jogo já iniciado mas sem FT -> marca 'live'.
+   * - Sem dados reais -> não toca (retorna null). Nunca inventa placar.
+   */
+  public async resolveMatchLive(id: string): Promise<MatchItem | null> {
+    const match = this.matches.find((m) => m.id === id);
+    if (!match || match.status === 'resolved') return match || null;
+
+    const aiscoreId = await this.resolveAiscoreId(match);
+    if (!aiscoreId) return null;
+
+    const live = await aiscoreClient.getLiveResult(aiscoreId);
+    if (!live) return null;
+
+    if (live.finished && live.ft_home != null && live.ft_away != null) {
+      return this.applyRealResult(id, live.ft_home, live.ft_away);
+    }
+    if (Date.now() >= match.kickoffAt && match.status === 'pending') {
+      match.status = 'live';
+    }
+    return null;
+  }
+
+  /**
+   * Varredura periódica: resolve com placar real apenas jogos terminados.
+   * Limitado a N partidas por tick (cada consulta ~1.7s de throttle).
+   * Partidas que falham 3x seguidas são puladas por 30min (sem head-of-line).
+   */
+  public async resolveDueMatches(maxPerTick = 8): Promise<MatchItem[]> {
+    const now = Date.now();
+    const resolved: MatchItem[] = [];
+    const due = this.matches.filter((m) => {
+      if (m.status === 'resolved' || now < m.kickoffAt) return false;
+      const fail = this.resolveFails.get(m.id);
+      if (fail && fail.n >= 3 && now - fail.at < 30 * 60 * 1000) return false;
+      return true;
+    });
+    // Terminados há mais tempo primeiro (bilhetes expiram mais rápido).
+    due.sort((a, b) => a.kickoffAt - b.kickoffAt);
+    for (const m of due.slice(0, maxPerTick)) {
+      try {
+        const res = await this.resolveMatchLive(m.id);
+        if (res) {
+          resolved.push(res);
+          this.resolveFails.delete(m.id);
+        }
+      } catch (err: any) {
+        console.warn(`[MarketService] Falha ao resolver ${m.home} vs ${m.away}:`, err?.message);
+        const fail = this.resolveFails.get(m.id);
+        this.resolveFails.set(m.id, { n: (fail?.n || 0) + 1, at: Date.now() });
+      }
+    }
+    return resolved;
+  }
+
+  /**
+   * @deprecated Simulação manual — só ativa com ALLOW_SIMULATION=true (dev).
+   * Em produção retorna null e nunca resolve nada.
+   */
+  public resolveMatch(id?: string): MatchItem | null {
+    if (process.env.ALLOW_SIMULATION !== 'true') {
+      console.warn('[MarketService] resolveMatch manual bloqueado em produção (ALLOW_SIMULATION!=true).');
+      return null;
+    }
+    let match: MatchItem | undefined;
+    if (id) {
+      match = this.matches.find((m) => m.id === id);
+    } else {
+      match = this.matches.find((m) => m.status === 'pending');
+    }
+    if (!match || match.status === 'resolved') return match || null;
+    // Modo dev: placar sintético apenas para testes locais.
+    const homeScore = 2;
+    const awayScore = 1;
+    return this.applyRealResult(match.id, homeScore, awayScore);
+  }
+
+  /**
+   * @deprecated Use resolveDueMatches() (assíncrono, placar real).
+   * Mantido para compat: só marca 'live' jogos iniciados, nunca resolve.
+   */
+  public resolveAllOverdue(): MatchItem[] {
+    const now = Date.now();
+    for (const match of this.matches) {
+      if (match.status === 'pending' && now >= match.kickoffAt) {
+        match.status = 'live';
+      }
+    }
+    return [];
+  }
+
+  public resetMatches(): MatchItem[] {
+    this.matches = [];
+    this.lastFetchTime = 0;
+    this.aiscoreLastSync = 0;
+    this.aiscoreIdCache.clear();
+    this.resolveFails.clear();
+    if (fs.existsSync(CACHE_FILE_PATH)) {
+      try {
+        fs.unlinkSync(CACHE_FILE_PATH);
+      } catch (e) {}
+    }
+    return this.matches;
+  }
+}
+
+export const marketService = new MarketService();

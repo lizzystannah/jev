@@ -1,0 +1,27 @@
+# Nunca levar segredos nem lixo para a imagem.
+.env
+.env.local
+*.pem
+*.key
+
+node_modules
+dist
+coverage
+
+# Caches de runtime (recriados no arranque).
+.odds_api_cache.json
+.aiscore_context_cache.json
+
+npm-debug.log*
+*.log
+
+.git
+.gitignore
+.vscode
+.idea
+
+# Venvs / bytecode Python (a imagem instala o dela).
+.venv*
+__pycache__/
+*.pyc
+*.pyo

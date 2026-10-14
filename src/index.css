@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+:root {
+  --pitch-950: #081C13;
+  --pitch-900: #0E2A1C;
+  --pitch-800: #173C27;
+  --pitch-700: #20502F;
+  --line: rgba(245, 243, 236, 0.14);
+  --line-strong: rgba(245, 243, 236, 0.28);
+  --chalk: #F5F3EC;
+  --chalk-dim: rgba(245, 243, 236, 0.64);
+  --chalk-faint: rgba(245, 243, 236, 0.38);
+  --gold: #E7B33E;
+  --gold-ink: #3A2A06;
+  --green-tier: #4FAE73;
+  --amber-tier: #E7B33E;
+  --red-tier: #D1594B;
+  --radius: 6px;
+  --font-display: 'Teko', 'Arial Narrow', sans-serif;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background-color: var(--pitch-950);
+  background-image:
+    radial-gradient(1100px 480px at 12% -10%, rgba(79, 174, 115, 0.12), transparent 60%),
+    radial-gradient(900px 420px at 88% 0%, rgba(231, 179, 62, 0.08), transparent 55%);
+  color: var(--chalk);
+  font-family: var(--font-body);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Authentic ticket tear styling */
+.ticket__tear {
+  position: relative;
+  height: 0;
+  border-top: 2px dashed rgba(245, 243, 236, 0.22);
+  margin: 16px -20px 14px;
+}
+
+.ticket__tear::before,
+.ticket__tear::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--pitch-950);
+}
+
+.ticket__tear::before {
+  left: -9px;
+}
+
+.ticket__tear::after {
+  right: -9px;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.9); }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
