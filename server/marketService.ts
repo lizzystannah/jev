@@ -15,7 +15,7 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
   // "Premier League del Norte", U21, Butão, etc. NÃO são a Premier League inglesa.
   {
     test: /premier league/i,
-    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer| de |del |kenya|kenia|bhutan|but[aã]o|mongol|nigeria|ghana|jamaica|burundi|shillong|estonia|irlanda|ireland|wales|gales|scotland|escocia/i,
+    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer| de |del |kenya|kenia|bhutan|but[aã]o|mongol|nigeria|ghana|jamaica|burundi|shillong|mizoram|goa|kerala|calcutt|estonia|irlanda|ireland|wales|gales|scotland|escocia/i,
     label: 'Premier League',
   },
   // "Copa de la Liga" (Peru/Bolívia/Catar) não é a La Liga espanhola.
@@ -32,9 +32,9 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
 ];
 
 /** Penaliza feminino/base/obscuro — espelha _COMP_PENALTY_KEYS do bridge. */
-const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|u1\d|u2\d|juvenil|sub-?20|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal/i;
+const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|u1\d|u2\d|juvenil|sub-?20|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal|mizoram|goa|kerala|calcutt|tanzania|uganda|kenya|zambia/i;
 
-/** Liga obscura (feminino/base/exótica): entra por último nos bilhetes. */
+/** Liga obscura (feminino/base/exótica): excluída dos bilhetes. */
 export function isObscureLeague(league?: string | null): boolean {
   return LEAGUE_PENALTY.test(league || '');
 }

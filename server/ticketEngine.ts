@@ -27,8 +27,9 @@ export function isTopTierLeague(league?: string | null): boolean {
 
 // Metas de odd combinada por construção ousada.
 const OUSADA_MIN_ODDS = 10;
-const SUPER_OUSADA_MIN_ODDS = 1000;
-const SUPER_OUSADA_MAX_LEGS = 12;
+// Super Acumulada: muitas pernas NORMAIS (tips do motor, sem lotaria).
+const SUPER_LEGS_TARGET = 20;
+const SUPER_LEGS_MIN = 8;
 
 // Liga obscura (feminino/base/exótica) vale pouco na ordenação.
 const OBSCURE_PENALTY = 0.55;
@@ -189,7 +190,10 @@ export class TicketEngine {
     });
 
     // Femininos fora: nem entram no pool de avaliação/combinação.
-    const eligible = filtered.filter((m) => !isWomensLeague(m.league));
+    // Obscuras (base/exóticas) fora também: sem elas não há bilhete ilusório.
+    const eligible = filtered.filter(
+      (m) => !isWomensLeague(m.league) && !isObscureLeague(m.league)
+    );
 
     if (eligible.length === 0) {
       return { generated: [], all: this.slips, jevLatencyMs: 0 };
@@ -357,121 +361,112 @@ export class TicketEngine {
     };
 
     /**
-     * Perna ousada para a Super Ousada: é um bilhete de lotaria — maximiza
-     * a odd (piso de 25% de prob., teto 4.50 para não alucinar em zebras).
-     * Desempate pelo valor esperado. Devolve candidatos ordenados para o
-     * acumulador diversificar mercados (máx. 3 repetições por mercado).
+     * Super Acumulada: até 20 pernas NORMAIS (tips calibradas do motor,
+     * sem mercados de lotaria). Enche com jogos frescos e completa com
+     * repetidos se preciso (mínimo 8) — nunca com ligas obscuras.
      */
-    const boldLegRanked = (match: MatchItem): Array<{
-      market: MatchItem['tip']['market']; label: string; odds: number; prob: number }> => {
-      const cands: Array<{ market: MatchItem['tip']['market']; label: string; odds: number; prob: number }> = [
-        { market: match.tip.market, label: match.tip.label, odds: match.tip.odds, prob: match.tip.prob },
-      ];
-      const o = match.odds;
-      if (o.btts_yes >= 1.60) {
-        cands.push({ market: 'btts_yes', label: 'Ambas marcam — Sim (BTTS)', odds: o.btts_yes, prob: 48 });
-      }
-      if ((o.over25 ?? 0) >= 1.70) {
-        cands.push({ market: 'over25', label: 'Mais de 2.5 golos (+2.5G)', odds: o.over25 as number, prob: 46 });
-      }
-      if (o.home >= 1.70 && o.home <= 3.00) {
-        cands.push({ market: 'home', label: `Vitória ${match.home}`, odds: o.home, prob: 44 });
-      }
-      if (o.away >= 1.70 && o.away <= 3.00) {
-        cands.push({ market: 'away', label: `Vitória ${match.away}`, odds: o.away, prob: 42 });
-      }
-      if (o.draw >= 2.80 && o.draw <= 3.80) {
-        cands.push({ market: 'draw', label: 'Empate (X)', odds: o.draw, prob: 27 });
-      }
-      const viable = cands.filter((c) => c.odds >= 1.60 && c.odds <= 4.50 && c.prob >= 25);
-      return (viable.length > 0 ? viable : cands).sort(
-        (a, b) => b.odds - a.odds || ((b.prob / 100) * b.odds - (a.prob / 100) * a.odds)
-      );
-    };
-
-    const applyBold = (match: MatchItem, market: MatchItem['tip']['market'],
-      label: string, odds: number, prob: number): MatchItem => {
-      if (market === match.tip.market) return match;
-      return {
-        ...match,
-        tip: { market, label, odds: Number(odds.toFixed(2)), prob },
-      };
-    };
-
-    // SUPER OUSADA: acumulador até 1000x de odd combinada (até 12 pernas).
-    // Só é criada se bater a meta — sem 1000x não há bilhete.
-    const buildSuperOusadaSlip = (matchesPool: MatchItem[]): BetSlip | null => {
-      if (matchesPool.length < 5) return null;
-      const pool = orderTopFirst([...matchesPool], (a, b) => b.tip.odds - a.tip.odds);
+    const buildSuperOusadaSlip = (
+      matchesPool: MatchItem[], used: Set<string>
+    ): BetSlip | null => {
+      const ordered = orderTopFirst([...matchesPool],
+        (a, b) => valueScore(b) - valueScore(a));
+      const fresh = ordered.filter((m) => !used.has(m.id));
+      const reuse = ordered.filter((m) => used.has(m.id));
 
       const selectedLegs: MatchItem[] = [];
+      const seen = new Set<string>();
       let currentCombinedOdds = 1.0;
-      const marketCount: Record<string, number> = {};
-      for (const match of pool) {
-        const ranked = boldLegRanked(match);
-        const pick = ranked.find((c) => (marketCount[c.market] || 0) < 3) || ranked[0];
-        marketCount[pick.market] = (marketCount[pick.market] || 0) + 1;
-        selectedLegs.push(applyBold(match, pick.market, pick.label, pick.odds, pick.prob));
-        currentCombinedOdds *= selectedLegs[selectedLegs.length - 1].tip.odds;
-        if (selectedLegs.length >= SUPER_OUSADA_MAX_LEGS) break;
-        if (currentCombinedOdds >= SUPER_OUSADA_MIN_ODDS && selectedLegs.length >= 5) break;
+      for (const match of [...fresh, ...reuse]) {
+        if (selectedLegs.length >= SUPER_LEGS_TARGET) break;
+        if (seen.has(match.id)) continue;
+        seen.add(match.id);
+        selectedLegs.push(match);
+        currentCombinedOdds *= match.tip.odds;
       }
 
-      if (currentCombinedOdds < SUPER_OUSADA_MIN_ODDS || selectedLegs.length < 5) {
+      if (selectedLegs.length < SUPER_LEGS_MIN) {
         return null;
       }
       return this.createSlip(scope, 'ousada', selectedLegs, {
-        customTitle: `Super Ousada (${currentCombinedOdds.toFixed(2)}x)`,
-        rationale: `Acumulador extremo com odd combinada de ${currentCombinedOdds.toFixed(2)} em ${selectedLegs.length} pernas de ligas principais, para quem caça o prémio grande.`,
+        customTitle: `Super Acumulada (${selectedLegs.length} jogos • ${currentCombinedOdds.toFixed(2)}x)`,
+        rationale: `Acumulador de ${selectedLegs.length} pernas com as tips calibradas de ligas principais, odd combinada de ${currentCombinedOdds.toFixed(2)}.`,
       });
     };
 
     const candidateSlips: BetSlip[] = [];
     const legsMap = LEGS_CONFIG[scope];
 
-    // 1. Bilhetes Seguros (ligas principais primeiro, obscuras só p/ completar)
+    // Jogos já usados noutro bilhete: cada construção prefere pernas frescas
+    // para os bilhetes não saírem todos iguais.
+    const usedIds = new Set<string>();
+    const claim = (legs: MatchItem[]): void => {
+      legs.forEach((l) => usedIds.add(l.id));
+    };
+    /** Primeiras n pernas, preferindo as ainda não usadas. */
+    const takeFresh = (arr: MatchItem[], n: number): MatchItem[] => {
+      const fresh = arr.filter((m) => !usedIds.has(m.id));
+      return (fresh.length >= n ? fresh : arr).slice(0, n);
+    };
+
+    // 1. Bilhetes Seguros (ligas principais primeiro)
     const sortedSegura = orderTopFirst(
       [...(buckets.segura.length >= 2 ? buckets.segura : evaluatedMatches)],
       (a, b) => pickScore(b) - pickScore(a)
     );
     if (sortedSegura.length >= legsMap.segura) {
-      candidateSlips.push(this.createSlip(scope, 'segura', ensureTopTierLegs(sortedSegura.slice(0, legsMap.segura), sortedSegura)));
-      if (sortedSegura.length >= legsMap.segura * 2) {
-        candidateSlips.push(this.createSlip(scope, 'segura', ensureTopTierLegs(sortedSegura.slice(legsMap.segura, legsMap.segura * 2), sortedSegura)));
+      const legs1 = takeFresh(sortedSegura, legsMap.segura);
+      candidateSlips.push(this.createSlip(scope, 'segura', ensureTopTierLegs(legs1, sortedSegura)));
+      claim(legs1);
+      const rest1 = sortedSegura.filter((m) => !usedIds.has(m.id));
+      if (rest1.length >= legsMap.segura) {
+        const legs2 = rest1.slice(0, legsMap.segura);
+        candidateSlips.push(this.createSlip(scope, 'segura', ensureTopTierLegs(legs2, sortedSegura)));
+        claim(legs2);
       }
     }
 
-    // 2. Bilhetes Moderados (ligas principais primeiro, obscuras só p/ completar)
+    // 2. Bilhetes Moderados (ligas principais primeiro)
     const sortedModerada = orderTopFirst(
       [...(buckets.moderada.length >= 2 ? buckets.moderada : evaluatedMatches)],
       (a, b) => valueScore(b) - valueScore(a)
     );
     if (sortedModerada.length >= legsMap.moderada) {
-      candidateSlips.push(this.createSlip(scope, 'moderada', ensureTopTierLegs(sortedModerada.slice(0, legsMap.moderada), sortedModerada)));
-      if (sortedModerada.length >= legsMap.moderada + 2) {
-        candidateSlips.push(this.createSlip(scope, 'moderada', ensureTopTierLegs(sortedModerada.slice(1, legsMap.moderada + 1), sortedModerada)));
+      const legs1 = takeFresh(sortedModerada, legsMap.moderada);
+      candidateSlips.push(this.createSlip(scope, 'moderada', ensureTopTierLegs(legs1, sortedModerada)));
+      claim(legs1);
+      const rest1 = sortedModerada.filter((m) => !usedIds.has(m.id));
+      if (rest1.length >= legsMap.moderada) {
+        const legs2 = rest1.slice(0, legsMap.moderada);
+        candidateSlips.push(this.createSlip(scope, 'moderada', ensureTopTierLegs(legs2, sortedModerada)));
+        claim(legs2);
       }
     }
 
     // 3. Bilhetes Ousados (mínimo de odd combinada garantido)
-    const ousadaSlip1 = buildOusadaSlip(evaluatedMatches);
+    const freshOusada = (pool: MatchItem[]): MatchItem[] => {
+      const f = pool.filter((m) => !usedIds.has(m.id));
+      return f.length >= 3 ? f : pool;
+    };
+    const ousadaSlip1 = buildOusadaSlip(freshOusada(evaluatedMatches));
     if (ousadaSlip1) {
       candidateSlips.push(ousadaSlip1);
+      claim(ousadaSlip1.legs);
     }
 
-    // Segunda variação de Ousada com embaralhamento para ter 2 opções de alta odd
+    // Segunda variação de Ousada com pernas frescas
     if (evaluatedMatches.length >= 4) {
-      const reversedPool = [...evaluatedMatches].reverse();
-      const ousadaSlip2 = buildOusadaSlip(reversedPool);
+      const ousadaSlip2 = buildOusadaSlip(freshOusada(evaluatedMatches));
       if (ousadaSlip2 && ousadaSlip2.combinedOdds !== ousadaSlip1?.combinedOdds) {
         candidateSlips.push(ousadaSlip2);
+        claim(ousadaSlip2.legs);
       }
     }
 
-    // 4. SUPER OUSADA (1000x+): entra primeiro na lista de ousadas pelo odd.
-    const superOusada = buildSuperOusadaSlip(evaluatedMatches);
+    // 4. SUPER ACUMULADA (até 20 jogos, tips normais).
+    const superOusada = buildSuperOusadaSlip(evaluatedMatches, usedIds);
     if (superOusada) {
       candidateSlips.push(superOusada);
+      claim(superOusada.legs);
     }
 
     // REGRA DE NEGÓCIO: Reter os melhores bilhetes com variedade entre os tiers (até 5 bilhetes no total)
