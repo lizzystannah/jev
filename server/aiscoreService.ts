@@ -233,6 +233,7 @@ export interface ScoutPayload {
   h2h_summary?: { W?: number; D?: number; L?: number };
   home_trend?: Record<string, unknown> | null;
   away_trend?: Record<string, unknown> | null;
+  competition_id?: string | null;
   /** Tendências da 2ª amostra + distribuidores — ver motor local. */
   home_trend_sc?: Record<string, unknown> | null;
   away_trend_sc?: Record<string, unknown> | null;
@@ -281,6 +282,8 @@ interface CacheEntry {
   aiscoreMatchId?: string;
   context?: MatchContext;
   scout?: ScoutPayload;
+  tables?: any;
+  lineups?: any;
 }
 
 type ContextCache = Record<string, CacheEntry>;
@@ -327,6 +330,15 @@ export function aiscoreYmd(offsetDays = 0, fromMs = Date.now()): string {
 
 function fresh(entry?: CacheEntry): entry is CacheEntry {
   return Boolean(entry && Date.now() - entry.at < CACHE_TTL_MS);
+}
+
+/** season_id algures nas goal_distributions do advanced. */
+function firstSeasonId(advanced: any): string | null {
+  const gds = Array.isArray(advanced?.goal_distributions) ? advanced.goal_distributions : [];
+  for (const gd of gds) {
+    if (gd?.season_id) return gd.season_id;
+  }
+  return null;
 }
 
 // --------------------------------------------------------- context mapping ---
@@ -622,8 +634,50 @@ export class AiscoreService {
     return scoutToMatchContext(scout, kickoffMs);
   }
 
+  /** Extras (tables/lineups) já em cache para o jogo, sem chamadas. */
+  private getCachedExtras(match: MatchItem): { tables?: any; lineups?: any } {
+    try {
+      const key = cacheKey(match.home, match.away, aiscoreDateKey(match.kickoffAt));
+      const hit = loadCache()[key];
+      if (fresh(hit)) return { tables: hit.tables, lineups: hit.lineups };
+    } catch {
+      /* ignora */
+    }
+    return {};
+  }
+
+  /** Funde patch (advanced/tables/lineups) na entrada de cache do jogo. */
+  private updateCacheEntry(match: MatchItem, patch: Partial<CacheEntry>): void {
+    try {
+      const key = cacheKey(match.home, match.away, aiscoreDateKey(match.kickoffAt));
+      const cache = loadCache();
+      const hit = cache[key];
+      if (hit) {
+        cache[key] = { ...hit, ...patch };
+        saveCache();
+      }
+    } catch {
+      /* cache é bónus */
+    }
+  }
+
   public async getAdvanced(matchId: string): Promise<any | null> {
     const res = await runBridge<any>({ action: 'advanced', match_id: matchId });
+    if (!res.ok) return null;
+    return (res.data as any) || null;
+  }
+
+  public async getTables(matchId: string, compId?: string, seasonId?: string): Promise<any | null> {
+    const res = await runBridge<any>({
+      action: 'tables', match_id: matchId,
+      comp_id: compId || '', season_id: seasonId || '',
+    });
+    if (!res.ok) return null;
+    return (res.data as any) || null;
+  }
+
+  public async getLineups(matchId: string): Promise<any | null> {
+    const res = await runBridge<any>({ action: 'lineups', match_id: matchId });
     if (!res.ok) return null;
     return (res.data as any) || null;
   }
@@ -637,10 +691,11 @@ export class AiscoreService {
    */
   public async enrichMatches(
     matches: MatchItem[],
-    opts?: { maxMatches?: number; deadlineMs?: number }
+    opts?: { maxMatches?: number; deadlineMs?: number; includeLineups?: boolean }
   ): Promise<number> {
     const maxMatches = opts?.maxMatches ?? 8;
     const deadlineMs = opts?.deadlineMs ?? 22_000;
+    const includeLineups = opts?.includeLineups ?? false;
     const startedAt = Date.now();
     // Prefer day_card matches (known id → single scout call) over resolve+scout.
     const pending = matches
@@ -659,6 +714,9 @@ export class AiscoreService {
           const kickoffMs = m.kickoffAt || parseKickoffMs(scout.kickoff);
           m.context = scoutToMatchContext(scout, kickoffMs);
           m.sourceProvider = m.sourceProvider || 'aiscore';
+          const extras = this.getCachedExtras(m);
+          if (!m.tables && extras.tables) m.tables = extras.tables;
+          if (!m.lineups && extras.lineups) m.lineups = extras.lineups;
           enriched += 1;
         }
       } catch (err: any) {
@@ -667,6 +725,8 @@ export class AiscoreService {
     }
     // Second pass: advanced variables (goal windows etc.) while budget lasts.
     // Only for aiscore_ ids (no resolve needed → 1 bridge call each).
+    // Then tables (standings) + lineups (escalações/desfalques) for matches
+    // that already carry scout+advanced — o motor local usa-os quando presentes.
     if (Date.now() - startedAt < deadlineMs) {
       const needAdv = matches.filter(
         (m) => m.scout && !m.advanced && m.id.startsWith('aiscore_')
@@ -677,10 +737,42 @@ export class AiscoreService {
           const adv = await this.getAdvanced(m.id.slice('aiscore_'.length));
           if (adv) {
             m.advanced = adv;
+            this.updateCacheEntry(m, { scout: { ...((m.scout as any) || {}), advanced: adv } });
             enriched += 1;
           }
         } catch {
           /* advanced é bónus — o motor usa o scout na mesma */
+        }
+      }
+    }
+    if (Date.now() - startedAt < deadlineMs) {
+      const needExtra = matches.filter(
+        (m) => m.scout && m.id.startsWith('aiscore_') && (!m.tables || (includeLineups && !m.lineups))
+      );
+      for (const m of needExtra) {
+        if (Date.now() - startedAt > deadlineMs) break;
+        const aiscoreId = m.id.slice('aiscore_'.length);
+        try {
+          if (!m.tables) {
+            const seasonId = firstSeasonId(m.advanced) || firstSeasonId((m.scout as any)?.advanced);
+            const tables = await this.getTables(
+              aiscoreId, (m.scout as any)?.competition_id, seasonId || undefined);
+            if (tables) {
+              m.tables = tables;
+              this.updateCacheEntry(m, { tables });
+              enriched += 1;
+            }
+          }
+          if (includeLineups && !m.lineups && Date.now() - startedAt < deadlineMs) {
+            const lineups = await this.getLineups(aiscoreId);
+            if (lineups) {
+              m.lineups = lineups;
+              this.updateCacheEntry(m, { lineups });
+              enriched += 1;
+            }
+          }
+        } catch {
+          /* tables/lineups são bónus — o motor usa o scout na mesma */
         }
       }
     }

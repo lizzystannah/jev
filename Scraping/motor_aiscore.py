@@ -132,6 +132,9 @@ def _derive_from_matches(matches: list, venue_side: str) -> dict:
         "venue_n": len(v),
         "venue_gf": sum(r.get("gf") or 0 for r in v),
         "venue_ga": sum(r.get("ga") or 0 for r in v),
+        "venue_w": sum(1 for r in v if r.get("result") == "W"),
+        "venue_d": sum(1 for r in v if r.get("result") == "D"),
+        "venue_l": sum(1 for r in v if r.get("result") == "L"),
     }
 
 
@@ -181,6 +184,10 @@ def _team_block(form: dict, trend: dict | None, side_venue: str,
     avg1h = A.get("avg_1h_goals", form.get("avg_1h_goals"))
     if avg1h is None:
         avg1h = der["avg_1h"]
+    # WDL de mando: advanced venue traz; senao deriva dos jogos do mando.
+    vw = v_adv.get("W", v_sco.get("W", der["venue_w"]))
+    vd = v_adv.get("D", v_sco.get("D", der["venue_d"]))
+    vl = v_adv.get("L", v_sco.get("L", der["venue_l"]))
     return {
         "n": n,
         "W": A.get("W", form.get("W", 0)), "D": A.get("D", form.get("D", 0)),
@@ -190,6 +197,7 @@ def _team_block(form: dict, trend: dict | None, side_venue: str,
         "venue_n": venue_n,
         "venue_gf": venue_gf,
         "venue_ga": venue_ga,
+        "venue_w": vw or 0, "venue_d": vd or 0, "venue_l": vl or 0,
         "avg_total": ((A.get("GF", form.get("GF", 0)) + A.get("GA", form.get("GA", 0)))
                       / max(1, n)) if n else 0.0,
         "avg_1h": avg1h,
@@ -258,9 +266,43 @@ def _goals_window_factor(goal_distributions: list, home_id, away_id) -> dict:
 
 # ----------------------------------------------------------------- motor ---
 
+def _table_rows(tables) -> list:
+    """Normaliza tabelas: bridge {"tables":[{rows}]} ou lista plana de rows."""
+    if isinstance(tables, dict):
+        tables = tables.get("tables") or tables.get("rows") or []
+    if not isinstance(tables, list):
+        return []
+    rows = []
+    for t in tables:
+        if isinstance(t, dict) and isinstance(t.get("rows"), list):
+            rows.extend(t["rows"])
+        elif isinstance(t, dict) and t.get("team_id"):
+            rows.append(t)
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _lineup_side(lineups, side: str) -> dict:
+    L = lineups or {}
+    blk = L.get(side) or {}
+    return {
+        "avg_rating": blk.get("avg_rating"),
+        "captain_in_xi": blk.get("captain_in_xi", True),
+        "starters": blk.get("starters", 0),
+        "unavailable": blk.get("unavailable") or [],
+    }
+
+
 def estimate_xg(scout: dict, advanced: dict | None = None,
-                standings: list[dict] | None = None) -> dict:
-    """xG esperado do confronto a partir de TODAS as variaveis AiScore."""
+                tables=None, lineups=None, context=None) -> dict:
+    """xG esperado do confronto a partir de TODAS as variaveis AiScore.
+
+    tables: bridge {"tables":[{table,group,rows}]} ou lista de rows
+      (position/points/total/goals/goalDiff por team_id).
+    lineups: bridge {"available", "confirmed", home/away:
+      {avg_rating, captain_in_xi, starters, unavailable[]}}.
+    context: {"restDaysHome", "restDaysAway", "importance"}.
+    Parâmetros também aceites dentro de `advanced` (mesmas chaves).
+    """
     hf = scout.get("home_form") or {}
     af = scout.get("away_form") or {}
     ht = scout.get("home_trend") or {}
@@ -272,6 +314,9 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
     hs = adv.get("home_stats") or (adv.get("home") or {}).get("stats") or {}
     as_ = adv.get("away_stats") or (adv.get("away") or {}).get("stats") or {}
     h2h_stats = adv.get("h2h_stats") or adv.get("h2h") or scout.get("h2h_stats")
+    tables = tables if tables is not None else adv.get("tables")
+    lineups = lineups if lineups is not None else adv.get("lineups")
+    context = context if context is not None else adv.get("context")
 
     home_id = scout.get("home", {}).get("id") or scout.get("home_team_id")
     away_id = scout.get("away", {}).get("id") or scout.get("away_team_id")
@@ -319,20 +364,87 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
     # mando de campo base +3% (ja parcialmente no venue; mantem resíduo pequeno)
     xg_h *= 1.03
 
-    # standings: diferenca de posicao/pontos ajusta forca (se fornecido)
-    adj_note = None
-    if standings:
-        pos = {r.get("team_id"): r for r in standings}
-        rh, ra = pos.get(home_id), pos.get(away_id)
-        try:
-            if rh and ra and rh.get("position") and ra.get("position"):
-                diff = int(ra["position"]) - int(rh["position"])  # + => home melhor
-                adj = _clamp(diff * 0.008, -0.10, 0.10)
-                xg_h *= (1 + adj)
-                xg_a *= (1 - adj)
-                adj_note = f"standings pos {rh['position']}v{ra['position']} adj {adj:+.2%}"
-        except (ValueError, TypeError):
-            pass
+    notes = []
+    # vitorias em casa/fora: aproveitamento no mando vs geral (+-5% max)
+    for blk, key, tag in ((H, "xg_h", "home"), (A, "xg_a", "away")):
+        vn, n = max(1, blk["venue_n"] or 0), max(1, blk["n"] or 1)
+        vwr = (blk["venue_w"] or 0) / vn if blk["venue_n"] else None
+        owr = (blk["W"] or 0) / n
+        if vwr is not None and blk["venue_n"] >= 2:
+            edge = _clamp((vwr - owr) * 0.3, -0.05, 0.05)
+            if tag == "home":
+                xg_h *= (1 + edge)
+            else:
+                xg_a *= (1 + edge)
+            notes.append(f"venueWDL {tag} {edge:+.1%}")
+
+    # classificacao: PPG + saldo/de-jogo do grupo (vale p/ grupos e ligas)
+    trows = _table_rows(tables)
+    if trows:
+        by_id = {r.get("team_id"): r for r in trows if r.get("team_id")}
+
+        def strength(r):
+            defni = lambda v, d=0: (
+                float(v) if isinstance(v, (int, float)) or
+                (isinstance(v, str) and v.replace(".", "", 1).lstrip("-").isdigit())
+                else d)
+            tot = defni(r.get("total"))
+            if not tot or tot < 3 or r.get("points") is None:
+                return None
+            gd = defni(r.get("goalDiff"))
+            return (defni(r.get("points")) / tot) / 3 * 0.7 + _clamp((gd / tot) / 2, -1, 1) * 0.3
+
+        rh, ra = by_id.get(home_id), by_id.get(away_id)
+        sh, sa = strength(rh) if rh else None, strength(ra) if ra else None
+        if sh is not None and sa is not None:
+            adj = _clamp((sh - sa) * 0.12, -0.06, 0.06)
+            xg_h *= (1 + adj)
+            xg_a *= (1 - adj)
+            same = (rh.get("group") == ra.get("group") and
+                    rh.get("table_id") == ra.get("table_id"))
+            pos = ""
+            if same and rh.get("position") and ra.get("position"):
+                pos = f" pos {rh['position']}v{ra['position']}"
+            notes.append(f"tables{pos} PPG {rh.get('points')}/{rh.get('total')}v"
+                         f"{ra.get('points')}/{ra.get('total')} adj {adj:+.2%}")
+
+    # escalacoes: nota dos titulares, capitao e desfalques
+    lin_note = None
+    if isinstance(lineups, dict) and lineups.get("available"):
+        lh, la = _lineup_side(lineups, "home"), _lineup_side(lineups, "away")
+        rh, ra = lh["avg_rating"], la["avg_rating"]
+        if isinstance(rh, (int, float)) and isinstance(ra, (int, float)):
+            redge = _clamp((rh - ra) * 0.04, -0.04, 0.04)
+            xg_h *= (1 + redge)
+            xg_a *= (1 - redge)
+            lin_note = f"ratings {rh}v{ra}"
+        if not lh["captain_in_xi"] and lh["starters"] >= 11:
+            xg_h *= 0.98
+            lin_note = (lin_note + " " if lin_note else "") + "capitao casa fora"
+        if not la["captain_in_xi"] and la["starters"] >= 11:
+            xg_a *= 0.98
+            lin_note = (lin_note + " " if lin_note else "") + "capitao fora fora"
+        uh, ua = len(lh["unavailable"]), len(la["unavailable"])
+        if uh:
+            xg_h *= 1 - min(0.08, 0.02 * uh)
+        if ua:
+            xg_a *= 1 - min(0.08, 0.02 * ua)
+        if uh or ua:
+            lin_note = (lin_note + " " if lin_note else "") + f"desfalques {uh}v{ua}"
+        if lineups.get("confirmed") != 1:
+            lin_note = (lin_note + " " if lin_note else "") + "escalacao nao confirmada"
+        if lin_note:
+            notes.append("lineups " + lin_note)
+
+    # descanso: diferença de dias desde o último jogo (+-4% max)
+    if isinstance(context, dict):
+        rh, ra = context.get("restDaysHome"), context.get("restDaysAway")
+        if isinstance(rh, (int, float)) and isinstance(ra, (int, float)):
+            diff = rh - ra  # + => casa mais descansada
+            adj = _clamp(diff * 0.008, -0.04, 0.04)
+            xg_h *= (1 + adj)
+            xg_a *= (1 - adj)
+            notes.append(f"descanso {rh}v{ra}d adj {adj:+.2%}")
 
     # segunda amostra _sc (contexto alternativo) como regularizador suave
     for sc, blk, key in ((hts, H, "h"), (ats, A, "a")):
@@ -353,13 +465,16 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
     return {"xg_home": round(xg_h, 3), "xg_away": round(xg_a, 3),
             "H": H, "A": A, "H2": H2, "WF": WF,
             "h_gf": h_gf, "h_ga": h_ga, "a_gf": a_gf, "a_ga": a_ga,
-            "standings_note": adj_note}
+            "notes": notes,
+            "tables_used": bool(trows),
+            "lineups_used": bool(isinstance(lineups, dict) and lineups.get("available"))}
 
 
 def market_probabilities(scout: dict, advanced: dict | None = None,
-                         standings: list[dict] | None = None) -> dict:
+                         tables=None, lineups=None, context=None) -> dict:
     """Probabilidades 0..1 por mercado fundindo Poisson + taxas empiricas."""
-    x = estimate_xg(scout, advanced, standings)
+    x = estimate_xg(scout, advanced, tables, lineups, context)
+    context = context if context is not None else (advanced or {}).get("context")
     H, A, H2, WF = x["H"], x["A"], x["H2"], x["WF"]
     pois = _poisson_markets(x["xg_home"], x["xg_away"])
 
@@ -371,12 +486,19 @@ def market_probabilities(scout: dict, advanced: dict | None = None,
     h2h_btts = H2["btts_rate"]
     h2h_w = min(0.12, 0.03 * H2["n"])  # H2H pesa ate 12%
 
+    # ritmo de 1a parte: media de golos HT dos dois + ajuste no over
+    ht_note = None
+    ht_adj = 0.0
+    if isinstance(H.get("avg_1h"), (int, float)) and isinstance(A.get("avg_1h"), (int, float)):
+        ht_adj = _clamp(((H["avg_1h"] + A["avg_1h"]) - 1.1) * 0.05, -0.03, 0.03)
+        ht_note = f"HT {H['avg_1h']:.2f}+{A['avg_1h']:.2f} adj {ht_adj:+.3f}"
+
     # underCards/ underCorners do trend: contexto (nao viram mercado direto aqui,
     # mas ajustam confianca de jogo travado => under)
     under_game = _safe_avg([min(1.0, (H["under_cards"] + H["under_corners"]) / 20.0),
                             min(1.0, (A["under_cards"] + A["under_corners"]) / 20.0)], 0.5)
 
-    p_o25 = _clamp(0.60 * pois["over25"] + 0.28 * emp_o25 + h2h_w * h2h_o25 + WF["over_boost"], 0.02, 0.97)
+    p_o25 = _clamp(0.60 * pois["over25"] + 0.28 * emp_o25 + h2h_w * h2h_o25 + WF["over_boost"] + ht_adj, 0.02, 0.97)
     p_o15 = _clamp(0.60 * pois["over15"] + 0.28 * emp_o15 + h2h_w * h2h_o25, 0.05, 0.98)
     p_o35 = _clamp(0.65 * pois["over35"] + 0.25 * _clamp(emp_o25 * 0.55, 0, 1) + h2h_w * h2h_o25 * 0.5, 0.01, 0.9)
     p_btts = _clamp(0.60 * pois["btts_yes"] + 0.28 * emp_btts + h2h_w * h2h_btts, 0.02, 0.95)
@@ -396,6 +518,12 @@ def market_probabilities(scout: dict, advanced: dict | None = None,
     tot_h2 = (H2["W"] + H2["D"] + H2["L"]) or 0
     if tot_h2 >= 2:
         h2h_edge = _clamp(((H2["W"] + 0.5 * H2["D"]) / tot_h2 - 0.5) * 0.5, -0.10, 0.10)
+    # sequencia invicta no confronto direto reforca o mandante focal
+    unbeaten_bonus = 0.0
+    longest = (H2.get("unbeaten_longest") or 0)
+    if longest >= 3 and tot_h2 >= 2:
+        unbeaten_bonus = min(0.05, 0.015 * (longest - 2))
+        h2h_edge = _clamp(h2h_edge + unbeaten_bonus, -0.10, 0.10)
 
     p_h = _clamp(pois["home"] * (1 + form_edge + h2h_edge), 0.02, 0.93)
     p_a = _clamp(pois["away"] * (1 - form_edge - h2h_edge), 0.02, 0.93)
@@ -421,9 +549,20 @@ def market_probabilities(scout: dict, advanced: dict | None = None,
         out["under35"] = _clamp(out["under35"] + 0.02, 0, 0.98)
         out["under25"] = _clamp(out["under25"] + 0.015, 0, 0.97)
 
+    # importancia: classico/decisao tende a jogo fechado
+    imp = (context or {}).get("importance") if isinstance(context, dict) else None
+    if imp in ("derby", "decisiva"):
+        out["under25"] = _clamp(out["under25"] + 0.02, 0, 0.97)
+        out["under35"] = _clamp(out["under35"] + 0.02, 0, 0.98)
+        out["over25"] = _clamp(out["over25"] - 0.02, 0.02, 0.97)
+        out["btts_yes"] = _clamp(out["btts_yes"] - 0.015, 0.02, 0.95)
+        out["btts_no"] = 1 - out["btts_yes"]
+
     return {"probs": out, "xg": x, "emp": {"emp_o25": emp_o25, "emp_btts": emp_btts,
                                            "h2h_o25": h2h_o25, "h2h_btts": h2h_btts,
                                            "form_edge": form_edge, "h2h_edge": h2h_edge,
+                                           "unbeaten_bonus": unbeaten_bonus,
+                                           "ht_adj": ht_adj, "ht_note": ht_note,
                                            "under_game": under_game}}
 
 
@@ -451,18 +590,21 @@ def _sanitize_odd(v, fallback=1.85) -> float:
 
 def evaluate_match(scout: dict, odds: dict | None = None,
                    advanced: dict | None = None,
-                   standings: list[dict] | None = None) -> dict:
+                   tables=None, lineups=None, context=None) -> dict:
     """Avalia UMA partida. Retorna shape compativel com o antigo JevEvaluatedMatch."""
-    mp = market_probabilities(scout, advanced, standings)
+    mp = market_probabilities(scout, advanced, tables, lineups, context)
     probs: dict = mp["probs"]
     xg = mp["xg"]
     odds = odds or {}
     full_odds = {m: _sanitize_odd(odds.get(m)) for m in probs}
 
-    # amostra: confianca cai com poucos jogos
+    # amostra: confianca cai com poucos jogos; escalacao por confirmar tira 5pp
     n_total = (xg["H"]["n"] or 0) + (xg["A"]["n"] or 0) + (xg["H2"]["n"] or 0)
     confidence = _clamp(0.55 + min(20, n_total) / 20 * 0.35
                         + (0.05 if (xg["H"]["trend_matches"] or 0) >= 8 else 0), 0.10, 0.95)
+    lin = lineups if lineups is not None else (advanced or {}).get("lineups")
+    if isinstance(lin, dict) and lin.get("available") and lin.get("confirmed") != 1:
+        confidence = _clamp(confidence - 0.05, 0.10, 0.95)
 
     # escolhe mercado: maior EV entre probs >= piso; desempate por prob
     cands = []
@@ -491,9 +633,12 @@ def evaluate_match(scout: dict, odds: dict | None = None,
         "late_goals_share": round(xg["WF"]["late_share"], 3),
         "form_edge": round(mp["emp"]["form_edge"], 3),
         "h2h_edge": round(mp["emp"]["h2h_edge"], 3),
+        "unbeaten_bonus": round(mp["emp"].get("unbeaten_bonus", 0), 3),
+        "ht_note": mp["emp"].get("ht_note"),
+        "notes": xg.get("notes") or [],
+        "tables_used": xg.get("tables_used", False),
+        "lineups_used": xg.get("lineups_used", False),
     }
-    if xg.get("standings_note"):
-        exp["standings"] = xg["standings_note"]
 
     return {
         "matchId": scout.get("match_id"),

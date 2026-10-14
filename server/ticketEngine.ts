@@ -198,13 +198,15 @@ export class TicketEngine {
     // Enriquece com o scout COMPLETO do AiScore (todas as variáveis) antes
     // do motor local — falha não bloqueia (o motor usa o contexto resumido).
     // Orçamento curto no passo rápido; enrich completo corre em background.
+    // includeLineups só no dia: escalaçes só existem perto do pontapé inicial.
+    const wantLineups = scope === 'dia';
     try {
-      const n = await aiscoreClient.enrichMatches(eligible, { maxMatches: 6, deadlineMs: 18_000 });
+      const n = await aiscoreClient.enrichMatches(eligible, { maxMatches: 6, deadlineMs: 18_000, includeLineups: wantLineups });
       if (n > 0) {
         console.log(`[AiScore] ${n} partida(s) com scout completo anexado ao motor local.`);
       }
       void aiscoreClient
-        .enrichMatches(eligible, { maxMatches: 40, deadlineMs: 90_000 })
+        .enrichMatches(eligible, { maxMatches: 40, deadlineMs: 90_000, includeLineups: wantLineups })
         .catch(() => undefined);
     } catch (err: any) {
       console.warn('[AiScore] Enriquecimento de contexto falhou (motor local segue com odds):', err?.message);
@@ -225,6 +227,8 @@ export class TicketEngine {
         context: m.context,
         scout: (m as any).scout,
         advanced: (m as any).advanced,
+        tables: (m as any).tables,
+        lineups: (m as any).lineups,
       })),
     };
 
@@ -353,11 +357,13 @@ export class TicketEngine {
     };
 
     /**
-     * Perna ousada para a Super Ousada: troca a tip pela opção audaciosa de
-     * maior valor esperado (probabilidade conservadora fixa × odd real).
-     * Só considera mercados com odd >= 1.60, senão o 1000x nunca chega.
+     * Perna ousada para a Super Ousada: é um bilhete de lotaria — maximiza
+     * a odd (piso de 25% de prob., teto 4.50 para não alucinar em zebras).
+     * Desempate pelo valor esperado. Devolve candidatos ordenados para o
+     * acumulador diversificar mercados (máx. 3 repetições por mercado).
      */
-    const boldLeg = (match: MatchItem): MatchItem => {
+    const boldLegRanked = (match: MatchItem): Array<{
+      market: MatchItem['tip']['market']; label: string; odds: number; prob: number }> => {
       const cands: Array<{ market: MatchItem['tip']['market']; label: string; odds: number; prob: number }> = [
         { market: match.tip.market, label: match.tip.label, odds: match.tip.odds, prob: match.tip.prob },
       ];
@@ -374,17 +380,21 @@ export class TicketEngine {
       if (o.away >= 1.70 && o.away <= 3.00) {
         cands.push({ market: 'away', label: `Vitória ${match.away}`, odds: o.away, prob: 42 });
       }
-      cands.sort((a, b) => (b.prob / 100) * b.odds - (a.prob / 100) * a.odds || b.odds - a.odds);
-      const best = cands[0];
-      if (best.market === match.tip.market) return match;
+      if (o.draw >= 2.80 && o.draw <= 3.80) {
+        cands.push({ market: 'draw', label: 'Empate (X)', odds: o.draw, prob: 27 });
+      }
+      const viable = cands.filter((c) => c.odds >= 1.60 && c.odds <= 4.50 && c.prob >= 25);
+      return (viable.length > 0 ? viable : cands).sort(
+        (a, b) => b.odds - a.odds || ((b.prob / 100) * b.odds - (a.prob / 100) * a.odds)
+      );
+    };
+
+    const applyBold = (match: MatchItem, market: MatchItem['tip']['market'],
+      label: string, odds: number, prob: number): MatchItem => {
+      if (market === match.tip.market) return match;
       return {
         ...match,
-        tip: {
-          market: best.market,
-          label: best.label,
-          odds: Number(best.odds.toFixed(2)),
-          prob: best.prob,
-        },
+        tip: { market, label, odds: Number(odds.toFixed(2)), prob },
       };
     };
 
@@ -396,8 +406,12 @@ export class TicketEngine {
 
       const selectedLegs: MatchItem[] = [];
       let currentCombinedOdds = 1.0;
+      const marketCount: Record<string, number> = {};
       for (const match of pool) {
-        selectedLegs.push(boldLeg(match));
+        const ranked = boldLegRanked(match);
+        const pick = ranked.find((c) => (marketCount[c.market] || 0) < 3) || ranked[0];
+        marketCount[pick.market] = (marketCount[pick.market] || 0) + 1;
+        selectedLegs.push(applyBold(match, pick.market, pick.label, pick.odds, pick.prob));
         currentCombinedOdds *= selectedLegs[selectedLegs.length - 1].tip.odds;
         if (selectedLegs.length >= SUPER_OUSADA_MAX_LEGS) break;
         if (currentCombinedOdds >= SUPER_OUSADA_MIN_ODDS && selectedLegs.length >= 5) break;

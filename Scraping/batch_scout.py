@@ -90,6 +90,7 @@ def matches_for_date(c: AiscoreClient, date: str, upcoming_only: bool = False) -
             "home": home,
             "away": away,
             "competition": cname,
+            "competition_id": cid,
             "statusId": status,
         })
     out.sort(key=lambda x: x["kickoff"] or "")
@@ -111,6 +112,7 @@ def meta_from_match_data(c: AiscoreClient, match_id: str) -> dict:
         "home": _side(get(m, "homeTeam"), "id", "name"),
         "away": _side(get(m, "awayTeam"), "id", "name"),
         "competition": cname or cid,
+        "competition_id": cid,
         "statusId": get(m, "statusId"),
     }
 
@@ -150,6 +152,7 @@ def scout_one(c: AiscoreClient, match_id: str, meta: dict | None = None) -> dict
         "away": {"id": ma.get("id") or hist.get("away_team_id"),
                  "name": ma.get("name") or hist.get("away_team")},
         "competition": meta.get("competition"),
+        "competition_id": meta.get("competition_id"),
         "home_form": hf,
         "away_form": af,
         "h2h": hist.get("h2h") or [],

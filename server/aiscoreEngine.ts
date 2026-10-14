@@ -50,6 +50,8 @@ export interface LocalDecisionInput {
     context: unknown;
     scout?: any;
     advanced?: any;
+    tables?: any;
+    lineups?: any;
   }>;
 }
 
@@ -142,6 +144,8 @@ function sanitizeOdd(v: unknown, fb = 1.85): number {
 interface TeamBlock {
   n: number; W: number; D: number; L: number; GF: number; GA: number;
   form: string; venueN: number; venueGf: number; venueGa: number;
+  venueW: number; venueD: number; venueL: number;
+  avg1h: number | null;
   cleanSheets: number; failedToScore: number;
   over25Rate: number; bttsRate: number;
   poss: number; shots: number; unbeaten: number;
@@ -168,6 +172,9 @@ function deriveFromMatches(matches: any, venueSide: 'home' | 'away') {
     venueN: v.length,
     venueGf: v.reduce((a, r) => a + num(r.gf), 0),
     venueGa: v.reduce((a, r) => a + num(r.ga), 0),
+    venueW: v.filter((r) => r.result === 'W').length,
+    venueD: v.filter((r) => r.result === 'D').length,
+    venueL: v.filter((r) => r.result === 'L').length,
   };
 }
 
@@ -196,7 +203,6 @@ function teamBlock(form: any, trend: any, venueSide: 'home' | 'away', advLast10?
   const cs = A.clean_sheets ?? F.clean_sheets ?? der.cleanSheets;
   const fts = A.failed_to_score ?? F.failed_to_score ?? der.failedToScore;
   const avg1h = A.avg_1h_goals ?? F.avg_1h_goals ?? der.avg1h;
-  void avg1h;
   return {
     n, W: num(A.W ?? F.W), D: num(A.D ?? F.D), L: num(A.L ?? F.L),
     GF: num(A.GF ?? F.GF), GA: num(A.GA ?? F.GA),
@@ -204,6 +210,10 @@ function teamBlock(form: any, trend: any, venueSide: 'home' | 'away', advLast10?
     venueN: num(vAdv.n || vSco.n || der.venueN),
     venueGf: num(vAdv.GF ?? der.venueGf),
     venueGa: num(vAdv.GA ?? der.venueGa),
+    venueW: num(vAdv.W ?? vSco.W ?? der.venueW),
+    venueD: num(vAdv.D ?? vSco.D ?? der.venueD),
+    venueL: num(vAdv.L ?? vSco.L ?? der.venueL),
+    avg1h: typeof avg1h === 'number' ? avg1h : null,
     cleanSheets: num(cs),
     failedToScore: num(fts),
     over25Rate: o25, bttsRate: bt,
@@ -215,9 +225,10 @@ function teamBlock(form: any, trend: any, venueSide: 'home' | 'away', advLast10?
 }
 
 interface H2HBlock { n: number; W: number; D: number; L: number;
-  avgTotal: number; recentAvg: number; over25Rate: number; bttsRate: number; }
+  avgTotal: number; recentAvg: number; over25Rate: number; bttsRate: number;
+  unbeatenLongest: number; }
 
-function h2hBlock(scout: any): H2HBlock {
+function h2hBlock(scout: any, advanced: any): H2HBlock {
   const rows: any[] = Array.isArray(scout?.h2h) ? scout.h2h : [];
   const fin = rows.filter((r) => r && r.finished && r.ft_home != null && r.ft_away != null);
   const summ = scout?.h2h_summary || {};
@@ -229,11 +240,14 @@ function h2hBlock(scout: any): H2HBlock {
     : avg;
   const n = fin.length;
   const btts = fin.filter((r) => num(r.ft_home) > 0 && num(r.ft_away) > 0).length;
+  const adv = advanced || {};
+  const hs = adv.h2h_stats || adv.h2h || {};
   return {
     n, W: num(summ.W), D: num(summ.D), L: num(summ.L),
     avgTotal: avg, recentAvg: recAvg,
     over25Rate: n ? totals.filter((t) => t >= 3).length / n : avg / 5,
     bttsRate: n ? btts / n : 0.3,
+    unbeatenLongest: num(hs.focal_unbeaten_run_longest),
   };
 }
 
@@ -255,14 +269,47 @@ function lateBoost(advanced: any, homeId: string | null, awayId: string | null):
 
 // ----------------------------------------------------------------- núcleo ---
 
-function estimateXg(scout: any, advanced: any): { xgH: number; xgA: number;
-  H: TeamBlock; A: TeamBlock; H2: H2HBlock; boost: number } {
+export interface EngineExtra {
+  tables?: any;
+  lineups?: any;
+  context?: any;
+}
+
+function tableRows(tables: any): any[] {
+  const t = tables && typeof tables === 'object'
+    ? (tables.tables || tables.rows || []) : [];
+  if (!Array.isArray(t)) return [];
+  const rows: any[] = [];
+  for (const x of t) {
+    if (x && typeof x === 'object' && Array.isArray((x as any).rows)) rows.push(...(x as any).rows);
+    else if (x && typeof x === 'object' && (x as any).team_id) rows.push(x);
+  }
+  return rows;
+}
+
+function lineupSide(lineups: any, side: 'home' | 'away'): {
+  avg: number | null; captainOut: boolean; unavailable: number; starters: number } {
+  const b = (lineups || {})[side] || {};
+  return {
+    avg: typeof b.avg_rating === 'number' ? b.avg_rating : null,
+    captainOut: b.captain_in_xi === false && num(b.starters) >= 11,
+    unavailable: Array.isArray(b.unavailable) ? b.unavailable.length : 0,
+    starters: num(b.starters),
+  };
+}
+
+function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: number; xgA: number;
+  H: TeamBlock; A: TeamBlock; H2: H2HBlock; boost: number; htAdj: number } {
   const adv = { ...(advanced || {}), ...(scout?.advanced || {}) };
+  const ex: EngineExtra = { ...(extra || {}) };
+  if (ex.tables == null && adv.tables != null) ex.tables = adv.tables;
+  if (ex.lineups == null && adv.lineups != null) ex.lineups = adv.lineups;
+  if (ex.context == null && adv.context != null) ex.context = adv.context;
   const hs = adv.home_stats || adv.home?.stats || {};
   const as_ = adv.away_stats || adv.away?.stats || {};
   const H = teamBlock(scout?.home_form, scout?.home_trend, 'home', hs.last10);
   const A = teamBlock(scout?.away_form, scout?.away_trend, 'away', as_.last10);
-  const H2 = h2hBlock(scout);
+  const H2 = h2hBlock(scout, adv);
   const homeId = scout?.home?.id ?? scout?.home_team_id ?? null;
   const awayId = scout?.away?.id ?? scout?.away_team_id ?? null;
   const boost = lateBoost(adv, homeId, awayId);
@@ -297,17 +344,78 @@ function estimateXg(scout: any, advanced: any): { xgH: number; xgA: number;
   xgA *= 1 - shotEdge;
   xgH *= 1.03; // resíduo de mando
 
+  // vitórias em casa/fora: aproveitamento no mando vs geral (+-5% max)
+  const venueEdge = (b: TeamBlock): number => {
+    if (!b.venueN || b.venueN < 2) return 0;
+    const vwr = b.venueW / Math.max(1, b.venueN);
+    const owr = b.W / Math.max(1, b.n || 1);
+    return clamp((vwr - owr) * 0.3, -0.05, 0.05);
+  };
+  xgH *= 1 + venueEdge(H);
+  xgA *= 1 + venueEdge(A);
+
+  // classificação: PPG + saldo-de-golos por jogo (vale p/ grupos e ligas)
+  const trows = tableRows(ex.tables);
+  if (trows.length) {
+    const byId: Record<string, any> = {};
+    for (const r of trows) if (r?.team_id) byId[r.team_id] = r;
+    const strength = (r: any): number | null => {
+      const tot = num(r?.total);
+      if (!tot || tot < 3 || r?.points == null) return null;
+      const gd = num(r?.goalDiff);
+      return (num(r.points) / tot) / 3 * 0.7 + clamp(gd / tot / 2, -1, 1) * 0.3;
+    };
+    const sH = homeId && byId[homeId] ? strength(byId[homeId]) : null;
+    const sA = awayId && byId[awayId] ? strength(byId[awayId]) : null;
+    if (sH != null && sA != null) {
+      const adj = clamp((sH - sA) * 0.12, -0.06, 0.06);
+      xgH *= 1 + adj;
+      xgA *= 1 - adj;
+    }
+  }
+
+  // escalações: nota dos titulares, capitão e desfalques
+  const lin = ex.lineups;
+  if (lin && typeof lin === 'object' && lin.available) {
+    const lh = lineupSide(lin, 'home');
+    const la = lineupSide(lin, 'away');
+    if (lh.avg != null && la.avg != null) {
+      const redge = clamp((lh.avg - la.avg) * 0.04, -0.04, 0.04);
+      xgH *= 1 + redge;
+      xgA *= 1 - redge;
+    }
+    if (lh.captainOut) xgH *= 0.98;
+    if (la.captainOut) xgA *= 0.98;
+    if (lh.unavailable) xgH *= 1 - Math.min(0.08, 0.02 * lh.unavailable);
+    if (la.unavailable) xgA *= 1 - Math.min(0.08, 0.02 * la.unavailable);
+  }
+
+  // descanso: diferença de dias desde o último jogo (+-4% max)
+  const ctx = ex.context || {};
+  if (typeof ctx.restDaysHome === 'number' && typeof ctx.restDaysAway === 'number') {
+    const adj = clamp((ctx.restDaysHome - ctx.restDaysAway) * 0.008, -0.04, 0.04);
+    xgH *= 1 + adj;
+    xgA *= 1 - adj;
+  }
+
+  // ritmo de 1a parte: média de golos HT dos dois lados
+  let htAdj = 0;
+  if (H.avg1h != null && A.avg1h != null) {
+    htAdj = clamp((H.avg1h + A.avg1h - 1.1) * 0.05, -0.03, 0.03);
+  }
+
   // segunda amostra _sc como regularizador suave (quando o scout a traz)
   const hts = scout?.home_trend_sc || adv?.home_trend_sc;
   const ats = scout?.away_trend_sc || adv?.away_trend_sc;
   if (hts?.matches) xgH = 0.9 * xgH + 0.1 * (hts.goals / hts.matches + aGa) / 2;
   if (ats?.matches) xgA = 0.9 * xgA + 0.1 * (ats.goals / ats.matches + hGa) / 2;
 
-  return { xgH: clamp(xgH || 1.2, 0.05, 4.5), xgA: clamp(xgA || 1.0, 0.05, 4.5), H, A, H2, boost };
+  return { xgH: clamp(xgH || 1.2, 0.05, 4.5), xgA: clamp(xgA || 1.0, 0.05, 4.5), H, A, H2, boost, htAdj };
 }
 
-export function localProbabilities(scout: any, advanced: any): Record<MarketType, number> {
-  const { xgH, xgA, H, A, H2, boost } = estimateXg(scout, advanced);
+export function localProbabilities(scout: any, advanced: any, extra?: EngineExtra): Record<MarketType, number> {
+  const { xgH, xgA, H, A, H2, boost, htAdj } = estimateXg(scout, advanced, extra);
+  const ctx = extra?.context || (advanced || {}).context || {};
   const pois = poissonMarkets(xgH, xgA);
 
   const empO25 = (H.n + A.n) > 0 ? (H.over25Rate + A.over25Rate) / 2 : 0.5;
@@ -315,7 +423,7 @@ export function localProbabilities(scout: any, advanced: any): Record<MarketType
   const empO15 = clamp(empO25 * 1.45, 0, 0.97);
   const h2hW = Math.min(0.12, 0.03 * H2.n);
 
-  let pO25 = clamp(0.6 * pois.over25 + 0.28 * empO25 + h2hW * H2.over25Rate + boost, 0.02, 0.97);
+  let pO25 = clamp(0.6 * pois.over25 + 0.28 * empO25 + h2hW * H2.over25Rate + boost + htAdj, 0.02, 0.97);
   const pO15 = clamp(0.6 * pois.over15 + 0.28 * empO15 + h2hW * H2.over25Rate, 0.05, 0.98);
   const pO35 = clamp(0.65 * pois.over35 + 0.25 * clamp(empO25 * 0.55, 0, 1) + h2hW * H2.over25Rate * 0.5, 0.01, 0.9);
   let pBtts = clamp(0.6 * pois.btts_yes + 0.28 * empBtts + h2hW * H2.bttsRate, 0.02, 0.95);
@@ -330,6 +438,10 @@ export function localProbabilities(scout: any, advanced: any): Record<MarketType
   let h2hEdge = 0;
   const totH2 = H2.W + H2.D + H2.L;
   if (totH2 >= 2) h2hEdge = clamp(((H2.W + 0.5 * H2.D) / totH2 - 0.5) * 0.5, -0.1, 0.1);
+  // sequência invicta no confronto direto reforça o mandante focal
+  if (H2.unbeatenLongest >= 3 && totH2 >= 2) {
+    h2hEdge = clamp(h2hEdge + Math.min(0.05, 0.015 * (H2.unbeatenLongest - 2)), -0.1, 0.1);
+  }
 
   let pH = clamp(pois.home * (1 + formEdge + h2hEdge), 0.02, 0.93);
   let pA = clamp(pois.away * (1 - formEdge - h2hEdge), 0.02, 0.93);
@@ -344,6 +456,15 @@ export function localProbabilities(scout: any, advanced: any): Record<MarketType
     // jogo travado (cards/corners under altos): reforça unders
     pU35 = clamp(pU35 + 0.02, 0, 0.98);
     pU25 = clamp(pU25 + 0.015, 0, 0.97);
+  }
+
+  // importância: clássico/decisão tende a jogo fechado
+  const imp = ctx.importance;
+  if (imp === 'derby' || imp === 'decisiva') {
+    pO25 = clamp(pO25 - 0.02, 0.02, 0.97);
+    pU25 = clamp(pU25 + 0.02, 0, 0.97);
+    pU35 = clamp(pU35 + 0.02, 0, 0.98);
+    pBtts = clamp(pBtts - 0.015, 0.02, 0.95);
   }
 
   const probs: Record<string, number> = {
@@ -399,12 +520,15 @@ function essentialsFromContext(ctx: any): any {
 }
 
 export function evaluateOne(match: LocalDecisionInput['matches'][number]): LocalEvaluatedMatch {
-  const t0 = Date.now();
-  void t0;
   const compOdds = deriveCompleteOdds(match.odds) as Record<MarketType, number>;
   const scout = match.scout || essentialsFromContext(match.context);
   const advanced = match.advanced || (match.scout as any)?.advanced || null;
-  const probs = scout ? localProbabilities(scout, advanced) : null;
+  const extra: EngineExtra = {
+    tables: (match as any).tables ?? null,
+    lineups: (match as any).lineups ?? null,
+    context: match.context ?? null,
+  };
+  const probs = scout ? localProbabilities(scout, advanced, extra) : null;
 
   // Sem scout nem contexto: cai para a leitura de mercado (nunca ideal,
   // mas mantém o pipeline a gerar em vez de falhar).
@@ -442,6 +566,9 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const edgePct = Math.round(b.edge * 100 * 10) / 10;
   const riskTier: SlipTier = calib >= 63 ? 'segura' : calib >= 48 ? 'moderada' : 'ousada';
   const labelFn = MARKET_LABELS[b.m];
+  let confidence = scout?._fromContext ? 0.55 : 0.8;
+  const lin = (match as any).lineups;
+  if (lin && lin.available && lin.confirmed !== 1) confidence = Math.max(0.1, confidence - 0.05);
   return {
     matchId: match.id,
     calibratedProb: calib,
@@ -450,7 +577,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     marketLabel: labelFn ? labelFn({ home: match.home, away: match.away }) : b.m,
     selectedOdds: b.odd,
     riskTier,
-    confidence: scout?._fromContext ? 0.55 : 0.8,
+    confidence: Math.round(confidence * 1000) / 1000,
     localScore: Math.round(calib * 0.7 + Math.max(0, edgePct) * 1.2),
   };
 }

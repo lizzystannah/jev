@@ -277,6 +277,204 @@ def _resolve_match_id(c, home: str, away: str, date: str) -> dict | None:
     return None
 
 
+def _full_standings(c, comp_id: str, season_id: str) -> list:
+    """Todas as tabelas do football/comp (todos os grupos), com contexto.
+
+    c.standings() só lê a PRIMEIRA tabela — aqui varremos recursivamente
+    cada lista que tenha um campo 'rows', herdando name/group/id mais
+    próximos. Devolve [{table_id, group, name, rows:[{team_id, team,
+    position, total, won, draw, loss, goals, goalsAgainst, goalDiff,
+    points}]}]. O Node filtra pelos 2 times do confronto.
+    """
+    from schema_decode import get as _get
+
+    comp = c.competition(comp_id, season_id=season_id)
+
+    teams: dict = {}
+
+    def collect_teams(node):
+        if isinstance(node, tuple) and len(node) == 4:
+            _, n, _, v = node
+            if n == "teams" and isinstance(v, list):
+                for tm in v:
+                    if isinstance(tm, list):
+                        tid, tname = _get(tm, "id"), _get(tm, "name")
+                        if tid:
+                            teams[tid] = tname or teams.get(tid)
+            if isinstance(v, list):
+                for x in v:
+                    collect_teams(x)
+        elif isinstance(node, list):
+            for x in node:
+                collect_teams(x)
+
+    collect_teams(comp)
+
+    found: list = []
+
+    def walk(node, ctx):
+        if isinstance(node, tuple) and len(node) == 4:
+            walk(node[3], ctx)
+            return
+        if not isinstance(node, list) or not node:
+            return
+        if all(isinstance(x, tuple) and len(x) == 4 for x in node):
+            rows_list: list = []
+            meta = dict(ctx)
+            for _, n, _, v in node:
+                # ATENÇÃO: "rows" repete-se (uma ocorrência = UMA linha);
+                # colectam-se todas. Cada valor pode ser uma linha (fields)
+                # ou, noutros payloads, lista de linhas.
+                if n == "rows" and isinstance(v, list):
+                    rows_list.append(v)
+                elif n in ("name", "group", "id") and not isinstance(v, list):
+                    meta[n] = v
+            all_rows: list = []
+            for rv in rows_list:
+                if rv and all(isinstance(x, list) for x in rv):
+                    all_rows.extend(rv)
+                elif rv and all(isinstance(x, tuple) for x in rv):
+                    all_rows.append(rv)
+            if all_rows:
+                recs = []
+                for r in all_rows:
+                    if not isinstance(r, list):
+                        continue
+                    team = _get(r, "team")
+                    fb = _get(r, "fbDetail")
+                    tid = _get(team, "id") if isinstance(team, list) else None
+                    tname = _get(team, "name") if isinstance(team, list) else None
+                    rec = {"team_id": tid, "team": tname or teams.get(tid, tid),
+                           "table_id": meta.get("id"), "group": meta.get("group"),
+                           "table": meta.get("name")}
+                    if isinstance(fb, list):
+                        for k in ("position", "total", "won", "draw", "loss",
+                                  "goals", "goalsAgainst", "goalDiff", "points"):
+                            rec[k] = _get(fb, k)
+                    recs.append(rec)
+                if recs:
+                    found.append({"table_id": meta.get("id"), "group": meta.get("group"),
+                                  "name": meta.get("name"), "rows": recs})
+                return
+        for x in node:
+            walk(x, ctx)
+
+    walk(comp, {})
+    return found
+
+
+def _parse_lineups(raw: bytes) -> dict:
+    """match/lineups bytes -> escalações resumidas por lado.
+
+    Navegação genérica (f15 envelope -> f1 container): managers (f3/f4),
+    confirmed (f5), formations (f6/f7), details f10 (casa) / f11 (fora).
+    Detail: team f1, player f2{id}, status f3 (1 = titular; ausente = reserva;
+    outro valor = indisponível), reason f4, rating f5, captain f6,
+    shirt f7, position f8 (G/D/M/F), incidents f13.
+    """
+    from decode_raw import decode
+
+    def fields(node):
+        return [it for it in (node or [])
+                if isinstance(it, tuple) and len(it) == 3]
+
+    def first_msg(items, fn):
+        for f, k, v in items:
+            if f == fn and k == "msg":
+                return v
+        return []
+
+    def scalar(items, fn):
+        for f, k, v in items:
+            if f == fn and k != "msg":
+                return v
+        return None
+
+    def squad(details) -> dict:
+        starters, subs, unavailable = [], [], []
+        ratings, by_line = [], {}
+        captain_in_xi = False
+        for det in details:
+            items = fields(det)
+
+            def val(fn, _items=items):
+                for f, k, v in _items:
+                    if f == fn and k != "msg":
+                        return v
+                return None
+
+            def sub(fn, _items=items):
+                for f, k, v in _items:
+                    if f == fn and k == "msg":
+                        return v
+                return []
+
+            team_id = next((v for f, k, v in fields(sub(1))
+                            if f == 1 and k == "str"), None)
+            pid = next((v for f, k, v in fields(sub(2))
+                        if f == 1 and k == "str"), None)
+            st, reason = val(3), val(4)
+            rating, captain, pos = val(5), val(6), val(8)
+            try:
+                rfloat = float(rating) if rating is not None else None
+            except (TypeError, ValueError):
+                rfloat = None
+            entry = {"player_id": pid, "team_id": team_id, "status": st,
+                     "reason": reason, "rating": rfloat,
+                     "position": pos, "captain": captain == 1}
+            if st not in (1, None):
+                unavailable.append(entry)
+            elif st == 1:
+                starters.append(entry)
+                if rfloat is not None:
+                    ratings.append(rfloat)
+                    by_line.setdefault(pos or "?", []).append(rfloat)
+                if captain == 1:
+                    captain_in_xi = True
+            else:
+                subs.append(entry)
+        avg = round(sum(ratings) / len(ratings), 2) if ratings else None
+        return {
+            "starters": len(starters),
+            "subs": len(subs),
+            "avg_rating": avg,
+            "by_line": {k: round(sum(v) / len(v), 2) for k, v in by_line.items()},
+            "captain_in_xi": captain_in_xi,
+            "unavailable": unavailable,
+        }
+
+    top = fields(decode(raw))
+    inner = first_msg(top, 15)
+    lin = first_msg(inner, 1)
+    if not lin:
+        return {"available": False}
+    details_home = [v for f, k, v in lin if f == 10 and k == "msg"]
+    details_away = [v for f, k, v in lin if f == 11 and k == "msg"]
+    if not details_home and not details_away:
+        return {"available": False}
+
+    def manager(fn):
+        m = first_msg(lin, fn)
+        out = {}
+        for f, k, v in fields(m):
+            if f == 1 and k == "str":
+                out["id"] = v
+            elif f == 2 and k == "str":
+                out["name"] = v
+        return out
+
+    return {
+        "available": True,
+        "confirmed": scalar(lin, 5),
+        "home_formation": scalar(lin, 6),
+        "away_formation": scalar(lin, 7),
+        "home_manager": manager(3),
+        "away_manager": manager(4),
+        "home": squad(details_home),
+        "away": squad(details_away),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     payload: dict = {}
@@ -392,6 +590,46 @@ def main(argv: list[str] | None = None) -> int:
                         h.get("away_team_id"), h.get("home_team")),
                 },
             })
+
+        if action == "tables":
+            # Classificação via football/comp (parser validado). Precisa de
+            # comp_id + season_id — o Node passa os do scout/advanced; em
+            # falta resolve-se aqui (match/data + goalDistributions).
+            # Devolve TODAS as linhas; o Node filtra pelos 2 times.
+            mid = payload.get("match_id")
+            if not mid:
+                return _out({"ok": False, "error": "match_id required"})
+            from schema_decode import decode_msg as _dm, get as _get
+
+            comp_id = payload.get("comp_id") or payload.get("competition_id") or ""
+            season_id = payload.get("season_id") or ""
+            if not comp_id:
+                wmd = c.match_data(str(mid))
+                _m = _get(wmd, "match")
+                _comp = _get(_m, "competition") if isinstance(_m, list) else None
+                comp_id = _get(_comp, "id") if isinstance(_comp, list) else None
+                if not comp_id:
+                    return _out({"ok": False, "error": "no competition id", "type": "tables"})
+            if not season_id:
+                from extract_advanced_stats import decode_goal_distributions as _gd
+                _raw = c.match_history(str(mid))
+                _gds = _gd(_raw, {})
+                season_id = next((g.get("season_id") for g in _gds if g.get("season_id")), "")
+            rows = _full_standings(c, comp_id, season_id)
+            return _out({"ok": True, "type": "tables",
+                         "data": {"comp_id": comp_id, "season_id": season_id,
+                                  "tables": rows}})
+
+        if action == "lineups":
+            # Escalações via match/lineups (navegação genérica — o payload traz
+            # um wrapper com o Lineup no campo 1). status 1 = titular;
+            # qualquer outro status = indisponível (lesão/dúvida) + reason.
+            # Sem nomes de jogadores no payload (só IDs) — sem custo extra.
+            mid = payload.get("match_id")
+            if not mid:
+                return _out({"ok": False, "error": "match_id required"})
+            return _out({"ok": True, "type": "lineups",
+                         "data": _parse_lineups(c.match_lineups(str(mid)))})
 
         if action == "day_card":
             date = str(payload.get("date") or "")
@@ -544,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return _out({
             "ok": False,
-            "error": "unrecognized payload; action one of scout|advanced|history|live_result|day_card|matches_date|odds|resolve|team_history|standings|status",
+            "error": "unrecognized payload; action one of scout|advanced|tables|lineups|history|live_result|day_card|matches_date|odds|resolve|team_history|standings|status",
         })
 
     except AiscoreError as e:

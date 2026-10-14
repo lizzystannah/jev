@@ -102,6 +102,10 @@ export interface MatchItem {
   scout?: any;
   /** Extras opcionais: { goal_distributions, home_trend_sc, away_trend_sc, h2h_stats }. */
   advanced?: any;
+  /** Classificação (bridge tables): { comp_id, season_id, tables[] }. */
+  tables?: any;
+  /** Escalações (bridge lineups): confirmed, formations, ratings, desfalques. */
+  lineups?: any;
   jevInference?: {
     calibratedProb: number;
     expectedValueEdge: number;
