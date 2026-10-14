@@ -4,7 +4,7 @@
  */
 
 import { BetSlip, MatchItem, SlipScope, SlipTier } from './types.js';
-import { marketService, leaguePriorityRank } from './marketService.js';
+import { marketService, leaguePriorityRank, isObscureLeague } from './marketService.js';
 import { callLocalInferenceEngine, type LocalDecisionInput } from './aiscoreEngine.js';
 import { aiscoreClient } from './aiscoreService.js';
 
@@ -23,6 +23,35 @@ export function leagueWeight(league?: string | null): number {
 
 export function isTopTierLeague(league?: string | null): boolean {
   return leaguePriorityRank(league) < 8;
+}
+
+// Metas de odd combinada por construção ousada.
+const OUSADA_MIN_ODDS = 10;
+const SUPER_OUSADA_MIN_ODDS = 1000;
+const SUPER_OUSADA_MAX_LEGS = 12;
+
+// Liga obscura (feminino/base/exótica) vale pouco na ordenação.
+const OBSCURE_PENALTY = 0.55;
+
+/** Score de ordenação: probabilidade calibrada × peso da liga (obscura penalizada). */
+function pickScore(m: MatchItem): number {
+  return m.tip.prob * leagueWeight(m.league) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
+}
+
+/** Valor esperado aproximado: odd × probabilidade × peso da liga (obscura penalizada). */
+function valueScore(m: MatchItem): number {
+  return m.tip.odds * (m.tip.prob / 100) * leagueWeight(m.league) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
+}
+
+/**
+ * Ligas principais primeiro: ordena cada grupo pelo critério e concatena
+ * top-tier antes do resto. Bilhetes saem com ligas grandes; as estranhas
+ * só entram para completar quando faltam jogos principais.
+ */
+function orderTopFirst(arr: MatchItem[], sortFn: (a: MatchItem, b: MatchItem) => number): MatchItem[] {
+  const top = arr.filter((m) => isTopTierLeague(m.league)).sort(sortFn);
+  const rest = arr.filter((m) => !isTopTierLeague(m.league)).sort(sortFn);
+  return [...top, ...rest];
 }
 
 /**
@@ -248,17 +277,12 @@ export class TicketEngine {
     // Remove bilhetes pendentes anteriores deste mesmo escopo para substituí-los pelos recém-calculados
     this.slips = this.slips.filter((s) => !(s.scope === scope && s.status === 'pendente'));
 
-    // Construtor Especializado para o Tier "Ousada" (Mínimo de 10.00 de Odd Combinada Total)
+    // Construtor Especializado para o Tier "Ousada" (mínimo de odd combinada)
     const buildOusadaSlip = (matchesPool: MatchItem[]): BetSlip | null => {
       if (matchesPool.length < 2) return null;
 
-      // Ordena por partidas com melhor relação valor/probabilidade (com peso de liga)
-      const pool = [...matchesPool].sort((a, b) => {
-        // Prioriza jogos com odds expressivas (>= 1.50) e bom score de probabilidade
-        const valA = a.tip.odds * (a.tip.prob / 100) * leagueWeight(a.league);
-        const valB = b.tip.odds * (b.tip.prob / 100) * leagueWeight(b.league);
-        return valB - valA;
-      });
+      // Melhor relação valor/probabilidade (peso de liga, obscura penalizada)
+      const pool = orderTopFirst([...matchesPool], (a, b) => valueScore(b) - valueScore(a));
 
       const selectedLegs: MatchItem[] = [];
       let currentCombinedOdds = 1.0;
@@ -304,8 +328,8 @@ export class TicketEngine {
         selectedLegs.push(legToAdd);
         currentCombinedOdds *= legToAdd.tip.odds;
 
-        // Se atingiu o mínimo de 10.00 de odd combinada total e tem pelo menos 3 pernas, temos um super bilhete ousado!
-        if (currentCombinedOdds >= 10.00 && selectedLegs.length >= 3) {
+        // Atingiu o mínimo de odd combinada com pelo menos 3 pernas.
+        if (currentCombinedOdds >= OUSADA_MIN_ODDS && selectedLegs.length >= 3) {
           break;
         }
 
@@ -325,12 +349,73 @@ export class TicketEngine {
       return null;
     };
 
+    /**
+     * Perna ousada para a Super Ousada: troca a tip pela opção audaciosa de
+     * maior valor esperado (probabilidade conservadora fixa × odd real).
+     * Só considera mercados com odd >= 1.60, senão o 1000x nunca chega.
+     */
+    const boldLeg = (match: MatchItem): MatchItem => {
+      const cands: Array<{ market: MatchItem['tip']['market']; label: string; odds: number; prob: number }> = [
+        { market: match.tip.market, label: match.tip.label, odds: match.tip.odds, prob: match.tip.prob },
+      ];
+      const o = match.odds;
+      if (o.btts_yes >= 1.60) {
+        cands.push({ market: 'btts_yes', label: 'Ambas marcam — Sim (BTTS)', odds: o.btts_yes, prob: 48 });
+      }
+      if ((o.over25 ?? 0) >= 1.70) {
+        cands.push({ market: 'over25', label: 'Mais de 2.5 golos (+2.5G)', odds: o.over25 as number, prob: 46 });
+      }
+      if (o.home >= 1.70 && o.home <= 3.00) {
+        cands.push({ market: 'home', label: `Vitória ${match.home}`, odds: o.home, prob: 44 });
+      }
+      if (o.away >= 1.70 && o.away <= 3.00) {
+        cands.push({ market: 'away', label: `Vitória ${match.away}`, odds: o.away, prob: 42 });
+      }
+      cands.sort((a, b) => (b.prob / 100) * b.odds - (a.prob / 100) * a.odds || b.odds - a.odds);
+      const best = cands[0];
+      if (best.market === match.tip.market) return match;
+      return {
+        ...match,
+        tip: {
+          market: best.market,
+          label: best.label,
+          odds: Number(best.odds.toFixed(2)),
+          prob: best.prob,
+        },
+      };
+    };
+
+    // SUPER OUSADA: acumulador até 1000x de odd combinada (até 12 pernas).
+    // Só é criada se bater a meta — sem 1000x não há bilhete.
+    const buildSuperOusadaSlip = (matchesPool: MatchItem[]): BetSlip | null => {
+      if (matchesPool.length < 5) return null;
+      const pool = orderTopFirst([...matchesPool], (a, b) => b.tip.odds - a.tip.odds);
+
+      const selectedLegs: MatchItem[] = [];
+      let currentCombinedOdds = 1.0;
+      for (const match of pool) {
+        selectedLegs.push(boldLeg(match));
+        currentCombinedOdds *= selectedLegs[selectedLegs.length - 1].tip.odds;
+        if (selectedLegs.length >= SUPER_OUSADA_MAX_LEGS) break;
+        if (currentCombinedOdds >= SUPER_OUSADA_MIN_ODDS && selectedLegs.length >= 5) break;
+      }
+
+      if (currentCombinedOdds < SUPER_OUSADA_MIN_ODDS || selectedLegs.length < 5) {
+        return null;
+      }
+      return this.createSlip(scope, 'ousada', selectedLegs, {
+        customTitle: `Super Ousada (${currentCombinedOdds.toFixed(2)}x)`,
+        rationale: `Acumulador extremo com odd combinada de ${currentCombinedOdds.toFixed(2)} em ${selectedLegs.length} pernas de ligas principais, para quem caça o prémio grande.`,
+      });
+    };
+
     const candidateSlips: BetSlip[] = [];
     const legsMap = LEGS_CONFIG[scope];
 
-    // 1. Bilhetes Seguros (2 a 3 jogos com alta probabilidade individual, peso de liga)
-    const sortedSegura = [...(buckets.segura.length >= 2 ? buckets.segura : evaluatedMatches)].sort(
-      (a, b) => b.tip.prob * leagueWeight(b.league) - a.tip.prob * leagueWeight(a.league)
+    // 1. Bilhetes Seguros (ligas principais primeiro, obscuras só p/ completar)
+    const sortedSegura = orderTopFirst(
+      [...(buckets.segura.length >= 2 ? buckets.segura : evaluatedMatches)],
+      (a, b) => pickScore(b) - pickScore(a)
     );
     if (sortedSegura.length >= legsMap.segura) {
       candidateSlips.push(this.createSlip(scope, 'segura', ensureTopTierLegs(sortedSegura.slice(0, legsMap.segura), sortedSegura)));
@@ -339,9 +424,10 @@ export class TicketEngine {
       }
     }
 
-    // 2. Bilhetes Moderados (3 a 4 jogos com equilíbrio entre odd e probabilidade, peso de liga)
-    const sortedModerada = [...(buckets.moderada.length >= 2 ? buckets.moderada : evaluatedMatches)].sort(
-      (a, b) => (b.tip.odds * b.tip.prob * leagueWeight(b.league)) - (a.tip.odds * a.tip.prob * leagueWeight(a.league))
+    // 2. Bilhetes Moderados (ligas principais primeiro, obscuras só p/ completar)
+    const sortedModerada = orderTopFirst(
+      [...(buckets.moderada.length >= 2 ? buckets.moderada : evaluatedMatches)],
+      (a, b) => valueScore(b) - valueScore(a)
     );
     if (sortedModerada.length >= legsMap.moderada) {
       candidateSlips.push(this.createSlip(scope, 'moderada', ensureTopTierLegs(sortedModerada.slice(0, legsMap.moderada), sortedModerada)));
@@ -350,7 +436,7 @@ export class TicketEngine {
       }
     }
 
-    // 3. Bilhetes Ousados (GARANTIA RIGOROSA: MÍNIMO DE 10.00 DE ODDS TOTAIS)
+    // 3. Bilhetes Ousados (mínimo de odd combinada garantido)
     const ousadaSlip1 = buildOusadaSlip(evaluatedMatches);
     if (ousadaSlip1) {
       candidateSlips.push(ousadaSlip1);
@@ -363,6 +449,12 @@ export class TicketEngine {
       if (ousadaSlip2 && ousadaSlip2.combinedOdds !== ousadaSlip1?.combinedOdds) {
         candidateSlips.push(ousadaSlip2);
       }
+    }
+
+    // 4. SUPER OUSADA (1000x+): entra primeiro na lista de ousadas pelo odd.
+    const superOusada = buildSuperOusadaSlip(evaluatedMatches);
+    if (superOusada) {
+      candidateSlips.push(superOusada);
     }
 
     // REGRA DE NEGÓCIO: Reter os melhores bilhetes com variedade entre os tiers (até 5 bilhetes no total)

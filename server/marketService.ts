@@ -34,6 +34,11 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
 /** Penaliza feminino/base/obscuro — espelha _COMP_PENALTY_KEYS do bridge. */
 const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|u1\d|u2\d|juvenil|sub-?20|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal/i;
 
+/** Liga obscura (feminino/base/exótica): entra por último nos bilhetes. */
+export function isObscureLeague(league?: string | null): boolean {
+  return LEAGUE_PENALTY.test(league || '');
+}
+
 export function leaguePriorityRank(league?: string | null): number {
   const s = league || '';
   const idx = LEAGUE_PRIORITY.findIndex((l) => l.test.test(s) && !(l.exclude && l.exclude.test(s)));
