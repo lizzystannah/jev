@@ -425,12 +425,39 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
             xg_a *= 0.98
             lin_note = (lin_note + " " if lin_note else "") + "capitao fora fora"
         uh, ua = len(lh["unavailable"]), len(la["unavailable"])
-        if uh:
-            xg_h *= 1 - min(0.08, 0.02 * uh)
-        if ua:
-            xg_a *= 1 - min(0.08, 0.02 * ua)
+
+        def _pos_hit(unav_list):
+            """Peso por posição: F/M desfalcado tira golos próprios;
+            D/G desfalcado dá golos ao adversário."""
+            own, opp = 0.0, 0.0
+            for u in unav_list or []:
+                pos = (u.get("position") or "").upper()
+                if pos == "F":
+                    own += 0.03
+                elif pos == "M":
+                    own += 0.02
+                elif pos == "D":
+                    opp += 0.025
+                elif pos == "G":
+                    opp += 0.04
+                else:
+                    own += 0.02
+            return min(0.10, own), min(0.10, opp)
+
+        own_h, opp_h = _pos_hit(lh["unavailable"])
+        own_a, opp_a = _pos_hit(la["unavailable"])
+        if own_h or opp_a:
+            xg_h *= (1 - own_h) * (1 + opp_a)
+        if own_a or opp_h:
+            xg_a *= (1 - own_a) * (1 + opp_h)
         if uh or ua:
-            lin_note = (lin_note + " " if lin_note else "") + f"desfalques {uh}v{ua}"
+            det_h = "+".join(
+                f"{p or '?'}" for p in
+                [(u.get("position") or "?") for u in lh["unavailable"]])
+            det_a = "+".join(
+                f"{p or '?'}" for p in
+                [(u.get("position") or "?") for u in la["unavailable"]])
+            lin_note = (lin_note + " " if lin_note else "") + f"desfalques {det_h}v{det_a}"
         if lineups.get("confirmed") != 1:
             lin_note = (lin_note + " " if lin_note else "") + "escalacao nao confirmada"
         if lin_note:

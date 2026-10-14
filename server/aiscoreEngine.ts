@@ -288,14 +288,28 @@ function tableRows(tables: any): any[] {
 }
 
 function lineupSide(lineups: any, side: 'home' | 'away'): {
-  avg: number | null; captainOut: boolean; unavailable: number; starters: number } {
+  avg: number | null; captainOut: boolean; unavailable: string[]; starters: number } {
   const b = (lineups || {})[side] || {};
   return {
     avg: typeof b.avg_rating === 'number' ? b.avg_rating : null,
     captainOut: b.captain_in_xi === false && num(b.starters) >= 11,
-    unavailable: Array.isArray(b.unavailable) ? b.unavailable.length : 0,
+    unavailable: Array.isArray(b.unavailable) ? b.unavailable.map((u: any) => String(u?.position || '?')) : [],
     starters: num(b.starters),
   };
+}
+
+/** Peso por posição: F/M tira golos próprios; D/G dá golos ao adversário. */
+function posHit(positions: string[]): [number, number] {
+  let own = 0, opp = 0;
+  for (const p of positions) {
+    const pos = (p || '').toUpperCase();
+    if (pos === 'F') own += 0.03;
+    else if (pos === 'M') own += 0.02;
+    else if (pos === 'D') opp += 0.025;
+    else if (pos === 'G') opp += 0.04;
+    else own += 0.02;
+  }
+  return [Math.min(0.10, own), Math.min(0.10, opp)];
 }
 
 function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: number; xgA: number;
@@ -386,8 +400,10 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
     }
     if (lh.captainOut) xgH *= 0.98;
     if (la.captainOut) xgA *= 0.98;
-    if (lh.unavailable) xgH *= 1 - Math.min(0.08, 0.02 * lh.unavailable);
-    if (la.unavailable) xgA *= 1 - Math.min(0.08, 0.02 * la.unavailable);
+    const [ownH, oppH] = posHit(lh.unavailable);
+    const [ownA, oppA] = posHit(la.unavailable);
+    if (ownH || oppA) xgH *= (1 - ownH) * (1 + oppA);
+    if (ownA || oppH) xgA *= (1 - ownA) * (1 + oppH);
   }
 
   // descanso: diferença de dias desde o último jogo (+-4% max)
