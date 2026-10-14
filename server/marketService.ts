@@ -39,6 +39,12 @@ export function isObscureLeague(league?: string | null): boolean {
   return LEAGUE_PENALTY.test(league || '');
 }
 
+/** Ligas femininas — excluídas dos bilhetes por completo. */
+const WOMENS_LEAGUE = /femenin|feminin|women|\(w\)|mujeres|ladies|woman|female/i;
+export function isWomensLeague(league?: string | null): boolean {
+  return WOMENS_LEAGUE.test(league || '');
+}
+
 export function leaguePriorityRank(league?: string | null): number {
   const s = league || '';
   const idx = LEAGUE_PRIORITY.findIndex((l) => l.test.test(s) && !(l.exclude && l.exclude.test(s)));
@@ -474,6 +480,7 @@ export class MarketService {
           if (!home || !away) continue;
 
           const league = meta.competition || 'AiScore';
+          if (isWomensLeague(league)) continue; // femininos nem entram no mercado
 
           const daysFromNow = getCalendarDayDiff(kickoffAt, timezone);
           const kickoffInSeconds = Math.max(30, Math.round((kickoffAt - now) / 1000));

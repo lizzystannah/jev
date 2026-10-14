@@ -4,7 +4,7 @@
  */
 
 import { BetSlip, MatchItem, SlipScope, SlipTier } from './types.js';
-import { marketService, leaguePriorityRank, isObscureLeague } from './marketService.js';
+import { marketService, leaguePriorityRank, isObscureLeague, isWomensLeague } from './marketService.js';
 import { callLocalInferenceEngine, type LocalDecisionInput } from './aiscoreEngine.js';
 import { aiscoreClient } from './aiscoreService.js';
 
@@ -188,7 +188,10 @@ export class TicketEngine {
       return matchLeague && matchScopeMatches && notResolved && isFutureMatch;
     });
 
-    if (filtered.length === 0) {
+    // Femininos fora: nem entram no pool de avaliação/combinação.
+    const eligible = filtered.filter((m) => !isWomensLeague(m.league));
+
+    if (eligible.length === 0) {
       return { generated: [], all: this.slips, jevLatencyMs: 0 };
     }
 
@@ -196,12 +199,12 @@ export class TicketEngine {
     // do motor local — falha não bloqueia (o motor usa o contexto resumido).
     // Orçamento curto no passo rápido; enrich completo corre em background.
     try {
-      const n = await aiscoreClient.enrichMatches(filtered, { maxMatches: 6, deadlineMs: 18_000 });
+      const n = await aiscoreClient.enrichMatches(eligible, { maxMatches: 6, deadlineMs: 18_000 });
       if (n > 0) {
         console.log(`[AiScore] ${n} partida(s) com scout completo anexado ao motor local.`);
       }
       void aiscoreClient
-        .enrichMatches(filtered, { maxMatches: 40, deadlineMs: 90_000 })
+        .enrichMatches(eligible, { maxMatches: 40, deadlineMs: 90_000 })
         .catch(() => undefined);
     } catch (err: any) {
       console.warn('[AiScore] Enriquecimento de contexto falhou (motor local segue com odds):', err?.message);
@@ -212,7 +215,7 @@ export class TicketEngine {
     const localInput: LocalDecisionInput = {
       scope,
       horizonDays,
-      matches: filtered.map((m) => ({
+      matches: eligible.map((m) => ({
         id: m.id,
         league: m.league,
         home: m.home,
@@ -232,7 +235,7 @@ export class TicketEngine {
     // Atualiza cada partida no pool com a probabilidade calibrada local
     const matchEvaluationsMap = new Map(localResponse.evaluations.map((e) => [e.matchId, e]));
 
-    const evaluatedMatches: MatchItem[] = filtered.map((m) => {
+    const evaluatedMatches: MatchItem[] = eligible.map((m) => {
       const ev = matchEvaluationsMap.get(m.id);
       if (!ev) return m;
 
