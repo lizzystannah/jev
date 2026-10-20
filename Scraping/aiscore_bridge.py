@@ -88,9 +88,24 @@ _COMP_PENALTY_KEYS = (
     "nadeshiko", "nepal", "tanzania", "uganda", "kenya", "zambia",
 )
 
+# Divisões inferiores: sempre atrás de ligas principais e de campeonatos
+# desconhecidos (mas de primeira divisão).
+_COMP_LOWER_KEYS = (
+    "segunda", "segundo", "serie b", "serie c", "serie d",
+    "2. bundesliga", "bundesliga 2", "ligue 2", "la liga 2", "laliga 2",
+    "hypermotion", "championship", "league one", "league two",
+    "national league", "regionalliga", "oberliga", "landesliga",
+    "eerste divisie", "tweede divisie", "challenger pro league",
+    "primera b", "primera c", "primera nacional", "primera federacion",
+    "segunda federacion", "tercera federacion", "tercera division",
+    "liga 2", "liga 3", "liga portugal 2", "campeonato de portugal",
+)
+
 
 def _comp_priority(name: str | None) -> int:
     s = (name or "").lower()
+    if any(k in s for k in _COMP_LOWER_KEYS):
+        return 149
     rank = 99
     for r, key in _COMP_PRIORITY:
         if key not in s:

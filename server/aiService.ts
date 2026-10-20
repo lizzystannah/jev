@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { MatchItem, BetSlip } from './types.js';
 import { ticketEngine } from './ticketEngine.js';
+import { isMainLeague, leaguePriorityRank } from './marketService.js';
 
 let geminiClient: GoogleGenAI | null = null;
 
@@ -177,10 +178,17 @@ export async function generateSmartSlipWithAi(
   userPreference?: string
 ): Promise<BetSlip> {
   const now = Date.now();
-  const available = matches.filter((m) => m.status !== 'resolved' && m.kickoffAt > now);
+  // Só ligas principais: nada de segunda/terceira divisão no bilhete inteligente.
+  const available = matches
+    .filter((m) => m.status !== 'resolved' && m.kickoffAt > now && isMainLeague(m.league))
+    .sort(
+      (a, b) =>
+        leaguePriorityRank(a.league) - leaguePriorityRank(b.league) ||
+        b.tip.prob - a.tip.prob
+    );
 
   if (available.length < 2) {
-    throw new Error('Não há jogos futuros suficientes disponíveis para gerar o bilhete inteligente.');
+    throw new Error('Não há jogos futuros de ligas principais suficientes para gerar o bilhete inteligente.');
   }
 
   const matchesSummary = available.slice(0, 10).map((m) => ({

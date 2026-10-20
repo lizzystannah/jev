@@ -20,7 +20,6 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
   },
   // "Copa de la Liga" (Peru/Bolívia/Catar) não é a La Liga espanhola.
   { test: /la liga|laliga/i, exclude: /copa de la liga/i, label: 'La Liga' },
-  { test: /spanish.*(rfef|federaci)|primera federaci/i, label: 'Espanha (base)' },
   { test: /serie a/i, exclude: /serie [bcd]|femen|feminin|women|mujer/i, label: 'Serie A' },
   { test: /bundesliga/i, exclude: /femen|feminin|women|mujer| ii\b| 2\b/i, label: 'Bundesliga' },
   { test: /ligue 1/i, exclude: /femen|feminin|women|mujer/i, label: 'Ligue 1' },
@@ -45,8 +44,35 @@ export function isWomensLeague(league?: string | null): boolean {
   return WOMENS_LEAGUE.test(league || '');
 }
 
+function normalizeLeague(league?: string | null): string {
+  return (league || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Segunda/terceira divisão (e ligas de acesso): NUNCA entram em bilhetes.
+ * Cobre Serie B/C/D, Segunda División, 2. Bundesliga, Ligue 2, Championship,
+ * LaLiga Hypermotion, Primera Federación, Liga 3, Regionalliga, etc.
+ */
+const LOWER_DIVISION =
+  /\bserie\s*[b-d]\b|\b(segunda|segundo)\b|\b(2|ii|2a)\s*\.?\s*(divis|division|divisao|divisione|liga|bundesliga|league)\b|\b(bundesliga|ligue|la ?liga|laliga|league|liga|divisie|division|divisao)\s*(2|ii|3|iii)\b|\b(championship|league one|league two|national league|regionalliga|oberliga|landesliga|verbandsliga|superettan|challenger pro league|eerste divisie|tweede divisie|keuken kampioen|hypermotion|campeonato de portugal|liga portugal 2|primera b|primera c|primera nacional|primera federacion|segunda federacion|tercera federacion|tercera division|tff 1\.\s*lig|1\.\s*lig|liga ii|liga 2|liga 3|division 2|division 3|divisao 2|divisao 3|divisie 2|divisie 3)\b/;
+
+export function isLowerDivisionLeague(league?: string | null): boolean {
+  return LOWER_DIVISION.test(normalizeLeague(league));
+}
+
+/** Liga principal para fins de bilhete: masculina, não exótica e não divisão inferior. */
+export function isMainLeague(league?: string | null): boolean {
+  return !isWomensLeague(league) && !isObscureLeague(league) && !isLowerDivisionLeague(league);
+}
+
 export function leaguePriorityRank(league?: string | null): number {
   const s = league || '';
+  // Divisões inferiores ficam depois de qualquer liga principal/desconhecida.
+  if (isLowerDivisionLeague(s)) return 120;
   const idx = LEAGUE_PRIORITY.findIndex((l) => l.test.test(s) && !(l.exclude && l.exclude.test(s)));
   const rank = idx === -1 ? 99 : idx;
   if (rank < 99 && LEAGUE_PENALTY.test(s)) return rank + 50;
