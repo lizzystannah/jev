@@ -248,6 +248,7 @@ export interface AiscoreMatchMeta {
   home: ScoutTeamRef;
   away: ScoutTeamRef;
   competition?: string | null;
+  competition_id?: string | null;
   statusId?: number | null;
 }
 

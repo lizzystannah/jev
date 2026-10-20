@@ -36,12 +36,43 @@ if str(WORKSPACE) not in sys.path:
 
 TZ = timezone(timedelta(hours=-3))
 
+# IDs oficiais (AiScore) das competições permitidas nos bilhetes.
+# O nome localizado engana ("Premier League egipto/siria/iraque/catar");
+# o ID não. Fonte: football/comp/map + day_card.
+_COMP_ID_PRIORITY: dict[str, int] = {
+    "xo17pji02i37jw5": 0,   # UEFA Champions League
+    "2jr7owi6es1q0em": 1,   # UEFA Europa League
+    "mo07dni2vfxknxy": 2,   # English Premier League
+    "yzrkn6iorbjqle4": 3,   # Spanish La Liga
+    "r8lk2di1xb0736d": 4,   # Italian Serie A
+    "1edq09ignayqxgo": 5,   # Bundesliga
+    "5xvkjoilecr7938": 6,   # Ligue 1
+    "n527r3ipms17evx": 7,   # Portuguese Primeira Liga
+    "r8lk2dil5t0736d": 7,   # Brazilian Serie A
+    "zjek33ien6ivko2": 7,   # UEFA Conference League
+}
+
+# Divisões inferiores conhecidas: nunca à frente das principais.
+_COMP_LOWER_ID: set[str] = {
+    "8vrqwnin9sjqn2o",  # English Championship
+    "w34kgmixet1ko92",  # 2. Bundesliga
+    "g63kv9i9gcz7ezv",  # Italian Serie B
+    "9oj7x9i9rhe7g3y",  # Spanish La Liga 2
+    "0m2q15i5obp76xw",  # French Ligue 2
+    "5wv78xin5hjkrjn",  # Liga Portugal 2
+    "59gklzinwwa37xd",  # Liga 3 portuguesa
+}
+
 # Prioridade de competições (ligas principais primeiro).
 # Usado no day_card para que o corte limit/odds_limit não enterre
 # Premier League, La Liga, Champions, Europa etc. no meio de 1000+ jogos.
 _COMP_PRIORITY: list[tuple[int, str]] = [
     (0, "champions"),
+    (0, "liga de campeones"),
     (1, "europa league"),
+    (1, "liga europa"),
+    (2, "liga premier de inglaterra"),
+    (2, "premier league inglesa"),
     (2, "premier league"),
     (3, "la liga"),
     (4, "primera divisi"),  # La Liga / La Liga 2 (espanhol)
@@ -51,7 +82,9 @@ _COMP_PRIORITY: list[tuple[int, str]] = [
     (8, "brasileir"),
     (9, "liga portugal"),
     (10, "primeira liga"),
+    (10, "liga primera de portugal"),
     (11, "conference league"),
+    (11, "conferencia"),
 ]
 
 # Exclusões por chave (falsos positivos verificados no feed).
@@ -61,10 +94,11 @@ _COMP_EXCLUDE: dict[str, tuple[str, ...]] = {
     "premier league": (
         "del norte", "northern", "del sur", "southern", "copa",
         "internacional", "u21", "sub21", "sub 21", "s21",
-        "femen", "feminin", "women", "mujer", " de ", "del ",
+        "femen", "feminin", "women", "mujer",
         "kenya", "kenia", "bhutan", "but", "mongol", "nigeria",
         "ghana", "jamaica", "burundi", "shillong", "estonia",
         "irlanda", "ireland", "wales", "gales", "scotland", "escocia",
+        "egip", "siria", "iraq", "catar", "qatar", "libia", "argelia",
     ),
     "la liga": ("copa de la liga",),
     "serie a": ("serie b", "serie c", "serie d", "femen", "feminin", "women", "mujer"),
@@ -104,7 +138,15 @@ _COMP_LOWER_KEYS = (
 )
 
 
-def _comp_priority(name: str | None) -> int:
+def _comp_priority(name: str | None, comp_id: str | None = None) -> int:
+    cid = (comp_id or "").strip()
+    if cid:
+        if cid in _COMP_LOWER_ID:
+            return 149
+        if cid in _COMP_ID_PRIORITY:
+            return _COMP_ID_PRIORITY[cid]
+        # Competição fora da whitelist: não confiar no nome localizado.
+        return 99
     s = (name or "").lower()
     if any(k in s for k in _COMP_LOWER_KEYS):
         return 149
@@ -663,7 +705,7 @@ def main(argv: list[str] | None = None) -> int:
             # o dia (1000+ jogos) e só sobram ligas obscuras.
             metas.sort(
                 key=lambda m: (
-                    _comp_priority(m.get("competition")),
+                    _comp_priority(m.get("competition"), m.get("competition_id")),
                     m.get("kickoff") or "",
                 )
             )
@@ -705,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             metas.sort(
                 key=lambda m: (
-                    _comp_priority(m.get("competition")),
+                    _comp_priority(m.get("competition"), m.get("competition_id")),
                     m.get("kickoff") or "",
                 )
             )

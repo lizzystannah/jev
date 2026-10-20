@@ -81,6 +81,7 @@ export interface MatchContext {
 export interface MatchItem {
   id: string;
   league: string;
+  competitionId?: string | null;
   home: string;
   away: string;
   time: string;

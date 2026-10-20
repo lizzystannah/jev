@@ -10,12 +10,12 @@ import {
 
 /** Ligas principais primeiro na ingestão/seleção (peso espelha ticketEngine). */
 export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: string }> = [
-  { test: /champions/i, exclude: /femen|women|mujer|youth|u ?19|juvenil/i, label: 'Champions League' },
-  { test: /europa league/i, exclude: /femen|women|mujer|conference/i, label: 'Europa League' },
+  { test: /champions|liga de campeones|liga dos campeoes/i, exclude: /femen|women|mujer|youth|u ?19|juvenil/i, label: 'Champions League' },
+  { test: /europa league|liga europa/i, exclude: /femen|women|mujer|conference|conferencia/i, label: 'Europa League' },
   // "Premier League del Norte", U21, Butão, etc. NÃO são a Premier League inglesa.
   {
-    test: /premier league/i,
-    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer| de |del |kenya|kenia|bhutan|but[aã]o|mongol|nigeria|ghana|jamaica|burundi|shillong|mizoram|goa|kerala|calcutt|estonia|irlanda|ireland|wales|gales|scotland|escocia/i,
+    test: /premier league|liga premier de inglaterra|premier league inglesa/i,
+    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer|kenya|kenia|bhutan|but[aã]o|mongol|nigeria|ghana|jamaica|burundi|shillong|mizoram|goa|kerala|calcutt|estonia|irlanda|ireland|wales|gales|scotland|escocia|egip|siria|iraq|catar|qatar|libia|argelia|tunez|jordania|kuwait|bahrein|barein|oman|libano|yemen|sudan|etiopia|uganda|tanzania|zambia|malaui|botsuana|sierra|gana|senegal|mali|niger|burkina|benin|togo|guine|maurit|ruanda|angola|mozambique|zimbabue|camboja|vietnam|indonesia|filipinas|singapur|malasia|myanmar|tailandia|laos|mongolia|nepal|butao|maldivas|sri lanka|bangladesh|india|paquistao|tajiquistao|turcomenistao|uzbequistao|quirguistao|cazaquistao|armenia|azerbaijao|georgia|moldavia|letonia|lituania|finlandia|islandia|noruega|suecia|dinamarca|belgica|holanda|austria|suica|polonia|chequia|eslovaquia|hungria|romenia|bulgaria|servia|croacia|eslovenia|bosnia|macedonia|albania|grecia|turquia|chipre|malta|luxemburgo|andorra|gibraltar|feroe|kosovo|montenegro/i,
     label: 'Premier League',
   },
   // "Copa de la Liga" (Peru/Bolívia/Catar) não é a La Liga espanhola.
@@ -24,11 +24,41 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
   { test: /bundesliga/i, exclude: /femen|feminin|women|mujer| ii\b| 2\b/i, label: 'Bundesliga' },
   { test: /ligue 1/i, exclude: /femen|feminin|women|mujer/i, label: 'Ligue 1' },
   {
-    test: /brasileir|liga portugal|primeira liga|conference/i,
+    test: /brasileir|liga portugal|liga primera de portugal|primeira liga|conference|conferencia/i,
     exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil/i,
     label: 'Outras top',
   },
 ];
+
+/**
+ * IDs oficiais do AiScore das competições que podem entrar em bilhetes.
+ * O nome localizado varia ("Premier League", "Liga Premier de Inglaterra",
+ * "Premier League egipcia"...) e não distingue Catar/Egito/Síria de Inglaterra;
+ * o ID distingue. Fonte: football/comp/map + day_card.
+ */
+export const MAIN_COMPETITION_IDS: Map<string, number> = new Map([
+  ['xo17pji02i37jw5', 0], // UEFA Champions League
+  ['2jr7owi6es1q0em', 1], // UEFA Europa League
+  ['mo07dni2vfxknxy', 2], // English Premier League
+  ['yzrkn6iorbjqle4', 3], // Spanish La Liga
+  ['r8lk2di1xb0736d', 4], // Italian Serie A
+  ['1edq09ignayqxgo', 5], // Bundesliga
+  ['5xvkjoilecr7938', 6], // Ligue 1
+  ['n527r3ipms17evx', 7], // Portuguese Primeira Liga
+  ['r8lk2dil5t0736d', 7], // Brazilian Serie A
+  ['zjek33ien6ivko2', 7], // UEFA Conference League
+]);
+
+/** IDs de divisões inferiores conhecidas (nunca entram em bilhetes). */
+export const LOWER_COMPETITION_IDS: Set<string> = new Set([
+  '8vrqwnin9sjqn2o', // English Championship
+  'w34kgmixet1ko92', // 2. Bundesliga
+  'g63kv9i9gcz7ezv', // Italian Serie B
+  '9oj7x9i9rhe7g3y', // Spanish La Liga 2
+  '0m2q15i5obp76xw', // French Ligue 2
+  '5wv78xin5hjkrjn', // Liga Portugal 2
+  '59gklzinwwa37xd', // Liga 3 portuguesa
+]);
 
 /** Penaliza feminino/base/obscuro — espelha _COMP_PENALTY_KEYS do bridge. */
 const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|reserva|reserve|reserves|reservas|filial|filiais|u1\d|u2\d|juvenil|sub-?2\d|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal|mizoram|goa|kerala|calcutt|tanzania|uganda|kenya|zambia/i;
@@ -64,13 +94,30 @@ export function isLowerDivisionLeague(league?: string | null): boolean {
   return LOWER_DIVISION.test(normalizeLeague(league));
 }
 
-/** Liga principal para fins de bilhete: masculina, não exótica e não divisão inferior. */
-export function isMainLeague(league?: string | null): boolean {
-  return !isWomensLeague(league) && !isObscureLeague(league) && !isLowerDivisionLeague(league);
+/**
+ * Liga principal para fins de bilhete: masculina, não exótica e não divisão inferior.
+ * Com `competitionId` (AiScore), só a whitelist oficial conta — é o que impede
+ * "Premier League egipcia/siria/iraquí" e a "Premier League" do Catar.
+ */
+export function isMainLeague(league?: string | null, competitionId?: string | null): boolean {
+  if (isWomensLeague(league) || isObscureLeague(league) || isLowerDivisionLeague(league)) {
+    return false;
+  }
+  const cid = (competitionId || '').trim();
+  if (cid) return MAIN_COMPETITION_IDS.has(cid);
+  return leaguePriorityRank(league) < 99;
 }
 
-export function leaguePriorityRank(league?: string | null): number {
+export function leaguePriorityRank(league?: string | null, competitionId?: string | null): number {
   const s = league || '';
+  const cid = (competitionId || '').trim();
+  if (cid) {
+    const byId = MAIN_COMPETITION_IDS.get(cid);
+    if (byId !== undefined) return byId;
+    if (LOWER_COMPETITION_IDS.has(cid)) return 120;
+    // Competição desconhecida no feed: não confiar no nome localizado.
+    return 99;
+  }
   // Divisões inferiores ficam depois de qualquer liga principal/desconhecida.
   if (isLowerDivisionLeague(s)) return 120;
   const idx = LEAGUE_PRIORITY.findIndex((l) => l.test.test(s) && !(l.exclude && l.exclude.test(s)));
@@ -553,6 +600,7 @@ export class MarketService {
           const rawItem = {
             id: `aiscore_${meta.match_id}`,
             league,
+            competitionId: meta.competition_id ?? null,
             home,
             away,
             time: timeStr,

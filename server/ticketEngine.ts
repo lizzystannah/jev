@@ -15,14 +15,14 @@ import { aiscoreClient } from './aiscoreService.js';
  */
 const LEAGUE_WEIGHTS = [1.30, 1.22, 1.18, 1.15, 1.10, 1.10, 1.08, 1.05];
 
-export function leagueWeight(league?: string | null): number {
-  const rank = leaguePriorityRank(league);
+export function leagueWeight(league?: string | null, competitionId?: string | null): number {
+  const rank = leaguePriorityRank(league, competitionId);
   if (rank >= 99) return 1.0;
   return LEAGUE_WEIGHTS[Math.min(rank, LEAGUE_WEIGHTS.length - 1)] ?? 1.0;
 }
 
-export function isTopTierLeague(league?: string | null): boolean {
-  return leaguePriorityRank(league) < 8;
+export function isTopTierLeague(league?: string | null, competitionId?: string | null): boolean {
+  return leaguePriorityRank(league, competitionId) < 8;
 }
 
 // Metas de odd combinada por construção ousada.
@@ -36,12 +36,12 @@ const OBSCURE_PENALTY = 0.55;
 
 /** Score de ordenação: probabilidade calibrada × peso da liga (obscura penalizada). */
 function pickScore(m: MatchItem): number {
-  return m.tip.prob * leagueWeight(m.league) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
+  return m.tip.prob * leagueWeight(m.league, m.competitionId) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
 }
 
 /** Valor esperado aproximado: odd × probabilidade × peso da liga (obscura penalizada). */
 function valueScore(m: MatchItem): number {
-  return m.tip.odds * (m.tip.prob / 100) * leagueWeight(m.league) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
+  return m.tip.odds * (m.tip.prob / 100) * leagueWeight(m.league, m.competitionId) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
 }
 
 /**
@@ -50,8 +50,8 @@ function valueScore(m: MatchItem): number {
  * só entram para completar quando faltam jogos principais.
  */
 function orderTopFirst(arr: MatchItem[], sortFn: (a: MatchItem, b: MatchItem) => number): MatchItem[] {
-  const top = arr.filter((m) => isTopTierLeague(m.league)).sort(sortFn);
-  const rest = arr.filter((m) => !isTopTierLeague(m.league)).sort(sortFn);
+  const top = arr.filter((m) => isTopTierLeague(m.league, m.competitionId)).sort(sortFn);
+  const rest = arr.filter((m) => !isTopTierLeague(m.league, m.competitionId)).sort(sortFn);
   return [...top, ...rest];
 }
 
@@ -60,10 +60,10 @@ function orderTopFirst(arr: MatchItem[], sortFn: (a: MatchItem, b: MatchItem) =>
  * mas as pernas selecionadas não, troca a última perna pela melhor top-tier.
  */
 function ensureTopTierLegs(legs: MatchItem[], pool: MatchItem[]): MatchItem[] {
-  if (legs.length === 0 || legs.some((l) => isTopTierLeague(l.league))) return legs;
+  if (legs.length === 0 || legs.some((l) => isTopTierLeague(l.league, l.competitionId))) return legs;
   const candidates = pool
-    .filter((m) => isTopTierLeague(m.league) && !legs.some((l) => l.id === m.id))
-    .sort((a, b) => b.tip.prob * leagueWeight(b.league) - a.tip.prob * leagueWeight(a.league));
+    .filter((m) => isTopTierLeague(m.league, m.competitionId) && !legs.some((l) => l.id === m.id))
+    .sort((a, b) => b.tip.prob * leagueWeight(b.league, b.competitionId) - a.tip.prob * leagueWeight(a.league, a.competitionId));
   if (candidates.length === 0) return legs;
   return [...legs.slice(0, -1), candidates[0]];
 }
@@ -80,7 +80,7 @@ function legsCoherence(legs: MatchItem[]): number {
   const avgProb = probs.reduce((a, b) => a + b, 0) / probs.length;
   const spread = Math.max(...probs) - Math.min(...probs);
   const leagueRatio = new Set(legs.map((l) => l.league)).size / legs.length;
-  const topRatio = legs.filter((l) => isTopTierLeague(l.league)).length / legs.length;
+  const topRatio = legs.filter((l) => isTopTierLeague(l.league, l.competitionId)).length / legs.length;
   const avgOdds = odds.reduce((a, b) => a + b, 0) / odds.length;
   const forcedRatio = legs.filter((l) => l.tip.odds > 2.8).length / legs.length;
   return (
@@ -248,7 +248,7 @@ export class TicketEngine {
 
     // Só ligas principais no pool de bilhetes: femininos, base/exóticas e
     // segunda/terceira divisão ficam de fora (continuam visíveis nos jogos).
-    const eligible = filtered.filter((m) => isMainLeague(m.league));
+    const eligible = filtered.filter((m) => isMainLeague(m.league, m.competitionId));
 
     if (eligible.length === 0) {
       return { generated: [], all: this.slips, jevLatencyMs: 0 };

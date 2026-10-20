@@ -15,7 +15,7 @@ import { AiAnalysisModal } from './components/AiAnalysisModal.tsx';
 import { AiSmartSlipModal } from './components/AiSmartSlipModal.tsx';
 import { Zap, CheckCircle2, RotateCcw, Cpu } from 'lucide-react';
 import { getSavedTimezone, saveTimezone } from './utils/timezone.js';
-import { leagueRank, isTopTierLeague } from './utils/leagues.js';
+import { leagueRank } from './utils/leagues.js';
 
 export default function App() {
   const [matches, setMatches] = useState<MatchItem[]>([]);
@@ -212,9 +212,19 @@ export default function App() {
     }
   };
 
+  // Rank por ID oficial quando existir (evita "Premier League" do Catar
+  // ser confundida com a inglesa); senão, cai no nome.
+  const leagueRankById = new Map<string, number>();
+  for (const m of matches) {
+    const rank = leagueRank(m.league, m.competitionId);
+    const prev = leagueRankById.get(m.league);
+    if (prev === undefined || rank < prev) leagueRankById.set(m.league, rank);
+  }
+  const rankOf = (league: string) => leagueRankById.get(league) ?? leagueRank(league);
+
   // Filtered pool by longevity horizon & chronological ordering
   const allLeaguesList = Array.from(new Set(matches.map((m) => m.league))).sort(
-    (a, b) => leagueRank(a) - leagueRank(b) || a.localeCompare(b)
+    (a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b)
   );
   const filteredMatches = matches.filter((m) => activeLeagues.has(m.league));
 
@@ -232,14 +242,14 @@ export default function App() {
       return true; // historico
     })
     // Ligas principais primeiro, depois cronológico.
-    .sort((a, b) => leagueRank(a.league) - leagueRank(b.league) || a.kickoffAt - b.kickoffAt);
+    .sort((a, b) => rankOf(a.league) - rankOf(b.league) || a.kickoffAt - b.kickoffAt);
 
   // Toggle "Só principais": filtra para Champions/Europa/EPL/La Liga/Serie A/Bundesliga/Ligue 1+
-  const topTierLeagues = allLeaguesList.filter((l) => isTopTierLeague(l));
+  const topTierLeagues = allLeaguesList.filter((l) => rankOf(l) < 8);
   const onlyTopActive =
     topTierLeagues.length > 0 &&
     topTierLeagues.every((l) => activeLeagues.has(l)) &&
-    Array.from(activeLeagues).every((l) => isTopTierLeague(l));
+    Array.from(activeLeagues).every((l) => rankOf(l) < 8);
 
   const handleOnlyTopLeagues = () => {
     if (onlyTopActive) {

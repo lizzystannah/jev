@@ -180,10 +180,10 @@ export async function generateSmartSlipWithAi(
   const now = Date.now();
   // Só ligas principais: nada de segunda/terceira divisão no bilhete inteligente.
   const available = matches
-    .filter((m) => m.status !== 'resolved' && m.kickoffAt > now && isMainLeague(m.league))
+    .filter((m) => m.status !== 'resolved' && m.kickoffAt > now && isMainLeague(m.league, m.competitionId))
     .sort(
       (a, b) =>
-        leaguePriorityRank(a.league) - leaguePriorityRank(b.league) ||
+        leaguePriorityRank(a.league, a.competitionId) - leaguePriorityRank(b.league, b.competitionId) ||
         b.tip.prob - a.tip.prob
     );
 
