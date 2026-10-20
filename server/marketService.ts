@@ -31,7 +31,7 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
 ];
 
 /** Penaliza feminino/base/obscuro — espelha _COMP_PENALTY_KEYS do bridge. */
-const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|u1\d|u2\d|juvenil|sub-?20|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal|mizoram|goa|kerala|calcutt|tanzania|uganda|kenya|zambia/i;
+const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|reserva|reserve|reserves|reservas|filial|filiais|u1\d|u2\d|juvenil|sub-?2\d|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal|mizoram|goa|kerala|calcutt|tanzania|uganda|kenya|zambia/i;
 
 /** Liga obscura (feminino/base/exótica): excluída dos bilhetes. */
 export function isObscureLeague(league?: string | null): boolean {
@@ -58,7 +58,7 @@ function normalizeLeague(league?: string | null): string {
  * LaLiga Hypermotion, Primera Federación, Liga 3, Regionalliga, etc.
  */
 const LOWER_DIVISION =
-  /\bserie\s*[b-d]\b|\b(segunda|segundo)\b|\b(2|ii|2a)\s*\.?\s*(divis|division|divisao|divisione|liga|bundesliga|league)\b|\b(bundesliga|ligue|la ?liga|laliga|league|liga|divisie|division|divisao)\s*(2|ii|3|iii)\b|\b(championship|league one|league two|national league|regionalliga|oberliga|landesliga|verbandsliga|superettan|challenger pro league|eerste divisie|tweede divisie|keuken kampioen|hypermotion|campeonato de portugal|liga portugal 2|primera b|primera c|primera nacional|primera federacion|segunda federacion|tercera federacion|tercera division|tff 1\.\s*lig|1\.\s*lig|liga ii|liga 2|liga 3|division 2|division 3|divisao 2|divisao 3|divisie 2|divisie 3)\b/;
+  /\bserie\s*[b-d]\b|\b(segunda|segundo|intermedia|reserva|reservas|reserve|reserves|filial|filiais)\b|\b(2|ii|2a)\s*\.?\s*(divis|division|divisao|divisione|liga|bundesliga|league)\b|\b(bundesliga|ligue|la ?liga|laliga|league|liga|divisie|division|divisao)\s*(2|ii|3|iii)\b|\b(championship|league one|league two|national league|regionalliga|oberliga|landesliga|verbandsliga|superettan|challenger pro league|eerste divisie|tweede divisie|keuken kampioen|hypermotion|campeonato de portugal|liga portugal 2|primera b|primera c|primera nacional|primera federacion|segunda federacion|tercera federacion|tercera division|tff 1\.\s*lig|1\.\s*lig|liga ii|liga 2|liga 3|division 2|division 3|divisao 2|divisao 3|divisie 2|divisie 3)\b/;
 
 export function isLowerDivisionLeague(league?: string | null): boolean {
   return LOWER_DIVISION.test(normalizeLeague(league));

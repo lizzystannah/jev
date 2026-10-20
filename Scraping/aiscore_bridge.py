@@ -82,7 +82,8 @@ _COMP_EXCLUDE: dict[str, tuple[str, ...]] = {
 _COMP_PENALTY_KEYS = (
     "femenina", "femenino", "feminina", "feminino", "women", "(w)",
     "(mujeres)", "woman", "ladies", "lady",
-    "u20", "u19", "u23", "u21", "juvenil", "sub-20", "sub20",
+    "reserva", "reserve", "reserves", "reservas", "filial",
+    "u20", "u19", "u23", "u21", "juvenil", "sub-20", "sub20", "sub-23", "sub23",
     "hong kong", "mongol", "nigeria", "ghana", "jamaica",
     "gales", "escocia", "bielorru", "burundi", "panam", "bhutan",
     "nadeshiko", "nepal", "tanzania", "uganda", "kenya", "zambia",
@@ -91,7 +92,8 @@ _COMP_PENALTY_KEYS = (
 # Divisões inferiores: sempre atrás de ligas principais e de campeonatos
 # desconhecidos (mas de primeira divisão).
 _COMP_LOWER_KEYS = (
-    "segunda", "segundo", "serie b", "serie c", "serie d",
+    "segunda", "segundo", "intermedia", "reserva", "reservas", "reserve",
+    "reserves", "filial", "serie b", "serie c", "serie d",
     "2. bundesliga", "bundesliga 2", "ligue 2", "la liga 2", "laliga 2",
     "hypermotion", "championship", "league one", "league two",
     "national league", "regionalliga", "oberliga", "landesliga",
