@@ -7,6 +7,8 @@ import { BetSlip, MatchItem, SlipScope, SlipTier } from './types.js';
 import { marketService, leaguePriorityRank, isObscureLeague, isMainLeague } from './marketService.js';
 import { callLocalInferenceEngine, type LocalDecisionInput } from './aiscoreEngine.js';
 import { aiscoreClient } from './aiscoreService.js';
+import { bilheteriaDb } from './db.js';
+import { getDayKey } from './time.js';
 
 /**
  * Peso por liga (jefe prioriza as principais):
@@ -138,6 +140,39 @@ export const LEGS_CONFIG: Record<SlipScope, Record<SlipTier, number>> = {
   longo: { segura: 3, moderada: 4, ousada: 4 },
 };
 
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Estoque mínimo de fichas PENDENTES por horizonte.
+ * O agendador repõe automaticamente sempre que uma ficha cai (ganha/perde/expira)
+ * ou quando a mudança do dia cria a nova fornada de "Hoje".
+ */
+export const SCOPE_QUOTAS: Record<SlipScope, number> = {
+  dia: envInt('TICKETS_QUOTA_DIA', 3),
+  '2_3_dias': envInt('TICKETS_QUOTA_MED', 3),
+  longo: envInt('TICKETS_QUOTA_LONGO', 2),
+};
+
+/** Teto de segurança para o botão manual "Gerar" não inundar o estoque. */
+export const SCOPE_MAX_PENDING: Record<SlipScope, number> = {
+  dia: SCOPE_QUOTAS.dia + 2,
+  '2_3_dias': SCOPE_QUOTAS['2_3_dias'] + 2,
+  longo: SCOPE_QUOTAS.longo + 2,
+};
+
+/** Horas de tolerância após o último pontapé inicial antes de marcar como vencida. */
+export const EXPIRY_GRACE_HOURS = envInt('TICKETS_EXPIRY_GRACE_HOURS', 6);
+
+export interface GenerateOptions {
+  /** Máximo de fichas novas a devolver nesta geração (default: 5). */
+  limit?: number;
+}
+
+
 function shuffle<T>(arr: T[]): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -159,6 +194,17 @@ export class TicketEngine {
   private slips: BetSlip[] = [];
   private slipCounter = 100;
   private lastJevLatencyMs = 62;
+
+  constructor() {
+    this.slips = bilheteriaDb.loadSlips();
+    // Continua a numeração a partir da última ficha persistida (evita IDs repetidos).
+    let maxSeq = 100;
+    for (const slip of this.slips) {
+      const m = /(\d+)$/.exec(slip.id);
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
+    }
+    this.slipCounter = Math.max(maxSeq, Number(bilheteriaDb.getMeta('slip_counter') || 0));
+  }
 
   public getSlips(): BetSlip[] {
     return this.slips;
@@ -192,8 +238,12 @@ export class TicketEngine {
 
     const scopePrefix = scope === '2_3_dias' ? 'MED' : scope === 'dia' ? 'DIA' : 'LONGO';
 
+    const createdAt = Date.now();
+    this.slipCounter += 1;
+    bilheteriaDb.setMeta('slip_counter', String(this.slipCounter));
+
     const slip: BetSlip = {
-      id: `${scopePrefix}-${tier.substring(0, 3).toUpperCase()}-${++this.slipCounter}`,
+      id: `${scopePrefix}-${tier.substring(0, 3).toUpperCase()}-${this.slipCounter}`,
       scope,
       tier,
       color: tierConfig.color,
@@ -202,11 +252,12 @@ export class TicketEngine {
       combinedProb,
       expiresAt,
       status: 'pendente',
-      createdAt: Date.now(),
+      createdAt,
       resolvedAt: null,
       customTitle: options?.customTitle,
       rationale: options?.rationale,
       isAiGenerated: options?.isAiGenerated ?? true, // Criado com base no motor local
+      dayKey: getDayKey(createdAt),
     };
 
     return slip;
@@ -222,7 +273,8 @@ export class TicketEngine {
    */
   public async generateTicketsForScope(
     scope: SlipScope,
-    activeLeagues?: string[]
+    activeLeagues?: string[],
+    options?: GenerateOptions
   ): Promise<{ generated: BetSlip[]; all: BetSlip[]; jevLatencyMs: number }> {
     const allMatches = await marketService.getMatches();
 
@@ -340,8 +392,8 @@ export class TicketEngine {
       }
     });
 
-    // Remove bilhetes pendentes anteriores deste mesmo escopo para substituí-los pelos recém-calculados
-    this.slips = this.slips.filter((s) => !(s.scope === scope && s.status === 'pendente'));
+    // NÃO apagar fichas pendentes existentes: elas persistem até resolverem ou
+    // expirarem. A geração apenas acrescenta novas oportunidades ao estoque.
 
     // Construtor Especializado para o Tier "Ousada" (mínimo de odd combinada).
     // Usa as tips REAIS do motor — nunca inventa probabilidades para forçar odd.
@@ -514,11 +566,35 @@ export class TicketEngine {
     if (ousadaList[0]) finalSlips.push(ousadaList[0]);
     if (ousadaList[1] && finalSlips.length < 5) finalSlips.push(ousadaList[1]);
 
-    const topSlips = finalSlips.slice(0, 5);
+    // Evita repetir pernas de fichas que já estão no estoque pendente do mesmo
+    // horizonte. Se não houver candidatos totalmente frescos, aceita os que não
+    // sejam exatamente iguais a uma ficha existente (mercado pode estar curto).
+    const existingPending = this.slips.filter(
+      (s) => s.scope === scope && s.status === 'pendente'
+    );
+    const reservedLegIds = new Set<string>();
+    existingPending.forEach((s) => s.legs.forEach((l) => reservedLegIds.add(l.id)));
+
+    const freshCandidates = finalSlips.filter(
+      (s) => !s.legs.some((l) => reservedLegIds.has(l.id))
+    );
+    const notIdentical = finalSlips.filter(
+      (s) =>
+        !existingPending.some(
+          (e) =>
+            e.legs.length === s.legs.length &&
+            e.legs.every((el) => s.legs.some((sl) => sl.id === el.id))
+        )
+    );
+
+    const candidatePool = freshCandidates.length > 0 ? freshCandidates : notIdentical;
+    const wanted = Math.max(1, options?.limit ?? 5);
+    const topSlips = candidatePool.slice(0, wanted);
 
     for (const slip of topSlips) {
       this.slips.push(slip);
     }
+    bilheteriaDb.upsertMany(topSlips);
 
     return {
       generated: topSlips,
@@ -530,18 +606,26 @@ export class TicketEngine {
   public validateSlips(): { updatedSlips: BetSlip[] } {
     const updated: BetSlip[] = [];
     const now = Date.now();
+    const graceMs = EXPIRY_GRACE_HOURS * 60 * 60 * 1000;
 
     for (const slip of this.slips) {
       if (slip.status !== 'pendente') continue;
 
       let anyLost = false;
       let allResolved = true;
+      let dirty = false;
 
       for (let i = 0; i < slip.legs.length; i++) {
         const currentLeg = slip.legs[i];
         // Sincroniza em tempo real com o estado mais recente da partida no marketService
         const freshMatch = marketService.getMatchById(currentLeg.id);
         if (freshMatch) {
+          if (
+            freshMatch.status !== currentLeg.status ||
+            JSON.stringify(freshMatch.result ?? null) !== JSON.stringify(currentLeg.result ?? null)
+          ) {
+            dirty = true;
+          }
           slip.legs[i] = {
             ...freshMatch,
             tip: currentLeg.tip, // Mantém o prognóstico fixado no momento da aposta
@@ -562,11 +646,26 @@ export class TicketEngine {
         // Vai direto para o Histórico como PERDEU no momento em que a primeira perna falha
         slip.status = 'perdeu';
         slip.resolvedAt = now;
-        updated.push(slip);
+        dirty = true;
       } else if (allResolved) {
         // Se todas as pernas finalizaram e todas acertaram, GANHOU
         slip.status = 'ganhou';
         slip.resolvedAt = now;
+        dirty = true;
+      } else {
+        // VENCEU/EXPIROU: passou o último pontapé inicial + tolerância e ainda não
+        // houve resolução completa (jogo adiado/abandonado/sem placar real).
+        const lastKickoff = slip.legs.reduce((max, l) => Math.max(max, l.kickoffAt || 0), 0);
+        const deadline = Math.max(lastKickoff, slip.expiresAt || 0) + graceMs;
+        if (now > deadline) {
+          slip.status = 'expirado';
+          slip.resolvedAt = now;
+          dirty = true;
+        }
+      }
+
+      if (dirty) {
+        bilheteriaDb.upsertSlip(slip);
         updated.push(slip);
       }
     }
@@ -575,13 +674,16 @@ export class TicketEngine {
   }
 
   public addCustomSlip(slip: BetSlip): BetSlip {
+    if (!slip.dayKey) slip.dayKey = getDayKey(slip.createdAt || Date.now());
     this.slips.unshift(slip);
+    bilheteriaDb.upsertSlip(slip);
     return slip;
   }
 
   /** Limpa todos os bilhetes (usado no reset — pernas antigas ficam órfãs). */
   public clearSlips(): void {
     this.slips = [];
+    bilheteriaDb.deleteAllSlips();
   }
 }
 

@@ -1,4 +1,6 @@
-# Bilheteria — motor de bilhetes (Node 20 + bridge Python AiScore)
+# Bilheteria — motor de bilhetes (Node 24 + bridge Python AiScore)
+#
+# Node 24 é necessário: a persistência das fichas usa o módulo nativo node:sqlite.
 #
 # Build (a partir da raiz deste projeto):
 #   docker build -t bilheteria:latest .
@@ -6,18 +8,19 @@
 #   docker run --rm -p 3000:3000 \
 #     -e ODDS_API_KEY="" \
 #     -e GEMINI_API_KEY="" \
+#     -v bilheteria-data:/app/.data \
 #     bilheteria:latest
-# Persistir caches entre restarts (opcional):
-#   docker run --rm -p 3000:3000 -v bilheteria-cache:/app/.data ... (ver nota)
+# Persistir base de dados e caches entre restarts (recomendado):
+#   -v bilheteria-data:/app/.data  (fichas em .data/bilheteria.db)
 #
 # Notas:
 # - O bridge Python (Scraping/aiscore_bridge.py) usa curl_cffi para passar
 #   no Cloudflare do AiScore; as deps Python vivem em Scraping/ (autocontido).
 # - O servidor escreve caches em disco (.aiscore_context_cache.json e
-#   .odds_api_cache.json na raiz). Sem volume, o cache morre com o contentor.
+#   .odds_api_cache.json na raiz) e a base de dados das fichas em .data/.
 # - NODE_ENV=production serve o frontend (dist/) + API na mesma porta.
 
-FROM node:20-bookworm-slim
+FROM node:24-bookworm-slim
 
 # Python 3 (bridge AiScore) + dependência nativa do curl_cffi (wheels linux).
 RUN apt-get update \

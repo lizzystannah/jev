@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { BetSlip, MatchItem } from '../types.js';
-import { Copy, Check, Sparkles, Cpu, Clock, Calendar, CheckCircle2, XCircle, Activity } from 'lucide-react';
-import { formatMatchSchedule } from '../utils/timezone.js';
+import { Copy, Check, Sparkles, Cpu, Clock, Calendar, CheckCircle2, XCircle, Activity, Hourglass } from 'lucide-react';
+import { formatDateTimeInTz, formatMatchSchedule } from '../utils/timezone.js';
 
 interface TicketCardProps {
   slip: BetSlip;
@@ -37,6 +37,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
 
   const isWon = slip.status === 'ganhou';
   const isLost = slip.status === 'perdeu';
+  const isExpired = slip.status === 'expirado';
   const isPending = slip.status === 'pendente';
 
   const scopeLabel =
@@ -65,6 +66,13 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
         text: `Bilhete Finalizado (${wonLegs.length}/${totalLegs} acertos)`,
         bg: 'bg-[rgba(209,89,75,0.15)] text-[#D1594B] border-[rgba(209,89,75,0.3)]',
         icon: <XCircle className="w-3.5 h-3.5 text-[#D1594B]" />,
+      };
+    }
+    if (isExpired) {
+      return {
+        text: `Vencida / Expirada (${resolvedCount}/${totalLegs} jogos finalizados)`,
+        bg: 'bg-[rgba(245,243,236,0.06)] text-[rgba(245,243,236,0.65)] border-[rgba(245,243,236,0.18)]',
+        icon: <Hourglass className="w-3.5 h-3.5 text-[rgba(245,243,236,0.55)]" />,
       };
     }
     if (resolvedCount > 0) {
@@ -122,6 +130,11 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
                 PERDEU
               </span>
             )}
+            {isExpired && (
+              <span className="text-[11px] font-bold tracking-wide px-2 py-0.5 rounded bg-[rgba(245,243,236,0.1)] text-[rgba(245,243,236,0.7)]">
+                VENCIDA
+              </span>
+            )}
             {isPending && (
               <button
                 type="button"
@@ -136,6 +149,18 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
           </div>
         </div>
 
+        {/* Creation Date */}
+        <div className="mb-2 text-[10.5px] text-[rgba(245,243,236,0.45)] flex items-center gap-1.5">
+          <Calendar className="w-3 h-3 text-[rgba(245,243,236,0.4)]" />
+          <span>Criada em {formatDateTimeInTz(slip.createdAt, timezone)}</span>
+          {slip.resolvedAt && (
+            <>
+              <span className="text-[rgba(245,243,236,0.25)]">·</span>
+              <span>Fechada em {formatDateTimeInTz(slip.resolvedAt, timezone)}</span>
+            </>
+          )}
+        </div>
+
         {/* Live Match Realization Status Banner */}
         <div className={`mb-3 px-2.5 py-1.5 rounded border flex items-center justify-between gap-2 text-[11px] ${statusBadge.bg}`}>
           <div className="flex items-center gap-1.5 font-medium">
@@ -143,7 +168,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
             <span>{statusBadge.text}</span>
           </div>
           <span className="text-[10px] text-[rgba(245,243,236,0.5)] font-mono">
-            {isPending ? 'Conclusão ao apito final' : 'Finalizado'}
+            {isPending ? 'Conclusão ao apito final' : isExpired ? 'Sem resolução a tempo' : 'Finalizado'}
           </span>
         </div>
 

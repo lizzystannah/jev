@@ -75,6 +75,36 @@ export function formatDateInTz(timestampMs: number, timezone: string): string {
   }
 }
 
+/** Data + hora completas (ex.: "22/10/2026 14:32"). */
+export function formatDateTimeInTz(timestampMs: number, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('pt-PT', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: timezone,
+    }).format(new Date(timestampMs));
+  } catch (e) {
+    return new Date(timestampMs).toLocaleString('pt-PT');
+  }
+}
+
+/** Chave de calendário YYYY-MM-DD num fuso (usada para separar as fichas do dia). */
+export function getDayKeyInTz(timestampMs: number, timezone = 'Africa/Luanda'): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(timestampMs));
+  } catch (e) {
+    return new Date(timestampMs).toISOString().slice(0, 10);
+  }
+}
+
 export function formatMatchSchedule(kickoffAtMs: number, timezone: string, daysFromNow: number): string {
   const timeStr = formatTimeInTz(kickoffAtMs, timezone);
   const dateStr = formatDateInTz(kickoffAtMs, timezone);

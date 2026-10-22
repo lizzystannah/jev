@@ -1,4 +1,4 @@
-import { BackendStatus, MatchItem, BetSlip, AiMatchAnalysis } from './types.js';
+import { BackendStatus, MatchItem, BetSlip, AiMatchAnalysis, TicketStockStatus } from './types.js';
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
   const res = await fetch('/api/status');
@@ -18,16 +18,31 @@ export async function fetchTickets(): Promise<BetSlip[]> {
   return res.json();
 }
 
+export async function fetchTicketStock(): Promise<TicketStockStatus> {
+  const res = await fetch('/api/tickets/stock');
+  if (!res.ok) throw new Error('Falha ao obter estoque de bilhetes');
+  return res.json();
+}
+
 export async function generateTickets(
   scope: 'dia' | '2_3_dias' | 'longo',
-  leagues?: string[]
-): Promise<{ generated: BetSlip[]; all: BetSlip[] }> {
+  leagues?: string[],
+  limit = 2
+): Promise<{
+  generated: BetSlip[];
+  all: BetSlip[];
+  stock?: TicketStockStatus;
+  message?: string;
+}> {
   const res = await fetch('/api/tickets/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scope, leagues }),
+    body: JSON.stringify({ scope, leagues, limit }),
   });
-  if (!res.ok) throw new Error('Erro ao gerar bilhetes');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Erro ao gerar bilhetes');
+  }
   return res.json();
 }
 

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { marketService } from './server/marketService.js';
 import { ticketEngine } from './server/ticketEngine.js';
+import { ticketScheduler } from './server/ticketScheduler.js';
 import { analyzeMatchTactics, generateSmartSlipWithAi } from './server/aiService.js';
 import { aiscoreClient, decodePackedSint32, parseMatchScores, scoutToMatchContext } from './server/aiscoreService.js';
 import { getLocalCumulativeMetrics, AISCORE_ENGINE_VERSION } from './server/aiscoreEngine.js';
@@ -33,10 +34,15 @@ async function startServer() {
       if (resolved.length > 0) {
         const { updatedSlips } = ticketEngine.validateSlips();
         console.log(`[Bilheteria Engine] ${resolved.length} jogo(s) resolvido(s) com placar real. ${updatedSlips.length} bilhete(s) atualizados.`);
+        // Repõe imediatamente o estoque das fichas que caíram (ganhas/perdidas/vencidas).
+        void ticketScheduler.tick('resolution');
       } else {
         // Mesmo sem FT novo, propaga 'live' e valida expiração de bilhetes.
         marketService.resolveAllOverdue();
-        ticketEngine.validateSlips();
+        const { updatedSlips } = ticketEngine.validateSlips();
+        if (updatedSlips.length > 0) {
+          void ticketScheduler.tick('expiry');
+        }
       }
     } catch (err) {
       console.warn('[Bilheteria Engine] Falha no ciclo de resolução real:', (err as Error)?.message);
@@ -80,6 +86,7 @@ async function startServer() {
         totalMatches: providerStatus.totalMatches,
         totalSlips: ticketEngine.getSlips().length,
       },
+      tickets: ticketScheduler.getStatus(),
     });
   });
 
@@ -146,9 +153,7 @@ async function startServer() {
     try {
       const matches = marketService.resetMatches();
       ticketEngine.clearSlips();
-      await ticketEngine.generateTicketsForScope('dia');
-      await ticketEngine.generateTicketsForScope('2_3_dias');
-      await ticketEngine.generateTicketsForScope('longo');
+      await ticketScheduler.forceRefillAll();
       res.json({ matches, slips: ticketEngine.getSlips() });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao reiniciar partidas' });
@@ -162,11 +167,24 @@ async function startServer() {
     res.json(ticketEngine.getSlips());
   });
 
-  // Generate slips for scope
+  // Stock/quota status (usado pelo frontend e por monitorização)
+  app.get('/api/tickets/stock', (req: Request, res: Response) => {
+    res.json(ticketScheduler.getStatus());
+  });
+
+  // Generate slips for scope (botão manual em qualquer parte do site)
   app.post('/api/tickets/generate', async (req: Request, res: Response) => {
     try {
-      const { scope = 'dia', leagues } = req.body;
-      const result = await ticketEngine.generateTicketsForScope(scope, leagues);
+      const { scope = 'dia', leagues, limit } = req.body || {};
+      const validScopes = ['dia', '2_3_dias', 'longo'];
+      if (!validScopes.includes(scope)) {
+        return res.status(400).json({ error: `Escopo inválido: ${scope}` });
+      }
+      const result = await ticketScheduler.generateMore(
+        scope,
+        Array.isArray(leagues) ? leagues : undefined,
+        Number(limit) > 0 ? Number(limit) : 2
+      );
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao gerar bilhetes' });
@@ -332,20 +350,18 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Bilheteria Backend] Servidor ativo em http://0.0.0.0:${PORT}`);
 
-    // Inicialização assíncrona de bilhetes com dados 100% reais da API
-    (async () => {
-      try {
-        console.log('[Bilheteria Engine] Sincronizando partidas 100% reais da API externa...');
-        await marketService.getMatches();
-        await ticketEngine.generateTicketsForScope('dia');
-        await ticketEngine.generateTicketsForScope('2_3_dias');
-        await ticketEngine.generateTicketsForScope('longo');
-        console.log('[Bilheteria Engine] Bilhetes reais gerados com sucesso com motor local.');
-      } catch (err) {
-        console.error('[Bilheteria Engine] Erro ao sincronizar partidas reais iniciais:', err);
-      }
-    })();
+    // Agendador em background: fichas do dia à meia-noite (Angola), reposição de
+    // estoque, expiração e sincronização de mercado — funciona sem browser aberto.
+    ticketScheduler.start();
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`[Bilheteria Backend] ${signal} recebido. A encerrar agendador...`);
+    ticketScheduler.stop();
+    process.exit(0);
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 startServer().catch((err) => {

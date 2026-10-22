@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { MatchItem, BetSlip, BackendStatus, SlipScope } from '../types.js';
+import { MatchItem, BetSlip, BackendStatus, SlipScope, TicketStockStatus } from '../types.js';
 import { Sparkles, Calendar, Zap, Clock, Cpu, TrendingUp, CheckCircle2, XCircle, BarChart3, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface HeroStatsProps {
   matches: MatchItem[];
   slips: BetSlip[];
+  stock: TicketStockStatus | null;
   backendStatus: BackendStatus | null;
   lastGeneratedTime: string;
   activeScope: SlipScope;
@@ -16,6 +17,7 @@ interface HeroStatsProps {
 export const HeroStats: React.FC<HeroStatsProps> = ({
   matches,
   slips,
+  stock,
   backendStatus,
   lastGeneratedTime,
   activeScope,
@@ -150,6 +152,34 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Estoque automático por horizonte (reposto pelo agendador) */}
+        {stock && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px]">
+            {stock.stocks.map((s) => {
+              const ok = s.pending >= s.quota;
+              const label =
+                s.scope === 'dia' ? 'Hoje' : s.scope === '2_3_dias' ? '2 a 3 dias' : 'Longo prazo';
+              return (
+                <span
+                  key={s.scope}
+                  className={`px-2 py-1 rounded border font-medium ${
+                    ok
+                      ? 'bg-[rgba(79,174,115,0.12)] border-[rgba(79,174,115,0.3)] text-[#4FAE73]'
+                      : 'bg-[rgba(231,179,62,0.12)] border-[rgba(231,179,62,0.3)] text-[#E7B33E]'
+                  }`}
+                  title={`Estoque de fichas pendentes (quota ${s.quota})`}
+                >
+                  {label}: {s.pending}/{s.quota}
+                  {!ok && s.missing > 0 ? ` · em reposição` : ''}
+                </span>
+              );
+            })}
+            <span className="text-[rgba(245,243,236,0.4)]">
+              Fornada automática às 00:00 (Angola) · fuso {stock.timezone}
+            </span>
+          </div>
+        )}
 
         {/* Real Main Stats Row */}
         <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px bg-[rgba(245,243,236,0.14)] border border-[rgba(245,243,236,0.14)] rounded overflow-hidden">

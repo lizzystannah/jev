@@ -7,9 +7,14 @@
     "dev": "tsx server.ts",
     "build": "vite build",
     "start": "tsx server.ts",
+    "start:always": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-always.ps1",
+    "start:always:bat": "scripts\\start-always.bat",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

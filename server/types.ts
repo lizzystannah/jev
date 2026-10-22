@@ -132,12 +132,34 @@ export interface BetSlip {
   combinedOdds: number;
   combinedProb: number;
   expiresAt: number; // timestamp em ms do início do primeiro jogo do bilhete
-  status: 'pendente' | 'ganhou' | 'perdeu';
+  status: 'pendente' | 'ganhou' | 'perdeu' | 'expirado';
   createdAt: number;
   resolvedAt: number | null;
   customTitle?: string;
   rationale?: string;
   isAiGenerated?: boolean;
+  /** Data-calendário de Angola (YYYY-MM-DD) em que a ficha foi criada. */
+  dayKey?: string;
+}
+
+/** Cota/estoque de fichas por horizonte temporal. */
+export interface TicketStockScope {
+  scope: SlipScope;
+  pending: number;
+  quota: number;
+  missing: number;
+  maxPending: number;
+}
+
+export interface TicketStockStatus {
+  dayKey: string;
+  timezone: string;
+  dailyHour: number;
+  lastDailyRun: string | null;
+  lastTickAt: string | null;
+  generating: boolean;
+  expiryGraceHours: number;
+  stocks: TicketStockScope[];
 }
 
 export interface MarketProviderStatus {

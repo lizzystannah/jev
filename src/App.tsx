@@ -4,26 +4,40 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { MatchItem, BetSlip, BackendStatus, AiMatchAnalysis, SlipScope, SlipTier } from './types.js';
+import {
+  MatchItem,
+  BetSlip,
+  BackendStatus,
+  AiMatchAnalysis,
+  SlipScope,
+  SlipTier,
+  HistoryFilter,
+  TicketStockStatus,
+} from './types.js';
 import * as api from './api.js';
 import { Header } from './components/Header.tsx';
 import { HeroStats } from './components/HeroStats.tsx';
 import { FixturesSidebar } from './components/FixturesSidebar.tsx';
 import { TicketCard } from './components/TicketCard.tsx';
+import { HistoryList } from './components/HistoryList.tsx';
 import { ApiConfigModal } from './components/ApiConfigModal.tsx';
 import { AiAnalysisModal } from './components/AiAnalysisModal.tsx';
 import { AiSmartSlipModal } from './components/AiSmartSlipModal.tsx';
-import { Zap, CheckCircle2, RotateCcw, Cpu } from 'lucide-react';
-import { getSavedTimezone, saveTimezone } from './utils/timezone.js';
+import { Zap, CheckCircle2, RotateCcw, Cpu, Loader2 } from 'lucide-react';
+import { getSavedTimezone, saveTimezone, getDayKeyInTz } from './utils/timezone.js';
 import { leagueRank } from './utils/leagues.js';
+
+const DAY_TIMEZONE = 'Africa/Luanda';
 
 export default function App() {
   const [matches, setMatches] = useState<MatchItem[]>([]);
   const [slips, setSlips] = useState<BetSlip[]>([]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const [stock, setStock] = useState<TicketStockStatus | null>(null);
   const [activeLeagues, setActiveLeagues] = useState<Set<string>>(new Set());
   const [scope, setScope] = useState<SlipScope>('dia');
   const [tier, setTier] = useState<SlipTier>('segura');
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('andamento');
   const [lastGeneratedTime, setLastGeneratedTime] = useState<string>('');
   const [timezone, setTimezone] = useState<string>(() => getSavedTimezone());
 
@@ -49,15 +63,17 @@ export default function App() {
   const loadInitialData = useCallback(async (isRefresh = false) => {
     try {
       if (isRefresh) setLoading(true);
-      const [statusData, matchesData, slipsData] = await Promise.all([
+      const [statusData, matchesData, slipsData, stockData] = await Promise.all([
         api.fetchBackendStatus(),
         api.fetchMatches(isRefresh),
         api.fetchTickets(),
+        api.fetchTicketStock(),
       ]);
 
       setBackendStatus(statusData);
       setMatches(matchesData);
       setSlips(slipsData);
+      setStock(stockData);
 
       // Initialize all leagues as active and ensure new leagues are included
       setActiveLeagues((prev) => {
@@ -103,6 +119,18 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Stock/quota refresh (less frequent — geração é pesada, leitura é leve)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        setStock(await api.fetchTicketStock());
+      } catch {
+        /* silencioso */
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
   // League toggle
   const handleToggleLeague = (league: string) => {
     setActiveLeagues((prev) => {
@@ -120,8 +148,9 @@ export default function App() {
   const handleGenerateScope = async (targetScope: 'dia' | '2_3_dias' | 'longo') => {
     try {
       setGenerating(true);
-      const result = await api.generateTickets(targetScope, Array.from(activeLeagues));
+      const result = await api.generateTickets(targetScope, Array.from(activeLeagues), 2);
       setSlips(result.all);
+      if (result.stock) setStock(result.stock);
       setScope(targetScope);
       setTier('segura');
       setLastGeneratedTime(
@@ -133,7 +162,13 @@ export default function App() {
         '2_3_dias': '2 a 3 Dias',
         longo: 'Longo Prazo',
       };
-      showToast(`Bilhetes de ${labelMap[targetScope]} calibrados com Jev AI!`);
+      if (result.generated.length > 0) {
+        showToast(
+          `${result.generated.length} nova(s) ficha(s) de ${labelMap[targetScope]} geradas e guardadas.`
+        );
+      } else {
+        showToast(result.message || `Sem fichas novas para ${labelMap[targetScope]} neste momento.`);
+      }
     } catch (err: any) {
       showToast(err?.message || 'Erro ao gerar bilhetes');
     } finally {
@@ -171,6 +206,11 @@ export default function App() {
       const { matches: newMatches, slips: newSlips } = await api.resetMatches();
       setMatches(newMatches);
       setSlips(newSlips);
+      try {
+        setStock(await api.fetchTicketStock());
+      } catch {
+        /* ignore */
+      }
       showToast('Partidas e bilhetes reiniciados.');
     } catch (err: any) {
       showToast('Erro ao reiniciar');
@@ -261,18 +301,67 @@ export default function App() {
     }
   };
 
-  // Slips filtering: active tabs (dia, 2_3_dias, longo) ONLY show pending/live tickets
-  const slipsInScope = slips.filter((s) => s.scope === scope && s.status === 'pendente');
+  // ---------------------------------------------------------------- fichas ---
+  // "Hoje" mostra apenas as fichas pendentes criadas no dia-calendário de
+  // Angola. As mais antigas continuam a persistir e aparecem no histórico
+  // (Em andamento) até serem resolvidas ou expirarem.
+  const todayKey = getDayKeyInTz(Date.now(), DAY_TIMEZONE);
+  const isTodaySlip = (s: BetSlip) =>
+    (s.dayKey || getDayKeyInTz(s.createdAt, DAY_TIMEZONE)) === todayKey;
+
+  const slipsInScope = slips.filter(
+    (s) =>
+      s.scope === scope &&
+      s.status === 'pendente' &&
+      (scope !== 'dia' || isTodaySlip(s))
+  );
   const tierCounts: Record<SlipTier, number> = {
     segura: slipsInScope.filter((s) => s.tier === 'segura').length,
     moderada: slipsInScope.filter((s) => s.tier === 'moderada').length,
     ousada: slipsInScope.filter((s) => s.tier === 'ousada').length,
   };
 
-  const displayedSlips =
-    scope === 'historico'
-      ? slips.filter((s) => s.status !== 'pendente').sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0))
-      : slipsInScope.filter((s) => s.tier === tier).sort((a, b) => b.createdAt - a.createdAt);
+  const displayedSlips = slipsInScope
+    .filter((s) => s.tier === tier)
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  const byMostRecent = (a: BetSlip, b: BetSlip) =>
+    (b.resolvedAt || b.createdAt) - (a.resolvedAt || a.createdAt);
+
+  const historyBuckets: Record<HistoryFilter, BetSlip[]> = {
+    andamento: slips.filter((s) => s.status === 'pendente').sort(byMostRecent),
+    ganhas: slips.filter((s) => s.status === 'ganhou').sort(byMostRecent),
+    perdidas: slips.filter((s) => s.status === 'perdeu').sort(byMostRecent),
+    vencidas: slips.filter((s) => s.status === 'expirado').sort(byMostRecent),
+  };
+  const historySlips = historyBuckets[historyFilter];
+  const historyTotal = slips.filter((s) => s.status !== 'pendente').length;
+
+  const historyFilterLabel: Record<HistoryFilter, string> = {
+    andamento: 'Em andamento',
+    ganhas: 'Ganhas',
+    perdidas: 'Perdidas',
+    vencidas: 'Vencidas',
+  };
+
+  const historyEmpty: Record<HistoryFilter, { title: string; hint: string }> = {
+    andamento: {
+      title: 'Nenhuma ficha em andamento.',
+      hint: 'As fichas pendentes (incluindo as de dias anteriores ainda não resolvidas) aparecem aqui.',
+    },
+    ganhas: {
+      title: 'Ainda não há fichas ganhas.',
+      hint: 'Quando todas as pernas de uma ficha acertarem, ela passa para esta aba.',
+    },
+    perdidas: {
+      title: 'Ainda não há fichas perdidas.',
+      hint: 'Uma ficha cai para aqui no momento em que a primeira perna falha.',
+    },
+    vencidas: {
+      title: 'Ainda não há fichas vencidas.',
+      hint: 'Fichas sem resolução depois do prazo (último jogo + tolerância) são movidas para aqui.',
+    },
+  };
 
   // Tier note text matching longevity scope
   const tierNoteText = () => {
@@ -308,7 +397,7 @@ export default function App() {
     <div className="min-h-screen flex flex-col bg-[#081C13] text-[#F5F3EC]">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-[#0E2A1C] border border-[#E7B33E]/50 text-[#F5F3EC] px-4 py-3 rounded-lg shadow-2xl flex items-center gap-2.5 text-xs font-medium animate-fadeIn">
+        <div className="fixed bottom-24 right-6 z-50 bg-[#0E2A1C] border border-[#E7B33E]/50 text-[#F5F3EC] px-4 py-3 rounded-lg shadow-2xl flex items-center gap-2.5 text-xs font-medium animate-fadeIn">
           <CheckCircle2 className="w-4 h-4 text-[#4FAE73] shrink-0" />
           <span>{toastMessage}</span>
         </div>
@@ -320,6 +409,8 @@ export default function App() {
         onOpenApiModal={() => setIsApiModalOpen(true)}
         onOpenAiSlipModal={() => setIsAiSlipModalOpen(true)}
         onRefresh={() => loadInitialData(true)}
+        onGenerate={() => handleGenerateScope(scope === 'historico' ? 'dia' : (scope as 'dia' | '2_3_dias' | 'longo'))}
+        generating={generating}
         loading={loading}
         timezone={timezone}
         onTimezoneChange={(tz) => {
@@ -333,6 +424,7 @@ export default function App() {
       <HeroStats
         matches={matches}
         slips={slips}
+        stock={stock}
         backendStatus={backendStatus}
         lastGeneratedTime={lastGeneratedTime}
         activeScope={scope}
@@ -427,17 +519,43 @@ export default function App() {
                     : 'bg-transparent border-[rgba(245,243,236,0.2)] text-[rgba(245,243,236,0.6)] hover:text-[#F5F3EC]'
                 }`}
               >
-                Histórico ({slips.filter((s) => s.status !== 'pendente').length})
+                Histórico ({historyTotal})
               </button>
             </div>
+
+            {/* Histórico: sub-abas por estado */}
+            {scope === 'historico' && (
+              <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filtrar histórico">
+                {(['andamento', 'ganhas', 'perdidas', 'vencidas'] as HistoryFilter[]).map((f) => {
+                  const active = historyFilter === f;
+                  return (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setHistoryFilter(f)}
+                      className={`cursor-pointer text-xs px-3 py-1.5 rounded border transition-all ${
+                        active
+                          ? 'bg-[#20502F] border-[#4FAE73] text-[#F5F3EC] font-semibold'
+                          : 'bg-transparent border-[rgba(245,243,236,0.2)] text-[rgba(245,243,236,0.6)] hover:text-[#F5F3EC]'
+                      }`}
+                    >
+                      {historyFilterLabel[f]}
+                      <span className="ml-1.5 opacity-70">({historyBuckets[f].length})</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Validation Ticker Note */}
             <p className="text-xs text-[rgba(245,243,236,0.5)] mb-5 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-[#4FAE73] animate-pulse-subtle shrink-0" />
               <span>
-                Validação automática ativa no backend — cada bilhete muda para{' '}
-                <strong className="text-[#4FAE73] font-semibold">ganhou</strong> ou{' '}
-                <strong className="text-[#D1594B] font-semibold">perdeu</strong> assim que os seus jogos terminam.
+                Agendador ativo no backend (fuso de Angola) — todos os dias à 00:00 cria as fichas
+                do dia e repõe o estoque. Cada ficha passa a{' '}
+                <strong className="text-[#4FAE73] font-semibold">ganha</strong>,{' '}
+                <strong className="text-[#D1594B] font-semibold">perdida</strong> ou{' '}
+                <strong className="text-[#E7B33E] font-semibold">vencida</strong> automaticamente.
               </span>
             </p>
 
@@ -504,42 +622,60 @@ export default function App() {
               </>
             )}
 
-            {/* Slips Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4.5">
-              {displayedSlips.length > 0 ? (
-                displayedSlips.map((slip) => <TicketCard key={slip.id} slip={slip} timezone={timezone} />)
-              ) : (
-                <div className="col-span-full border border-dashed border-[rgba(245,243,236,0.22)] rounded-lg p-8 text-center text-sm text-[rgba(245,243,236,0.6)]">
-                  {scope === 'historico' ? (
+            {/* Slips Grid / History List */}
+            {scope === 'historico' ? (
+              <HistoryList
+                slips={historySlips}
+                timezone={timezone}
+                emptyTitle={historyEmpty[historyFilter].title}
+                emptyHint={historyEmpty[historyFilter].hint}
+              />
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4.5">
+                {displayedSlips.length > 0 ? (
+                  displayedSlips.map((slip) => <TicketCard key={slip.id} slip={slip} timezone={timezone} />)
+                ) : (
+                  <div className="col-span-full border border-dashed border-[rgba(245,243,236,0.22)] rounded-lg p-8 text-center text-sm text-[rgba(245,243,236,0.6)]">
                     <div>
-                      <p className="font-medium text-[#F5F3EC]">Ainda não há bilhetes resolvidos.</p>
-                      <p className="text-xs text-[rgba(245,243,236,0.45)] mt-1 max-w-md mx-auto">
-                        Gere bilhetes e aguarde a validação automática assim que os jogos terminarem ou clique em "Finalizar 1 jogo" na barra lateral para testar.
-                      </p>
-                    </div>
-                  ) : (
-                    <div>
-                      <p className="font-medium text-[#F5F3EC]">Nenhum bilhete gerado para este horizonte temporal.</p>
+                      <p className="font-medium text-[#F5F3EC]">Nenhuma ficha pendente para este horizonte.</p>
                       <p className="text-xs text-[rgba(245,243,236,0.45)] mt-1 mb-4 max-w-md mx-auto">
-                        Acione o motor do Jev para analisar os confrontos e gerar as fichas combinadas.
+                        O agendador repõe o estoque automaticamente. Pode também gerar uma ficha agora.
                       </p>
                       <button
                         type="button"
                         onClick={() => handleGenerateScope(scope as 'dia' | '2_3_dias' | 'longo')}
                         disabled={generating}
-                        className="cursor-pointer inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded bg-[#E7B33E] hover:bg-[#F0C869] text-[#3A2A06]"
+                        className="cursor-pointer inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded bg-[#E7B33E] hover:bg-[#F0C869] text-[#3A2A06] disabled:opacity-50"
                       >
                         <Zap className="w-3.5 h-3.5 fill-current" />
-                        <span>Gerar bilhetes com Jev</span>
+                        <span>Gerar ficha agora</span>
                       </button>
                     </div>
-                  )}
-                </div>
-              )}
-            </div>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         </div>
       </main>
+
+      {/* Ação global: gerar ficha a partir de qualquer parte do site */}
+      <button
+        type="button"
+        onClick={() =>
+          handleGenerateScope(scope === 'historico' ? 'dia' : (scope as 'dia' | '2_3_dias' | 'longo'))
+        }
+        disabled={generating}
+        className="fixed bottom-6 right-6 z-40 cursor-pointer flex items-center gap-2 px-4 py-3 rounded-full bg-[#E7B33E] hover:bg-[#F0C869] text-[#3A2A06] font-semibold text-sm shadow-2xl disabled:opacity-60 active:translate-y-[1px]"
+        title="Gerar novas fichas para o horizonte ativo"
+      >
+        {generating ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : (
+          <Zap className="w-4 h-4 fill-current" />
+        )}
+        <span>Gerar ficha</span>
+      </button>
 
       {/* Footer */}
       <footer className="border-t border-[rgba(245,243,236,0.14)] py-7 bg-[#081C13]">

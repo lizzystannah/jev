@@ -11,6 +11,9 @@ coverage/
 .odds_api_cache.json
 .aiscore_context_cache.json
 
+# Base de dados de fichas (SQLite).
+.data/
+
 # Bytecode Python.
 __pycache__/
 *.pyc

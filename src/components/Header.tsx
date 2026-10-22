@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BackendStatus } from '../types.js';
-import { Server, Sparkles, RefreshCw, Clock, Globe } from 'lucide-react';
+import { Server, Sparkles, RefreshCw, Clock, Globe, Zap, Loader2 } from 'lucide-react';
 import { TIMEZONE_OPTIONS, formatTimeInTz } from '../utils/timezone.js';
 
 interface HeaderProps {
@@ -8,6 +8,8 @@ interface HeaderProps {
   onOpenApiModal: () => void;
   onOpenAiSlipModal: () => void;
   onRefresh: () => void;
+  onGenerate: () => void;
+  generating: boolean;
   loading: boolean;
   timezone: string;
   onTimezoneChange: (tz: string) => void;
@@ -18,6 +20,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenApiModal,
   onOpenAiSlipModal,
   onRefresh,
+  onGenerate,
+  generating,
   loading,
   timezone,
   onTimezoneChange,
@@ -124,6 +128,22 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="font-semibold text-[#F5F3EC] truncate max-w-[120px] sm:max-w-none">
               {providerName}
             </span>
+          </button>
+
+          {/* Generate Quick Trigger (disponível em qualquer parte do site) */}
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={generating}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-colors border cursor-pointer bg-[#E7B33E] hover:bg-[#F0C869] border-[#E7B33E] text-[#3A2A06] disabled:opacity-60"
+            title="Gerar novas fichas para o horizonte ativo"
+          >
+            {generating ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Zap className="w-3.5 h-3.5 fill-current" />
+            )}
+            <span className="hidden sm:inline">Gerar</span>
           </button>
 
           {/* AI Generation Quick Trigger */}
