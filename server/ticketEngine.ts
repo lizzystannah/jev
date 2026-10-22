@@ -194,9 +194,15 @@ export class TicketEngine {
   private slips: BetSlip[] = [];
   private slipCounter = 100;
   private lastJevLatencyMs = 62;
+  private initialized = false;
 
-  constructor() {
-    this.slips = bilheteriaDb.loadSlips();
+  /**
+   * Carrega as fichas persistidas para memória. Deve ser chamado uma única vez
+   * no arranque, depois de `bilheteriaDb.init()`.
+   */
+  public async init(): Promise<void> {
+    if (this.initialized) return;
+    this.slips = await bilheteriaDb.loadSlips();
     // Continua a numeração a partir da última ficha persistida (evita IDs repetidos).
     let maxSeq = 100;
     for (const slip of this.slips) {
@@ -204,6 +210,7 @@ export class TicketEngine {
       if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
     }
     this.slipCounter = Math.max(maxSeq, Number(bilheteriaDb.getMeta('slip_counter') || 0));
+    this.initialized = true;
   }
 
   public getSlips(): BetSlip[] {

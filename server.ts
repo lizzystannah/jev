@@ -8,6 +8,7 @@ import { createServer as createViteServer } from 'vite';
 import { marketService } from './server/marketService.js';
 import { ticketEngine } from './server/ticketEngine.js';
 import { ticketScheduler } from './server/ticketScheduler.js';
+import { bilheteriaDb } from './server/db.js';
 import { analyzeMatchTactics, generateSmartSlipWithAi } from './server/aiService.js';
 import { aiscoreClient, decodePackedSint32, parseMatchScores, scoutToMatchContext } from './server/aiscoreService.js';
 import { getLocalCumulativeMetrics, AISCORE_ENGINE_VERSION } from './server/aiscoreEngine.js';
@@ -19,6 +20,10 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const isProd = process.env.NODE_ENV === 'production';
 
 async function startServer() {
+  // Persistência primeiro: sem base de dados pronta não há fichas nem agendador.
+  await bilheteriaDb.init();
+  await ticketEngine.init();
+
   const app = express();
   app.use(express.json());
 
@@ -355,13 +360,18 @@ async function startServer() {
     ticketScheduler.start();
   });
 
-  const shutdown = (signal: string) => {
-    console.log(`[Bilheteria Backend] ${signal} recebido. A encerrar agendador...`);
+  const shutdown = async (signal: string) => {
+    console.log(`[Bilheteria Backend] ${signal} recebido. A encerrar agendador e a gravar estado...`);
     ticketScheduler.stop();
+    try {
+      await bilheteriaDb.close();
+    } catch (err: any) {
+      console.warn('[Bilheteria Backend] Falha ao fechar base de dados:', err?.message);
+    }
     process.exit(0);
   };
-  process.once('SIGINT', () => shutdown('SIGINT'));
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
 startServer().catch((err) => {
