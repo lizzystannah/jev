@@ -15,8 +15,10 @@ a partir de jogos reais (AiScore + odds de mercado).
   Hoje = 3, 2 a 3 dias = 3, Longo prazo = 2 (configurável em `.env`).
   Sempre que uma ficha cai (ganha/perde/expira), o agendador **repõe** o estoque.
 - **Persistência na base de dados**: todas as fichas vivem **exclusivamente**
-  numa base de dados externa definida em `DATABASE_URL` (PostgreSQL ou Turso).
-  O container não precisa de volume e não guarda estado das fichas localmente.
+  numa base de dados **MySQL** configurada por variáveis de ambiente
+  (`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`,
+  `MYSQL_DATABASE`). O container não precisa de volume e não guarda estado
+  das fichas localmente.
 - **Histórico** com abas: **Ganhas**, **Perdidas**, **Vencidas/Expiradas** e
   **Em andamento**. Lista compacta (expandir por linha) com data de criação.
 - **Botão "Gerar"** disponível a partir de qualquer parte do site (cabeçalho,
@@ -24,31 +26,44 @@ a partir de jogos reais (AiScore + odds de mercado).
 
 O agendador corre **dentro do servidor**: funciona mesmo com o site fechado.
 
-## Base de dados
+## Base de dados (MySQL)
 
-`DATABASE_URL` escolhe o motor automaticamente:
+Toda a configuração vem da env:
 
-| `DATABASE_URL` | Motor |
-| --- | --- |
-| `postgres://user:pass@host:5432/db` | PostgreSQL (via `pg`) |
-| `libsql://<db>-<org>.turso.io` + `DATABASE_AUTH_TOKEN` | Turso / libSQL |
-| `https://<db>-<org>.turso.io` + `DATABASE_AUTH_TOKEN` | Turso / libSQL |
-| *(vazio)* | SQLite local em `.data/bilheteria.db` (apenas desenvolvimento) |
+| Variável | Exemplo | Obrigatória |
+| --- | --- | --- |
+| `MYSQL_HOST` | `127.0.0.1` | sim |
+| `MYSQL_PORT` | `3306` | não (default `3306`) |
+| `MYSQL_USER` | `bilheteria` | sim |
+| `MYSQL_PASSWORD` | `segredo` | não (pode ser vazia) |
+| `MYSQL_DATABASE` | `bilheteria` | sim |
+| `MYSQL_SSL` | `1` | não (default desligado) |
 
-O schema (`slips` + `meta`) é criado automaticamente no arranque. As escritas
-são serializadas (write-behind) e descarregadas no shutdown.
+O schema (`slips` + `meta`) é criado automaticamente no arranque, na base de
+dados indicada em `MYSQL_DATABASE` (tem de existir). As escritas são
+serializadas (write-behind) e descarregadas no shutdown.
+
+Se `MYSQL_HOST`, `MYSQL_USER` e `MYSQL_DATABASE` estiverem vazios, o servidor
+usa SQLite local em `.data/bilheteria.db` apenas para desenvolvimento. Se apenas
+parte deles estiver preenchida, o arranque falha com uma mensagem a indicar o
+que falta.
 
 ## Requisitos
 
 - **Node.js 24+** (o fallback local usa `node:sqlite`).
+- **MySQL 5.7+ / 8.0+ / MariaDB 10.5+** (em produção).
 - Python com `curl_cffi` (bridge AiScore) — já configurado em `Scraping/`.
 
 ## Correr localmente
 
 ```bash
 npm install
-# define a BD externa em .env:
-#   DATABASE_URL="postgres://..."
+# define a BD MySQL em .env:
+#   MYSQL_HOST="127.0.0.1"
+#   MYSQL_PORT="3306"
+#   MYSQL_USER="bilheteria"
+#   MYSQL_PASSWORD="segredo"
+#   MYSQL_DATABASE="bilheteria"
 npm run dev        # desenvolvimento
 # ou
 npm start          # servidor de produção local
@@ -73,8 +88,12 @@ Ver `.env.example`. Chaves relevantes:
 
 | Variável | Default | Descrição |
 | --- | --- | --- |
-| `DATABASE_URL` | *(vazio)* | BD externa: `postgres://`, `libsql://` ou `https://` |
-| `DATABASE_AUTH_TOKEN` | *(vazio)* | Token do Turso (libSQL) |
+| `MYSQL_HOST` | *(vazio)* | Host do MySQL (obrigatório em produção) |
+| `MYSQL_PORT` | `3306` | Porta do MySQL |
+| `MYSQL_USER` | *(vazio)* | Utilizador do MySQL |
+| `MYSQL_PASSWORD` | *(vazio)* | Password do MySQL |
+| `MYSQL_DATABASE` | *(vazio)* | Nome da base de dados (deve existir) |
+| `MYSQL_SSL` | *(desligado)* | `1` liga SSL na ligação ao MySQL |
 | `BILHETERIA_DB_PATH` | `.data/bilheteria.db` | SQLite local (só fallback de dev) |
 | `TICKETS_QUOTA_DIA` | `3` | Estoque mínimo de fichas de Hoje |
 | `TICKETS_QUOTA_MED` | `3` | Estoque mínimo de 2 a 3 dias |
@@ -93,12 +112,16 @@ Ver `.env.example`. Chaves relevantes:
 
 ## Docker
 
-Node 24 é obrigatório. O container é **stateless**: a persistência fica na BD
-externa configurada por `DATABASE_URL` (sem volume).
+Node 24 é obrigatório. O container é **stateless**: a persistência fica no
+MySQL configurado por variáveis de ambiente (sem volume).
 
 ```bash
 docker build -t bilheteria:latest .
 docker run --rm -p 3000:3000 \
-  -e DATABASE_URL="postgres://user:pass@host:5432/bilheteria" \
+  -e MYSQL_HOST="host-do-mysql" \
+  -e MYSQL_PORT="3306" \
+  -e MYSQL_USER="bilheteria" \
+  -e MYSQL_PASSWORD="segredo" \
+  -e MYSQL_DATABASE="bilheteria" \
   bilheteria:latest
 ```

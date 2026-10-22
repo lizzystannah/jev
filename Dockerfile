@@ -6,13 +6,17 @@
 #   docker build -t bilheteria:latest .
 # Run (nunca montar o .env local com chaves — passar por ambiente):
 #   docker run --rm -p 3000:3000 \
-#     -e DATABASE_URL="postgres://user:pass@host:5432/bilheteria" \
+#     -e MYSQL_HOST="host-do-mysql" \
+#     -e MYSQL_PORT="3306" \
+#     -e MYSQL_USER="bilheteria" \
+#     -e MYSQL_PASSWORD="segredo" \
+#     -e MYSQL_DATABASE="bilheteria" \
 #     -e ODDS_API_KEY="" \
 #     -e GEMINI_API_KEY="" \
 #     bilheteria:latest
 #
-# Persistência: fica EXCLUSIVAMENTE na base de dados externa definida em
-# DATABASE_URL. O container não precisa de volume e não guarda estado das
+# Persistência: fica EXCLUSIVAMENTE na base de dados MySQL configurada pelas
+# variáveis MYSQL_*. O container não precisa de volume e não guarda estado das
 # fichas localmente.
 #
 # Notas:

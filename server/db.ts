@@ -1,19 +1,24 @@
 /**
  * Repositório de fichas (bilhetes) — a ÚNICA camada de persistência.
  *
- * A base de dados é externa/configurável por DATABASE_URL:
- *   postgres://...  -> PostgreSQL
- *   libsql://...    -> Turso / libSQL
- *   (vazio)         -> SQLite local (apenas desenvolvimento)
+ * A base de dados é MySQL, configurada por variáveis de ambiente:
+ *   MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
  *
- * O estado vive na base de dados; o processo mantém apenas uma cópia em memória
- * para leitura rápida. As escritas são serializadas numa fila (write-behind) e
- * podem ser forçadas com flush() antes de desligar.
+ * Sem configuração MYSQL_*, usa SQLite local em .data/bilheteria.db (apenas
+ * desenvolvimento). Em produção a persistência vive só no MySQL.
+ *
+ * O processo mantém uma cópia em memória para leitura rápida. As escritas são
+ * serializadas numa fila (write-behind) e descarregadas com flush() no shutdown.
  */
 
 import path from 'path';
 import type { BetSlip, MatchItem } from './types.js';
-import { createSqlDriver, type SqlDriver } from './sqlDriver.js';
+import {
+  createSqlDriver,
+  mysqlConfigFromEnv,
+  type Dialect,
+  type SqlDriver,
+} from './sqlDriver.js';
 
 const LOCAL_DB_PATH =
   process.env.BILHETERIA_DB_PATH?.trim() || path.join(process.cwd(), '.data', 'bilheteria.db');
@@ -41,15 +46,67 @@ export function slimSlip(slip: BetSlip): BetSlip {
   };
 }
 
-const SLIP_COLUMNS =
-  'id, scope, tier, status, color, legs_json, combined_odds, combined_prob, ' +
-  'expires_at, created_at, resolved_at, custom_title, rationale, is_ai_generated, ' +
-  'day_key, updated_at';
+const SLIP_COLUMNS = [
+  'id',
+  'scope',
+  'tier',
+  'status',
+  'color',
+  'legs_json',
+  'combined_odds',
+  'combined_prob',
+  'expires_at',
+  'created_at',
+  'resolved_at',
+  'custom_title',
+  'rationale',
+  'is_ai_generated',
+  'day_key',
+  'updated_at',
+] as const;
 
-/** SQL do schema, parametrizado pelo dialeto (tipos BIGINT vs INTEGER). */
-export function buildSchemaStatements(dialect: 'postgres' | 'sqlite'): string[] {
-  const bigint = dialect === 'postgres' ? 'BIGINT' : 'INTEGER';
-  const real = dialect === 'postgres' ? 'DOUBLE PRECISION' : 'REAL';
+const SLIP_COLUMNS_SQL = SLIP_COLUMNS.join(', ');
+
+/** Colunas atualizadas num upsert (o id é a chave e nunca muda). */
+const SLIP_UPDATABLE = SLIP_COLUMNS.filter((column) => column !== 'id');
+
+/**
+ * SQL do schema, por dialeto. No MySQL os índices vivem no CREATE TABLE
+ * (não existe CREATE INDEX IF NOT EXISTS); no SQLite são statements à parte.
+ */
+export function buildSchemaStatements(dialect: Dialect): string[] {
+  if (dialect === 'mysql') {
+    return [
+      `CREATE TABLE IF NOT EXISTS slips (
+        id VARCHAR(64) NOT NULL,
+        scope VARCHAR(32) NOT NULL,
+        tier VARCHAR(32) NOT NULL,
+        status VARCHAR(32) NOT NULL,
+        color VARCHAR(32) NOT NULL,
+        legs_json LONGTEXT NOT NULL,
+        combined_odds DOUBLE NOT NULL,
+        combined_prob DOUBLE NOT NULL,
+        expires_at BIGINT NOT NULL,
+        created_at BIGINT NOT NULL,
+        resolved_at BIGINT NULL,
+        custom_title TEXT NULL,
+        rationale TEXT NULL,
+        is_ai_generated TINYINT NOT NULL DEFAULT 1,
+        day_key VARCHAR(16) NULL,
+        updated_at BIGINT NOT NULL,
+        PRIMARY KEY (id),
+        KEY idx_slips_status (status),
+        KEY idx_slips_scope_day (scope, day_key),
+        KEY idx_slips_created (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+      `CREATE TABLE IF NOT EXISTS meta (
+        meta_key VARCHAR(128) NOT NULL,
+        meta_value TEXT NOT NULL,
+        PRIMARY KEY (meta_key)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+    ];
+  }
+
   return [
     `CREATE TABLE IF NOT EXISTS slips (
       id TEXT PRIMARY KEY,
@@ -58,54 +115,56 @@ export function buildSchemaStatements(dialect: 'postgres' | 'sqlite'): string[] 
       status TEXT NOT NULL,
       color TEXT NOT NULL,
       legs_json TEXT NOT NULL,
-      combined_odds ${real} NOT NULL,
-      combined_prob ${real} NOT NULL,
-      expires_at ${bigint} NOT NULL,
-      created_at ${bigint} NOT NULL,
-      resolved_at ${bigint},
+      combined_odds REAL NOT NULL,
+      combined_prob REAL NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      resolved_at INTEGER,
       custom_title TEXT,
       rationale TEXT,
       is_ai_generated INTEGER NOT NULL DEFAULT 1,
       day_key TEXT,
-      updated_at ${bigint} NOT NULL
+      updated_at INTEGER NOT NULL
     )`,
     'CREATE INDEX IF NOT EXISTS idx_slips_status ON slips(status)',
     'CREATE INDEX IF NOT EXISTS idx_slips_scope_day ON slips(scope, day_key)',
     'CREATE INDEX IF NOT EXISTS idx_slips_created ON slips(created_at)',
     `CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
+      meta_key TEXT PRIMARY KEY,
+      meta_value TEXT NOT NULL
     )`,
   ];
 }
 
-export const SLIP_UPSERT_SQL = `INSERT INTO slips (${SLIP_COLUMNS})
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT (id) DO UPDATE SET
-    scope = excluded.scope,
-    tier = excluded.tier,
-    status = excluded.status,
-    color = excluded.color,
-    legs_json = excluded.legs_json,
-    combined_odds = excluded.combined_odds,
-    combined_prob = excluded.combined_prob,
-    expires_at = excluded.expires_at,
-    created_at = excluded.created_at,
-    resolved_at = excluded.resolved_at,
-    custom_title = excluded.custom_title,
-    rationale = excluded.rationale,
-    is_ai_generated = excluded.is_ai_generated,
-    day_key = excluded.day_key,
-    updated_at = excluded.updated_at`;
+export function slipUpsertSql(dialect: Dialect): string {
+  const placeholders = SLIP_COLUMNS.map(() => '?').join(', ');
 
-export const META_UPSERT_SQL = `INSERT INTO meta (key, value) VALUES (?, ?)
-  ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
+  if (dialect === 'mysql') {
+    const updates = SLIP_UPDATABLE.map((column) => `${column} = VALUES(${column})`).join(', ');
+    return `INSERT INTO slips (${SLIP_COLUMNS_SQL}) VALUES (${placeholders})
+      ON DUPLICATE KEY UPDATE ${updates}`;
+  }
+
+  const updates = SLIP_UPDATABLE.map((column) => `${column} = excluded.${column}`).join(', ');
+  return `INSERT INTO slips (${SLIP_COLUMNS_SQL}) VALUES (${placeholders})
+    ON CONFLICT (id) DO UPDATE SET ${updates}`;
+}
+
+export function metaUpsertSql(dialect: Dialect): string {
+  return dialect === 'mysql'
+    ? `INSERT INTO meta (meta_key, meta_value) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)`
+    : `INSERT INTO meta (meta_key, meta_value) VALUES (?, ?)
+       ON CONFLICT (meta_key) DO UPDATE SET meta_value = excluded.meta_value`;
+}
 
 class BilheteriaDatabase {
   private driver: SqlDriver | null = null;
   private ready = false;
   private meta = new Map<string, string>();
   private writeQueue: Promise<void> = Promise.resolve();
+  private slipUpsert = '';
+  private metaUpsert = '';
 
   public get isReady(): boolean {
     return this.ready;
@@ -119,7 +178,9 @@ class BilheteriaDatabase {
 
   public async init(): Promise<void> {
     if (this.ready) return;
-    this.driver = await createSqlDriver(process.env.DATABASE_URL, LOCAL_DB_PATH);
+
+    const mysql = mysqlConfigFromEnv();
+    this.driver = await createSqlDriver(mysql, LOCAL_DB_PATH);
 
     let lastError: any = null;
     for (let attempt = 1; attempt <= 5; attempt++) {
@@ -145,6 +206,9 @@ class BilheteriaDatabase {
 
     await this.createSchema();
     await this.loadMeta();
+
+    this.slipUpsert = slipUpsertSql(this.driver.dialect);
+    this.metaUpsert = metaUpsertSql(this.driver.dialect);
     this.ready = true;
     console.log(`[Bilheteria DB] Persistência ativa: ${this.driver.description}`);
   }
@@ -158,9 +222,11 @@ class BilheteriaDatabase {
 
   private async loadMeta(): Promise<void> {
     try {
-      const rows = await this.requireDriver().query('SELECT key, value FROM meta');
+      const rows = await this.requireDriver().query(
+        'SELECT meta_key, meta_value FROM meta'
+      );
       for (const row of rows) {
-        if (row?.key != null) this.meta.set(String(row.key), String(row.value));
+        if (row?.meta_key != null) this.meta.set(String(row.meta_key), String(row.meta_value));
       }
     } catch (err: any) {
       console.warn('[Bilheteria DB] Falha ao carregar meta:', err?.message);
@@ -246,7 +312,7 @@ class BilheteriaDatabase {
 
     this.enqueue(() =>
       this.requireDriver()
-        .query(SLIP_UPSERT_SQL, params)
+        .query(this.slipUpsert, params)
         .then(() => undefined)
     );
   }
@@ -269,7 +335,7 @@ class BilheteriaDatabase {
     this.meta.set(key, value);
     this.enqueue(() =>
       this.requireDriver()
-        .query(META_UPSERT_SQL, [key, value])
+        .query(this.metaUpsert, [key, value])
         .then(() => undefined)
     );
   }
