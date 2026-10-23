@@ -108,6 +108,47 @@ export interface MatchItem {
 export type SlipScope = 'dia' | '2_3_dias' | 'longo' | 'historico';
 export type SlipTier = 'segura' | 'moderada' | 'ousada';
 
+/** Estado da última tentativa de subir a ficha para a Premier Bet. */
+export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
+
+export interface SlipUpload {
+  slipId: string;
+  status: SlipUploadStatus;
+  /** Valor apostado em Kwanzas (AOA). */
+  stake: number;
+  betId?: string;
+  message?: string;
+  /** Timestamp (ms) da última tentativa. */
+  at: number;
+}
+
+export interface PremierBetStatus {
+  configured: boolean;
+  dryRun: boolean;
+  headful: boolean;
+  defaultStake: number;
+  maxStake: number;
+  minStake: number;
+  scriptExists: boolean;
+}
+
+export interface PremierBetUploadResult {
+  ok: boolean;
+  placed: boolean;
+  dryRun: boolean;
+  loggedIn: boolean;
+  filled: number;
+  totalOdds: number | null;
+  stake: number;
+  betId?: string | null;
+  message: string;
+  detail?: string;
+  unknown?: boolean;
+  screenshot?: string | null;
+  durationMs?: number;
+  upload?: SlipUpload;
+}
+
 export interface BetSlip {
   id: string;
   scope: 'dia' | '2_3_dias' | 'longo';
@@ -125,6 +166,8 @@ export interface BetSlip {
   isAiGenerated?: boolean;
   /** Data-calendário de Angola (YYYY-MM-DD) em que a ficha foi criada. */
   dayKey?: string;
+  /** Preenchido pela API: última tentativa de subir para a Premier Bet. */
+  upload?: SlipUpload | null;
 }
 
 export type HistoryFilter = 'andamento' | 'ganhas' | 'perdidas' | 'vencidas';

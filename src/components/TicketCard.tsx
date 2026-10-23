@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
 import { BetSlip, MatchItem } from '../types.js';
-import { Copy, Check, Sparkles, Cpu, Clock, Calendar, CheckCircle2, XCircle, Activity, Hourglass } from 'lucide-react';
+import { Copy, Check, Sparkles, Cpu, Clock, Calendar, CheckCircle2, XCircle, Activity, Hourglass, UploadCloud } from 'lucide-react';
 import { formatDateTimeInTz, formatMatchSchedule } from '../utils/timezone.js';
 
 interface TicketCardProps {
   slip: BetSlip;
   timezone?: string;
+  onUpload?: (slip: BetSlip) => void;
+}
+
+function formatKzShort(value: number): string {
+  return `${new Intl.NumberFormat('pt-PT', { maximumFractionDigits: 2 }).format(value)} Kz`;
 }
 
 function formatCountdown(targetMs: number): string {
@@ -19,7 +24,7 @@ function formatCountdown(targetMs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa/Luanda' }) => {
+export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa/Luanda', onUpload }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -278,6 +283,69 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
           </div>
         </div>
       </div>
+
+      {/* Premier Bet: subir a ficha / estado */}
+      {isPending && (
+        <div className="mt-3 pt-3 border-t border-[rgba(245,243,236,0.1)] flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            {slip.upload?.status === 'in_progress' ? (
+              <span
+                className="text-[10.5px] font-semibold px-2 py-0.5 rounded bg-[rgba(231,179,62,0.15)] text-[#E7B33E] border border-[rgba(231,179,62,0.3)] inline-flex items-center gap-1"
+                title="Submissão em curso. Se o servidor reiniciou, verifica as apostas abertas na Premier Bet."
+              >
+                <Activity className="w-3 h-3 animate-pulse" />
+                Em curso na Premier Bet...
+              </span>
+            ) : slip.upload?.status === 'placed' ? (
+              <span
+                className="text-[10.5px] font-semibold px-2 py-0.5 rounded bg-[rgba(79,174,115,0.15)] text-[#4FAE73] border border-[rgba(79,174,115,0.3)] inline-flex items-center gap-1"
+                title={slip.upload.betId ? `ID da aposta: ${slip.upload.betId}` : undefined}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                No ar · {formatKzShort(slip.upload.stake)}
+              </span>
+            ) : slip.upload?.status === 'unknown' ? (
+              <span
+                className="text-[10.5px] font-semibold px-2 py-0.5 rounded bg-[rgba(231,179,62,0.15)] text-[#E7B33E] border border-[rgba(231,179,62,0.3)] inline-flex items-center gap-1"
+                title="Verifica as apostas abertas na Premier Bet antes de tentar novamente."
+              >
+                <Activity className="w-3 h-3" />
+                Confirmar na Premier Bet
+              </span>
+            ) : slip.upload?.status === 'dry_run' ? (
+              <span
+                className="text-[10.5px] font-medium px-2 py-0.5 rounded bg-[rgba(245,243,236,0.07)] text-[rgba(245,243,236,0.65)] border border-[rgba(245,243,236,0.18)]"
+                title="A última tentativa foi apenas um teste; nenhuma aposta foi colocada."
+              >
+                Teste (sem aposta)
+              </span>
+            ) : slip.upload?.status === 'failed' ? (
+              <span
+                className="text-[10.5px] font-medium px-2 py-0.5 rounded bg-[rgba(209,89,75,0.15)] text-[#D1594B] border border-[rgba(209,89,75,0.3)]"
+                title={slip.upload.message}
+              >
+                Última tentativa falhou
+              </span>
+            ) : (
+              <span className="text-[10.5px] text-[rgba(245,243,236,0.45)]">
+                Ainda não subida para a Premier Bet
+              </span>
+            )}
+          </div>
+
+          {onUpload && (
+            <button
+              type="button"
+              onClick={() => onUpload(slip)}
+              className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded border border-[#E7B33E]/60 text-[#E7B33E] hover:bg-[#E7B33E] hover:text-[#3A2A06] transition-colors"
+              title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir'}
+            </button>
+          )}
+        </div>
+      )}
     </article>
   );
 };

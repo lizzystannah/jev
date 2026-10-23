@@ -12,7 +12,7 @@
  */
 
 import path from 'path';
-import type { BetSlip, MatchItem } from './types.js';
+import type { BetSlip, MatchItem, SlipUpload } from './types.js';
 import {
   createSqlDriver,
   mysqlConfigFromEnv,
@@ -104,6 +104,17 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
         meta_value TEXT NOT NULL,
         PRIMARY KEY (meta_key)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+      `CREATE TABLE IF NOT EXISTS slip_uploads (
+        slip_id VARCHAR(64) NOT NULL,
+        status VARCHAR(32) NOT NULL,
+        stake DOUBLE NOT NULL,
+        bet_id VARCHAR(128) NULL,
+        message TEXT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        PRIMARY KEY (slip_id),
+        KEY idx_slip_uploads_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     ];
   }
 
@@ -133,6 +144,16 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
       meta_key TEXT PRIMARY KEY,
       meta_value TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS slip_uploads (
+      slip_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      stake REAL NOT NULL,
+      bet_id TEXT,
+      message TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_slip_uploads_status ON slip_uploads(status)',
   ];
 }
 
@@ -158,13 +179,39 @@ export function metaUpsertSql(dialect: Dialect): string {
        ON CONFLICT (meta_key) DO UPDATE SET meta_value = excluded.meta_value`;
 }
 
+export function slipUploadUpsertSql(dialect: Dialect): string {
+  if (dialect === 'mysql') {
+    return `INSERT INTO slip_uploads
+      (slip_id, status, stake, bet_id, message, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        status = VALUES(status),
+        stake = VALUES(stake),
+        bet_id = VALUES(bet_id),
+        message = VALUES(message),
+        updated_at = VALUES(updated_at)`;
+  }
+
+  return `INSERT INTO slip_uploads
+    (slip_id, status, stake, bet_id, message, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (slip_id) DO UPDATE SET
+      status = excluded.status,
+      stake = excluded.stake,
+      bet_id = excluded.bet_id,
+      message = excluded.message,
+      updated_at = excluded.updated_at`;
+}
+
 class BilheteriaDatabase {
   private driver: SqlDriver | null = null;
   private ready = false;
   private meta = new Map<string, string>();
+  private uploads = new Map<string, SlipUpload>();
   private writeQueue: Promise<void> = Promise.resolve();
   private slipUpsert = '';
   private metaUpsert = '';
+  private uploadUpsert = '';
 
   public get isReady(): boolean {
     return this.ready;
@@ -206,9 +253,11 @@ class BilheteriaDatabase {
 
     await this.createSchema();
     await this.loadMeta();
+    await this.loadUploads();
 
     this.slipUpsert = slipUpsertSql(this.driver.dialect);
     this.metaUpsert = metaUpsertSql(this.driver.dialect);
+    this.uploadUpsert = slipUploadUpsertSql(this.driver.dialect);
     this.ready = true;
     console.log(`[Bilheteria DB] Persistência ativa: ${this.driver.description}`);
   }
@@ -230,6 +279,47 @@ class BilheteriaDatabase {
       }
     } catch (err: any) {
       console.warn('[Bilheteria DB] Falha ao carregar meta:', err?.message);
+    }
+  }
+
+  private async loadUploads(): Promise<void> {
+    try {
+      const rows = await this.requireDriver().query('SELECT * FROM slip_uploads');
+      const valid: SlipUpload['status'][] = [
+        'in_progress',
+        'placed',
+        'dry_run',
+        'failed',
+        'unknown',
+      ];
+      let interrupted = 0;
+      for (const row of rows) {
+        const rawStatus = String(row?.status ?? '') as SlipUpload['status'];
+        if (!valid.includes(rawStatus)) continue;
+        const wasInProgress = rawStatus === 'in_progress';
+        if (wasInProgress) interrupted += 1;
+        const baseMessage = row.message == null ? undefined : String(row.message);
+        this.uploads.set(String(row.slip_id), {
+          slipId: String(row.slip_id),
+          status: wasInProgress ? 'unknown' : rawStatus,
+          stake: Number(row.stake) || 0,
+          betId: row.bet_id == null ? undefined : String(row.bet_id),
+          message: wasInProgress
+            ? 'Submissão interrompida (servidor reiniciado). Verifique as apostas abertas na Premier Bet.'
+            : baseMessage,
+          at: Number(row.updated_at ?? row.created_at) || Date.now(),
+        });
+      }
+      if (interrupted > 0) {
+        console.warn(
+          `[Bilheteria DB] ${interrupted} submissão(ões) Premier Bet interrompida(s) convertida(s) em "por confirmar".`
+        );
+      }
+      if (this.uploads.size > 0) {
+        console.log(`[Bilheteria DB] ${this.uploads.size} registo(s) de submissão Premier Bet restaurados.`);
+      }
+    } catch (err: any) {
+      console.warn('[Bilheteria DB] Falha ao carregar submissões Premier Bet:', err?.message);
     }
   }
 
@@ -322,7 +412,44 @@ class BilheteriaDatabase {
   }
 
   public deleteAllSlips(): void {
-    this.enqueue(() => this.requireDriver().query('DELETE FROM slips').then(() => undefined));
+    this.uploads.clear();
+    this.enqueue(async () => {
+      const driver = this.requireDriver();
+      await driver.query('DELETE FROM slip_uploads');
+      await driver.query('DELETE FROM slips');
+    });
+  }
+
+  // ------------------------------------------------------- premier bet uploads ---
+
+  /** Última tentativa de subir a ficha para a Premier Bet (null se nunca tentou). */
+  public getUpload(slipId: string): SlipUpload | null {
+    const record = this.uploads.get(slipId);
+    return record ? { ...record } : null;
+  }
+
+  public getUploads(): SlipUpload[] {
+    return Array.from(this.uploads.values()).map((record) => ({ ...record }));
+  }
+
+  /** Guarda (write-behind) o resultado da tentativa de submissão. */
+  public saveUpload(upload: SlipUpload): void {
+    const at = Date.now();
+    const record: SlipUpload = { ...upload, at };
+    this.uploads.set(upload.slipId, record);
+    this.enqueue(() =>
+      this.requireDriver()
+        .query(this.uploadUpsert, [
+          record.slipId,
+          record.status,
+          record.stake,
+          record.betId ?? null,
+          record.message ?? null,
+          at,
+          at,
+        ])
+        .then(() => undefined)
+    );
   }
 
   // ------------------------------------------------------------------- meta ---

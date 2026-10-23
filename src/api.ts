@@ -1,4 +1,13 @@
-import { BackendStatus, MatchItem, BetSlip, AiMatchAnalysis, TicketStockStatus } from './types.js';
+import {
+  BackendStatus,
+  MatchItem,
+  BetSlip,
+  AiMatchAnalysis,
+  TicketStockStatus,
+  PremierBetStatus,
+  PremierBetUploadResult,
+  SlipUpload,
+} from './types.js';
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
   const res = await fetch('/api/status');
@@ -22,6 +31,39 @@ export async function fetchTicketStock(): Promise<TicketStockStatus> {
   const res = await fetch('/api/tickets/stock');
   if (!res.ok) throw new Error('Falha ao obter estoque de bilhetes');
   return res.json();
+}
+
+export async function fetchPremierBetStatus(): Promise<PremierBetStatus> {
+  const res = await fetch('/api/premierbet/status');
+  if (!res.ok) throw new Error('Falha ao obter estado da Premier Bet');
+  return res.json();
+}
+
+export interface UploadSlipOptions {
+  /** Valor em Kwanzas (AOA). */
+  stake: number;
+  dryRun?: boolean;
+  force?: boolean;
+}
+
+export async function uploadSlip(
+  slipId: string,
+  options: UploadSlipOptions
+): Promise<PremierBetUploadResult> {
+  const res = await fetch(`/api/tickets/${encodeURIComponent(slipId)}/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'Falha ao subir a ficha para a Premier Bet') as Error & {
+      upload?: SlipUpload;
+    };
+    err.upload = data.upload;
+    throw err;
+  }
+  return data as PremierBetUploadResult;
 }
 
 export async function generateTickets(

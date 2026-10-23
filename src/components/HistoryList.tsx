@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   Hourglass,
+  UploadCloud,
   XCircle,
 } from 'lucide-react';
 import { formatDateTimeInTz, formatMatchSchedule } from '../utils/timezone.js';
@@ -16,6 +17,11 @@ interface HistoryListProps {
   timezone: string;
   emptyTitle: string;
   emptyHint: string;
+  onUpload?: (slip: BetSlip) => void;
+}
+
+function formatKzShort(value: number): string {
+  return `${new Intl.NumberFormat('pt-PT', { maximumFractionDigits: 2 }).format(value)} Kz`;
 }
 
 function statusMeta(status: BetSlip['status']) {
@@ -61,6 +67,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   timezone,
   emptyTitle,
   emptyHint,
+  onUpload,
 }) => {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -148,6 +155,20 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                     <span>{slip.legs.length} jogos</span>
                     <span>Odd {slip.combinedOdds.toFixed(2)}x</span>
                     <span>Prob. {slip.combinedProb}%</span>
+                    {slip.upload?.status === 'in_progress' && (
+                      <span className="text-[#E7B33E] font-medium">Em curso na Premier Bet</span>
+                    )}
+                    {slip.upload?.status === 'placed' && (
+                      <span className="text-[#4FAE73] font-medium">
+                        No ar · {formatKzShort(slip.upload.stake)}
+                      </span>
+                    )}
+                    {slip.upload?.status === 'unknown' && (
+                      <span className="text-[#E7B33E] font-medium">Confirmar na Premier Bet</span>
+                    )}
+                    {slip.upload?.status === 'dry_run' && (
+                      <span className="text-[rgba(245,243,236,0.55)]">Teste (sem aposta)</span>
+                    )}
                   </div>
                 </div>
 
@@ -212,6 +233,33 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                   {slip.rationale && (
                     <div className="mt-2.5 p-2 rounded bg-[#0E2A1C]/70 border border-[rgba(245,243,236,0.08)] text-[11px] text-[rgba(245,243,236,0.65)] italic leading-tight">
                       💡 {slip.rationale}
+                    </div>
+                  )}
+
+                  {slip.status === 'pendente' && onUpload && (
+                    <div className="mt-2.5 flex items-center justify-between gap-2">
+                      <span className="text-[10.5px] text-[rgba(245,243,236,0.5)]">
+                        {slip.upload?.status === 'in_progress'
+                          ? 'Submissão em curso na Premier Bet...'
+                          : slip.upload?.status === 'placed'
+                            ? `No ar na Premier Bet · ${formatKzShort(slip.upload.stake)}`
+                            : slip.upload?.status === 'unknown'
+                              ? 'Colocação por confirmar na Premier Bet'
+                              : slip.upload?.status === 'dry_run'
+                                ? 'Última tentativa foi apenas um teste'
+                                : slip.upload?.status === 'failed'
+                                  ? 'A última tentativa falhou'
+                                  : 'Ainda não subida para a Premier Bet'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onUpload(slip)}
+                        className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded border border-[#E7B33E]/60 text-[#E7B33E] hover:bg-[#E7B33E] hover:text-[#3A2A06] transition-colors"
+                        title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir'}
+                      </button>
                     </div>
                   )}
                 </div>

@@ -11,6 +11,8 @@
 #     -e MYSQL_USER="bilheteria" \
 #     -e MYSQL_PASSWORD="segredo" \
 #     -e MYSQL_DATABASE="bilheteria" \
+#     -e PREMIERBET_LOGIN="244..." \
+#     -e PREMIERBET_PASSWORD="segredo" \
 #     -e ODDS_API_KEY="" \
 #     -e GEMINI_API_KEY="" \
 #     bilheteria:latest
@@ -22,16 +24,27 @@
 # Notas:
 # - O bridge Python (Scraping/aiscore_bridge.py) usa curl_cffi para passar
 #   no Cloudflare do AiScore; as deps Python vivem em Scraping/ (autocontido).
+# - A automação da Premier Bet usa Playwright + Chromium (instalados abaixo em
+#   /ms-playwright). A imagem fica maior (~400 MB extra), mas o browser corre
+#   dentro do container sem depender do computador do utilizador.
 # - Caches de odds/scout são descartáveis e podem ser regenerados no arranque.
 # - NODE_ENV=production serve o frontend (dist/) + API na mesma porta.
 
 FROM node:24-bookworm-slim
 
-# Python 3 (bridge AiScore) + dependência nativa do curl_cffi (wheels linux).
+# Python 3 (bridges AiScore/Premier Bet) + curl_cffi + Playwright.
+# PLAYWRIGHT_BROWSERS_PATH fixa o Chromium fora da home do root para o appuser
+# conseguir lê-lo em runtime.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 python3-pip \
   && rm -rf /var/lib/apt/lists/* \
-  && pip install --no-cache-dir --break-system-packages "curl_cffi>=0.7"
+  && pip install --no-cache-dir --break-system-packages \
+       "curl_cffi>=0.7" "playwright>=1.49"
+
+RUN playwright install --with-deps chromium \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -39,7 +52,8 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
     PYTHONUTF8=1 \
-    AISCORE_PYTHON=python3
+    AISCORE_PYTHON=python3 \
+    PREMIERBET_NO_SANDBOX=1
 
 # Dependências Node primeiro (melhor cache de layers).
 COPY package.json package-lock.json ./

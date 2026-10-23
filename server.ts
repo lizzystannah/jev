@@ -12,6 +12,12 @@ import { bilheteriaDb } from './server/db.js';
 import { analyzeMatchTactics, generateSmartSlipWithAi } from './server/aiService.js';
 import { aiscoreClient, decodePackedSint32, parseMatchScores, scoutToMatchContext } from './server/aiscoreService.js';
 import { getLocalCumulativeMetrics, AISCORE_ENGINE_VERSION } from './server/aiscoreEngine.js';
+import type { BetSlip, SlipUpload } from './server/types.js';
+import {
+  PremierBetConfigError,
+  premierBetStatus,
+  uploadSlipToPremierBet,
+} from './server/premierbet.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +32,13 @@ async function startServer() {
 
   const app = express();
   app.use(express.json());
+
+  /** Anexa à ficha o estado da última submissão à Premier Bet. */
+  const withUploads = (slips: BetSlip[]): BetSlip[] =>
+    slips.map((slip) => ({ ...slip, upload: bilheteriaDb.getUpload(slip.id) }));
+
+  /** Evita dois cliques simultâneos na mesma ficha (risco de aposta duplicada). */
+  const uploadsInFlight = new Set<string>();
 
   // Background resolver: placar REAL via AiScore (match/data), a cada 90s.
   // Só resolve jogos terminados (statusId 8); jogos iniciados viram 'live'.
@@ -156,10 +169,16 @@ async function startServer() {
   // Reset matches & regenerate
   app.post('/api/matches/reset', async (req: Request, res: Response) => {
     try {
+      if (uploadsInFlight.size > 0) {
+        return res.status(409).json({
+          error:
+            'Há uma submissão à Premier Bet em curso. Aguarde o resultado antes de reiniciar as fichas.',
+        });
+      }
       const matches = marketService.resetMatches();
       ticketEngine.clearSlips();
       await ticketScheduler.forceRefillAll();
-      res.json({ matches, slips: ticketEngine.getSlips() });
+      res.json({ matches, slips: withUploads(ticketEngine.getSlips()) });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao reiniciar partidas' });
     }
@@ -169,7 +188,7 @@ async function startServer() {
   app.get('/api/tickets', (req: Request, res: Response) => {
     // Run validation sweep before returning
     ticketEngine.validateSlips();
-    res.json(ticketEngine.getSlips());
+    res.json(withUploads(ticketEngine.getSlips()));
   });
 
   // Stock/quota status (usado pelo frontend e por monitorização)
@@ -190,9 +209,150 @@ async function startServer() {
         Array.isArray(leagues) ? leagues : undefined,
         Number(limit) > 0 ? Number(limit) : 2
       );
-      res.json(result);
+      res.json({
+        ...result,
+        all: withUploads(result.all),
+        generated: withUploads(result.generated),
+      });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao gerar bilhetes' });
+    }
+  });
+
+  // ---------------------------------------------------------------- premier bet ---
+
+  // Configuração visível ao frontend (sem expor credenciais).
+  app.get('/api/premierbet/status', (req: Request, res: Response) => {
+    res.json(premierBetStatus());
+  });
+
+  // Sobe uma ficha para a Premier Bet: login, boletim e (se não for dry-run)
+  // colocação da aposta com o valor indicado em Kwanzas.
+  app.post('/api/tickets/:id/upload', async (req: Request, res: Response) => {
+    const slip = ticketEngine.getSlips().find((s) => s.id === req.params.id);
+    if (!slip) {
+      return res.status(404).json({ error: 'Ficha não encontrada.' });
+    }
+    if (slip.status !== 'pendente') {
+      return res.status(409).json({
+        error: 'Só é possível subir fichas pendentes (ainda não resolvidas ou expiradas).',
+      });
+    }
+    if (uploadsInFlight.has(slip.id)) {
+      return res.status(409).json({
+        error: 'Esta ficha já está a ser subida para a Premier Bet. Aguarde o resultado.',
+      });
+    }
+
+    const stake = Number(req.body?.stake);
+    const status = premierBetStatus();
+    if (!Number.isFinite(stake) || stake <= 0) {
+      return res.status(400).json({ error: 'Indique um valor de aposta válido (em Kwanzas).' });
+    }
+    if (stake < status.minStake) {
+      return res.status(400).json({ error: `O valor mínimo é ${status.minStake} Kz.` });
+    }
+    if (status.maxStake > 0 && stake > status.maxStake) {
+      return res.status(400).json({
+        error: `O valor máximo configurado é ${status.maxStake} Kz.`,
+      });
+    }
+
+    const dryRun = Boolean(req.body?.dryRun) || status.dryRun;
+    const force = Boolean(req.body?.force);
+    const existing = bilheteriaDb.getUpload(slip.id);
+
+    if (!dryRun && existing?.status === 'placed' && !force) {
+      return res.status(409).json({
+        error: `Esta ficha já foi colocada na Premier Bet${
+          existing.betId ? ` (ID ${existing.betId})` : ''
+        }. Confirme para subir novamente.`,
+        upload: existing,
+      });
+    }
+    if (!dryRun && existing?.status === 'unknown' && !force) {
+      return res.status(409).json({
+        error:
+          'A tentativa anterior ficou por confirmar. Verifique as apostas abertas na Premier Bet antes de tentar novamente.',
+        upload: existing,
+      });
+    }
+    if (!dryRun && existing?.status === 'in_progress' && !force) {
+      return res.status(409).json({
+        error:
+          'Esta ficha está a ser subida para a Premier Bet. Aguarde o resultado ou verifique as apostas abertas antes de tentar novamente.',
+        upload: existing,
+      });
+    }
+    if (!dryRun && !status.configured) {
+      return res.status(503).json({
+        error:
+          'Credenciais da Premier Bet não configuradas no servidor (PREMIERBET_LOGIN / PREMIERBET_PASSWORD).',
+      });
+    }
+    if (!status.scriptExists) {
+      return res.status(503).json({
+        error: 'Bridge da Premier Bet não encontrado no servidor (Scraping/premierbet_book.py).',
+      });
+    }
+
+    uploadsInFlight.add(slip.id);
+    try {
+      // Registo de "em curso" ANTES de clicar em qualquer coisa: se o servidor
+      // morrer a meio, o arranque seguinte marca a ficha como "por confirmar"
+      // em vez de deixar margem para uma segunda aposta automática.
+      if (!dryRun) {
+        bilheteriaDb.saveUpload({
+          slipId: slip.id,
+          status: 'in_progress',
+          stake,
+          message: 'Submissão em curso na Premier Bet...',
+          at: Date.now(),
+        });
+        try {
+          await bilheteriaDb.flush();
+        } catch {
+          /* a submissão continua; o resultado final volta a ser gravado */
+        }
+      }
+
+      const result = await uploadSlipToPremierBet({ slip, stake, dryRun });
+      const uploadStatus: SlipUpload['status'] = result.ok
+        ? result.dryRun
+          ? 'dry_run'
+          : 'placed'
+        : result.unknown
+          ? 'unknown'
+          : 'failed';
+      const record: SlipUpload = {
+        slipId: slip.id,
+        status: uploadStatus,
+        stake: result.stake || stake,
+        betId: result.betId ?? undefined,
+        message: result.message,
+        at: Date.now(),
+      };
+      bilheteriaDb.saveUpload(record);
+      console.log(
+        `[PremierBet] Ficha ${slip.id}: ${uploadStatus} (${result.durationMs ?? 0} ms).`
+      );
+      return res.json({ ...result, upload: record });
+    } catch (err: any) {
+      const message = err?.message || 'Falha ao subir a ficha para a Premier Bet.';
+      const record: SlipUpload = {
+        slipId: slip.id,
+        status: 'failed',
+        stake,
+        message,
+        at: Date.now(),
+      };
+      bilheteriaDb.saveUpload(record);
+      console.warn(`[PremierBet] Ficha ${slip.id}: falha — ${message}`);
+      return res
+        .status(err instanceof PremierBetConfigError ? 503 : 502)
+        .json({ error: message, upload: record });
+    } finally {
+      uploadsInFlight.delete(slip.id);
     }
   });
 

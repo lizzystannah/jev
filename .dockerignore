@@ -12,6 +12,9 @@ coverage
 .odds_api_cache.json
 .aiscore_context_cache.json
 
+# Estado local de desenvolvimento (a produção persiste no MySQL).
+.data
+
 npm-debug.log*
 *.log
 

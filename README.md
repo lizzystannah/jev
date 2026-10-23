@@ -23,6 +23,9 @@ a partir de jogos reais (AiScore + odds de mercado).
   **Em andamento**. Lista compacta (expandir por linha) com data de criação.
 - **Botão "Gerar"** disponível a partir de qualquer parte do site (cabeçalho,
   hero e botão flutuante).
+- **Subir para a Premier Bet**: cada ficha pendente tem um botão **Subir** que
+  entra em `premierbet.co.ao`, localiza os jogos, preenche as tips, define o
+  valor da aposta e coloca a ficha no ar. O valor é pedido num modal (Kz).
 
 O agendador corre **dentro do servidor**: funciona mesmo com o site fechado.
 
@@ -39,20 +42,76 @@ Toda a configuração vem da env:
 | `MYSQL_DATABASE` | `bilheteria` | sim |
 | `MYSQL_SSL` | `1` | não (default desligado) |
 
-O schema (`slips` + `meta`) é criado automaticamente no arranque, na base de
-dados indicada em `MYSQL_DATABASE` (tem de existir). As escritas são
-serializadas (write-behind) e descarregadas no shutdown.
+O schema (`slips` + `meta` + `slip_uploads`) é criado automaticamente no
+arranque, na base de dados indicada em `MYSQL_DATABASE` (tem de existir). As
+escritas são serializadas (write-behind) e descarregadas no shutdown.
 
 Se `MYSQL_HOST`, `MYSQL_USER` e `MYSQL_DATABASE` estiverem vazios, o servidor
 usa SQLite local em `.data/bilheteria.db` apenas para desenvolvimento. Se apenas
 parte deles estiver preenchida, o arranque falha com uma mensagem a indicar o
 que falta.
 
+## Subir fichas para a Premier Bet
+
+O botão **Subir** (em cada ficha pendente, no cartão ou no histórico) abre um
+modal para definir o **valor da aposta em Kwanzas (AOA)** e, opcionalmente,
+testar o boletim sem apostar.
+
+Ao confirmar, o servidor:
+
+1. faz login em `https://www.premierbet.co.ao/` com as credenciais da env;
+2. localiza cada jogo da ficha na API da Premier Bet (nomes + data) e lê os
+   mercados/odds atuais;
+3. injeta as seleções no boletim, define o valor e coloca a aposta;
+4. guarda o resultado em `slip_uploads` (estado, valor, ID da aposta).
+
+O browser corre no servidor (Playwright/Chromium), por isso o site pode estar
+fechado no teu computador. A operação pode demorar 1–3 minutos.
+
+### Credenciais e segurança
+
+| Variável | Default | Descrição |
+| --- | --- | --- |
+| `PREMIERBET_LOGIN` | *(vazio)* | Telefone (`244...`), utilizador ou email da conta |
+| `PREMIERBET_PASSWORD` | *(vazio)* | Palavra-passe da conta Premier Bet |
+| `PREMIERBET_DRY_RUN` | `0` | `1` força o modo de teste em todos os pedidos (não aposta) |
+| `PREMIERBET_DEFAULT_STAKE` | `1000` | Valor sugerido no modal (Kz) |
+| `PREMIERBET_MIN_STAKE` | `1` | Valor mínimo aceite pela API (Kz) |
+| `PREMIERBET_MAX_STAKE` | *(sem limite)* | Valor máximo aceite pela API (Kz) |
+| `PREMIERBET_TIMEOUT_MS` | `300000` | Tempo máximo da automação (5 min) |
+| `PREMIERBET_HEADFUL` | `0` | `1` mostra o browser (debug local) |
+| `PREMIERBET_NO_SANDBOX` | `0` | `1` adiciona `--no-sandbox` ao Chromium (contentores) |
+| `PREMIERBET_PYTHON` | `AISCORE_PYTHON` | Python com `playwright` + `curl_cffi` |
+
+As credenciais **nunca** são escritas em ficheiros nem em argumentos de linha de
+comando: seguem apenas no ambiente do processo Python.
+
+> **Aviso:** a aplicação não tem autenticação própria e o botão **Subir** coloca
+> **dinheiro real**. Não exponhas a porta do servidor à internet sem um proxy ou
+> uma rede privada com autenticação.
+
+**Proteção contra apostas duplicadas:** uma ficha já colocada fica marcada como
+**No ar** e não pode ser reenviada sem confirmação explícita. Se a Premier Bet
+não confirmar a colocação, o estado fica **por confirmar** e o sistema não repete
+a aposta automaticamente — verifica primeiro as apostas abertas na conta. Se o
+servidor reiniciar a meio de uma submissão, o registo **em curso** é convertido
+em **por confirmar** no arranque seguinte (nunca é reenviado sozinho).
+
+### Instalação local do browser
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+Em Docker a imagem já inclui Playwright + Chromium (a imagem fica maior).
+
 ## Requisitos
 
 - **Node.js 24+** (o fallback local usa `node:sqlite`).
 - **MySQL 5.7+ / 8.0+ / MariaDB 10.5+** (em produção).
-- Python com `curl_cffi` (bridge AiScore) — já configurado em `Scraping/`.
+- Python com `curl_cffi` (bridge AiScore) e `playwright` + Chromium
+  (automação Premier Bet).
 
 ## Correr localmente
 
@@ -99,14 +158,20 @@ Ver `.env.example`. Chaves relevantes:
 | `TICKETS_QUOTA_MED` | `3` | Estoque mínimo de 2 a 3 dias |
 | `TICKETS_QUOTA_LONGO` | `2` | Estoque mínimo de longo prazo |
 | `TICKETS_EXPIRY_GRACE_HOURS` | `6` | Tolerância após o último jogo antes de marcar como vencida |
+| `PREMIERBET_LOGIN` | *(vazio)* | Login da conta Premier Bet |
+| `PREMIERBET_PASSWORD` | *(vazio)* | Password da conta Premier Bet |
+| `PREMIERBET_DRY_RUN` | `0` | `1` força modo de teste (não aposta) |
+| `PREMIERBET_DEFAULT_STAKE` | `1000` | Valor sugerido no modal (Kz) |
 
 ## API
 
 | Método | Rota | Descrição |
 | --- | --- | --- |
-| GET | `/api/tickets` | Lista todas as fichas (persistidas) |
+| GET | `/api/tickets` | Lista todas as fichas (persistidas, com estado Premier Bet) |
 | GET | `/api/tickets/stock` | Estoque/quotas e estado do agendador |
 | POST | `/api/tickets/generate` | Gera fichas extra (`{ scope, leagues, limit }`) |
+| POST | `/api/tickets/:id/upload` | Sobe a ficha para a Premier Bet (`{ stake, dryRun?, force? }`) |
+| GET | `/api/premierbet/status` | Configuração visível da Premier Bet (sem credenciais) |
 | POST | `/api/matches/reset` | Limpa tudo e repõe o estoque |
 | GET | `/api/status` | Estado do servidor (inclui `tickets`) |
 
@@ -123,5 +188,11 @@ docker run --rm -p 3000:3000 \
   -e MYSQL_USER="bilheteria" \
   -e MYSQL_PASSWORD="segredo" \
   -e MYSQL_DATABASE="bilheteria" \
+  -e PREMIERBET_LOGIN="244..." \
+  -e PREMIERBET_PASSWORD="segredo" \
   bilheteria:latest
 ```
+
+Também podes usar `--env-file .env` em vez de `-e` (nunca coloques segredos no
+`Dockerfile` nem no repositório). A imagem inclui Playwright + Chromium para a
+automação da Premier Bet; `PREMIERBET_NO_SANDBOX=1` já vem ativo no container.

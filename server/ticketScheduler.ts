@@ -22,7 +22,7 @@ import {
 import { marketService } from './marketService.js';
 import { bilheteriaDb } from './db.js';
 import { DAY_TIMEZONE, getDayKey, msUntilNextMidnight } from './time.js';
-import type { SlipScope, TicketStockStatus } from './types.js';
+import type { BetSlip, SlipScope, TicketStockStatus } from './types.js';
 
 const SCOPES: SlipScope[] = ['dia', '2_3_dias', 'longo'];
 const RETRY_THROTTLE_MS = 90 * 1000;
@@ -250,8 +250,8 @@ export class TicketScheduler {
     activeLeagues?: string[],
     limit = 2
   ): Promise<{
-    generated: unknown[];
-    all: unknown[];
+    generated: BetSlip[];
+    all: BetSlip[];
     stock: TicketStockStatus;
     message: string;
   }> {

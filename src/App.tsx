@@ -13,6 +13,7 @@ import {
   SlipTier,
   HistoryFilter,
   TicketStockStatus,
+  PremierBetUploadResult,
 } from './types.js';
 import * as api from './api.js';
 import { Header } from './components/Header.tsx';
@@ -20,6 +21,7 @@ import { HeroStats } from './components/HeroStats.tsx';
 import { FixturesSidebar } from './components/FixturesSidebar.tsx';
 import { TicketCard } from './components/TicketCard.tsx';
 import { HistoryList } from './components/HistoryList.tsx';
+import { UploadSlipModal } from './components/UploadSlipModal.tsx';
 import { ApiConfigModal } from './components/ApiConfigModal.tsx';
 import { AiAnalysisModal } from './components/AiAnalysisModal.tsx';
 import { AiSmartSlipModal } from './components/AiSmartSlipModal.tsx';
@@ -47,6 +49,7 @@ export default function App() {
   const [isAiAnalysisModalOpen, setIsAiAnalysisModalOpen] = useState(false);
   const [selectedMatchForAi, setSelectedMatchForAi] = useState<MatchItem | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AiMatchAnalysis | null>(null);
+  const [uploadSlip, setUploadSlip] = useState<BetSlip | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -173,6 +176,26 @@ export default function App() {
       showToast(err?.message || 'Erro ao gerar bilhetes');
     } finally {
       setGenerating(false);
+    }
+  };
+
+  // Sincroniza o estado da ficha depois de uma tentativa de submissão à Premier Bet.
+  const handleSlipUploaded = async (result: PremierBetUploadResult | null) => {
+    try {
+      const refreshed = await api.fetchTickets();
+      setSlips(refreshed);
+      setUploadSlip((current) =>
+        current ? refreshed.find((item) => item.id === current.id) ?? current : current
+      );
+    } catch {
+      /* o polling de 4s volta a sincronizar */
+    }
+    if (result?.ok) {
+      showToast(
+        result.dryRun
+          ? 'Boletim de teste preenchido na Premier Bet (sem aposta).'
+          : 'Ficha colocada na Premier Bet.'
+      );
     }
   };
 
@@ -629,11 +652,19 @@ export default function App() {
                 timezone={timezone}
                 emptyTitle={historyEmpty[historyFilter].title}
                 emptyHint={historyEmpty[historyFilter].hint}
+                onUpload={setUploadSlip}
               />
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4.5">
                 {displayedSlips.length > 0 ? (
-                  displayedSlips.map((slip) => <TicketCard key={slip.id} slip={slip} timezone={timezone} />)
+                  displayedSlips.map((slip) => (
+                    <TicketCard
+                      key={slip.id}
+                      slip={slip}
+                      timezone={timezone}
+                      onUpload={setUploadSlip}
+                    />
+                  ))
                 ) : (
                   <div className="col-span-full border border-dashed border-[rgba(245,243,236,0.22)] rounded-lg p-8 text-center text-sm text-[rgba(245,243,236,0.6)]">
                     <div>
@@ -719,6 +750,13 @@ export default function App() {
         onClose={() => setIsAiSlipModalOpen(false)}
         onGenerate={handleGenerateAiSlip}
         loading={generating}
+      />
+
+      <UploadSlipModal
+        isOpen={Boolean(uploadSlip)}
+        slip={uploadSlip}
+        onClose={() => setUploadSlip(null)}
+        onUploaded={handleSlipUploaded}
       />
     </div>
   );
