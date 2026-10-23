@@ -556,7 +556,7 @@ export class MarketService {
         void (async () => {
           for (let d = 1; d <= 7; d++) {
             try {
-              await this.syncAiscoreDay(d, { limit: 100, oddsLimit: 12 });
+              await this.syncAiscoreDay(d, { limit: 40, oddsLimit: 8 });
             } catch (err: any) {
               console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
             }
