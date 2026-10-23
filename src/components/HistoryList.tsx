@@ -116,71 +116,88 @@ export const HistoryList: React.FC<HistoryListProps> = ({
               className="rounded border border-[rgba(245,243,236,0.14)] bg-[#173C27] overflow-hidden"
               style={{ borderLeft: `3px solid ${color}` }}
             >
-              <button
-                type="button"
-                onClick={() => toggle(slip.id)}
-                className="w-full text-left px-3.5 py-3 flex items-center gap-3 cursor-pointer hover:bg-[#20502F]/40 transition-colors"
-                aria-expanded={isOpen}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border flex items-center gap-1 ${meta.bg}`}
-                    >
-                      {meta.icon}
-                      {meta.label}
-                    </span>
-                    <span
-                      className="text-[10.5px] uppercase tracking-wider font-bold"
-                      style={{ color }}
-                    >
-                      {slip.tier}
-                    </span>
-                    <span className="text-[10.5px] text-[rgba(245,243,236,0.45)]">
-                      {scopeLabel(slip.scope)}
-                    </span>
-                    <span className="text-[12.5px] font-medium text-[#F5F3EC] truncate">
-                      {slip.customTitle || `Ficha ${slip.id}`}
-                    </span>
-                  </div>
-
-                  <div className="mt-1 flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[10.5px] text-[rgba(245,243,236,0.5)]">
-                    <span className="flex items-center gap-1">
-                      <Calendar className="w-3 h-3" />
-                      Criada em {formatDateTimeInTz(slip.createdAt, timezone)}
-                    </span>
-                    {slip.resolvedAt && (
-                      <span>Fechada em {formatDateTimeInTz(slip.resolvedAt, timezone)}</span>
-                    )}
-                    <span>{slip.legs.length} jogos</span>
-                    <span>Odd {slip.combinedOdds.toFixed(2)}x</span>
-                    <span>Prob. {slip.combinedProb}%</span>
-                    {slip.upload?.status === 'in_progress' && (
-                      <span className="text-[#E7B33E] font-medium">Em curso na Premier Bet</span>
-                    )}
-                    {slip.upload?.status === 'placed' && (
-                      <span className="text-[#4FAE73] font-medium">
-                        No ar · {formatKzShort(slip.upload.stake)}
+              <div className="flex items-stretch">
+                <button
+                  type="button"
+                  onClick={() => toggle(slip.id)}
+                  className="min-w-0 flex-1 text-left px-3.5 py-3 flex items-center gap-3 cursor-pointer hover:bg-[#20502F]/40 transition-colors"
+                  aria-expanded={isOpen}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border flex items-center gap-1 ${meta.bg}`}
+                      >
+                        {meta.icon}
+                        {meta.label}
                       </span>
-                    )}
-                    {slip.upload?.status === 'unknown' && (
-                      <span className="text-[#E7B33E] font-medium">Confirmar na Premier Bet</span>
-                    )}
-                    {slip.upload?.status === 'dry_run' && (
-                      <span className="text-[rgba(245,243,236,0.55)]">Teste (sem aposta)</span>
-                    )}
-                  </div>
-                </div>
+                      <span
+                        className="text-[10.5px] uppercase tracking-wider font-bold"
+                        style={{ color }}
+                      >
+                        {slip.tier}
+                      </span>
+                      <span className="text-[10.5px] text-[rgba(245,243,236,0.45)]">
+                        {scopeLabel(slip.scope)}
+                      </span>
+                      <span className="text-[12.5px] font-medium text-[#F5F3EC] truncate">
+                        {slip.customTitle || `Ficha ${slip.id}`}
+                      </span>
+                    </div>
 
-                <span className="font-mono text-[10.5px] text-[rgba(245,243,236,0.4)] hidden sm:inline">
-                  #{slip.id}
-                </span>
-                {isOpen ? (
-                  <ChevronUp className="w-4 h-4 text-[#E7B33E] shrink-0" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-[rgba(245,243,236,0.55)] shrink-0" />
+                    <div className="mt-1 flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[10.5px] text-[rgba(245,243,236,0.5)]">
+                      <span className="flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
+                        Criada em {formatDateTimeInTz(slip.createdAt, timezone)}
+                      </span>
+                      {slip.resolvedAt && (
+                        <span>Fechada em {formatDateTimeInTz(slip.resolvedAt, timezone)}</span>
+                      )}
+                      <span>{slip.legs.length} jogos</span>
+                      <span>Odd {slip.combinedOdds.toFixed(2)}x</span>
+                      <span>Prob. {slip.combinedProb}%</span>
+                      {slip.upload?.status === 'in_progress' && (
+                        <span className="text-[#E7B33E] font-medium">Em curso na Premier Bet</span>
+                      )}
+                      {slip.upload?.status === 'placed' && (
+                        <span className="text-[#4FAE73] font-medium">
+                          No ar · {formatKzShort(slip.upload.stake)}
+                        </span>
+                      )}
+                      {slip.upload?.status === 'unknown' && (
+                        <span className="text-[#E7B33E] font-medium">Confirmar na Premier Bet</span>
+                      )}
+                      {slip.upload?.status === 'dry_run' && (
+                        <span className="text-[rgba(245,243,236,0.55)]">Teste (sem aposta)</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <span className="font-mono text-[10.5px] text-[rgba(245,243,236,0.4)] hidden sm:inline">
+                    #{slip.id}
+                  </span>
+                  {isOpen ? (
+                    <ChevronUp className="w-4 h-4 text-[#E7B33E] shrink-0" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-[rgba(245,243,236,0.55)] shrink-0" />
+                  )}
+                </button>
+
+                {!isOpen && slip.status === 'pendente' && onUpload && (
+                  <div className="flex shrink-0 items-center pr-3 pl-1">
+                    <button
+                      type="button"
+                      onClick={() => onUpload(slip)}
+                      className="cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded bg-[#E7B33E] text-[#3A2A06] hover:bg-[#F0C869] transition-colors"
+                      title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
+                    >
+                      <UploadCloud className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Subir ficha</span>
+                      <span className="sm:hidden">Subir</span>
+                    </button>
+                  </div>
                 )}
-              </button>
+              </div>
 
               {isOpen && (
                 <div className="border-t border-[rgba(245,243,236,0.1)] px-3.5 py-3 bg-[#0E2A1C]/40">
@@ -258,7 +275,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                         title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
                       >
                         <UploadCloud className="w-3.5 h-3.5" />
-                        {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir'}
+                        {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir ficha'}
                       </button>
                     </div>
                   )}

@@ -337,11 +337,13 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
             <button
               type="button"
               onClick={() => onUpload(slip)}
-              className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded border border-[#E7B33E]/60 text-[#E7B33E] hover:bg-[#E7B33E] hover:text-[#3A2A06] transition-colors"
+              className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded bg-[#E7B33E] text-[#3A2A06] hover:bg-[#F0C869] transition-colors"
               title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
             >
               <UploadCloud className="w-3.5 h-3.5" />
-              {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir'}
+              <span>
+                {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir ficha'}
+              </span>
             </button>
           )}
         </div>
