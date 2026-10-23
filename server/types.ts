@@ -9,6 +9,11 @@ export interface MatchOdds {
   under35?: number;
   btts_yes: number;
   btts_no: number;
+  /**
+   * Mercados cujas odds vieram de uma casa/fornecedor real. Mercados fora
+   * desta lista são apenas estimativas e nunca entram em fichas.
+   */
+  realMarkets?: MarketType[];
   double_chance_1x?: number;
   double_chance_x2?: number;
   double_chance_12?: number;
@@ -121,7 +126,7 @@ export interface MatchItem {
 }
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo';
-export type SlipTier = 'segura' | 'moderada' | 'ousada';
+export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
 
 /** Estado da última tentativa de subir a ficha para a Premier Bet. */
 export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
@@ -229,6 +234,7 @@ export interface JevMetrics {
     segura: number;
     moderada: number;
     ousada: number;
+    maluca: number;
   };
   topMarkets: Array<{ market: string; count: number; percentage: number }>;
   lastInferenceAt: string;

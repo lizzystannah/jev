@@ -69,7 +69,7 @@ export async function uploadSlip(
 export async function generateTickets(
   scope: 'dia' | '2_3_dias' | 'longo',
   leagues?: string[],
-  limit = 2
+  limit = 4
 ): Promise<{
   generated: BetSlip[];
   all: BetSlip[];

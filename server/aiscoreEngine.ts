@@ -569,7 +569,14 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     m === 'double_chance_1x' || m === 'double_chance_x2'
     || m === 'over15' || m === 'under35' ? 0.45 : 0.5;
   let best: { m: MarketType; p: number; odd: number; edge: number; score: number } | null = null;
-  (Object.keys(P) as MarketType[]).forEach((m) => {
+  const realMarkets = match.odds.realMarkets;
+  const allMarkets = Object.keys(P) as MarketType[];
+  // Sem realMarkets (dados antigos) avalia só 1X2; nunca usa um preço sem
+  // proveniência real para recomendar um mercado.
+  const markets = realMarkets
+    ? allMarkets.filter((m) => realMarkets.includes(m))
+    : allMarkets.filter((m) => m === 'home' || m === 'draw' || m === 'away');
+  (markets.length > 0 ? markets : allMarkets).forEach((m) => {
     const p = P[m] ?? 0;
     const odd = sanitizeOdd((compOdds as any)[m]);
     const edge = p * odd - 1;
@@ -580,7 +587,8 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const b = best!;
   const calib = Math.round(clamp(b.p, 0.1, 0.95) * 100);
   const edgePct = Math.round(b.edge * 100 * 10) / 10;
-  const riskTier: SlipTier = calib >= 63 ? 'segura' : calib >= 48 ? 'moderada' : 'ousada';
+  const riskTier: SlipTier =
+    calib >= 63 ? 'segura' : calib >= 48 ? 'moderada' : calib >= 28 ? 'ousada' : 'maluca';
   const labelFn = MARKET_LABELS[b.m];
   let confidence = scout?._fromContext ? 0.55 : 0.8;
   const lin = (match as any).lineups;
@@ -607,7 +615,7 @@ interface AccStats {
 }
 
 const ACC: AccStats = { total: 0, probSum: 0, edgeSum: 0,
-  tiers: { segura: 0, moderada: 0, ousada: 0 }, markets: {}, at: new Date().toISOString() };
+  tiers: { segura: 0, moderada: 0, ousada: 0, maluca: 0 }, markets: {}, at: new Date().toISOString() };
 
 export function getLocalCumulativeMetrics() {
   const total = ACC.total;

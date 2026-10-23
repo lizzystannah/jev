@@ -420,6 +420,23 @@ class BilheteriaDatabase {
     });
   }
 
+  /**
+   * Remove fichas específicas (e os respetivos registos de submissão).
+   * Usado para descartar fichas antigas construídas com odds sintéticas que
+   * nunca chegaram a ser enviadas para a Premier Bet.
+   */
+  public deleteSlips(ids: string[]): void {
+    if (ids.length === 0) return;
+    for (const id of ids) this.uploads.delete(id);
+    this.enqueue(async () => {
+      const driver = this.requireDriver();
+      for (const id of ids) {
+        await driver.query('DELETE FROM slip_uploads WHERE slip_id = ?', [id]);
+        await driver.query('DELETE FROM slips WHERE id = ?', [id]);
+      }
+    });
+  }
+
   // ------------------------------------------------------- premier bet uploads ---
 
   /** Última tentativa de subir a ficha para a Premier Bet (null se nunca tentou). */

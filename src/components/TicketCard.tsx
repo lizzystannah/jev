@@ -37,6 +37,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
     segura: '#4FAE73',
     moderada: '#E7B33E',
     ousada: '#D1594B',
+    maluca: '#C084FC',
   };
   const tierColor = tierColors[slip.tier] || '#E7B33E';
 
@@ -114,8 +115,19 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
             <span className="text-[10.5px] text-[rgba(245,243,236,0.45)] border-l border-[rgba(245,243,236,0.25)] pl-2">
               {scopeLabel}
             </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(79,174,115,0.12)] text-[#4FAE73] font-medium flex items-center gap-0.5" title="Decisão calibrada via Jev System One">
-              <Cpu className="w-2.5 h-2.5" /> Jev AI
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(79,174,115,0.12)] text-[#4FAE73] font-medium flex items-center gap-0.5"
+              title={slip.isAiGenerated === false ? 'Odds e probabilidades implícitas do mercado' : 'Decisão calibrada via Jev System One'}
+            >
+              {slip.isAiGenerated === false ? (
+                <>
+                  <Sparkles className="w-2.5 h-2.5" /> Mercado
+                </>
+              ) : (
+                <>
+                  <Cpu className="w-2.5 h-2.5" /> Jev AI
+                </>
+              )}
             </span>
             {slip.customTitle && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(231,179,62,0.15)] text-[#E7B33E] font-medium flex items-center gap-0.5">
@@ -235,7 +247,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
                     ) : (
                       <span className="text-[10.5px] px-1.5 py-0.5 rounded bg-[rgba(231,179,62,0.12)] text-[#E7B33E] font-medium flex items-center gap-1 border border-[#E7B33E]/20">
                         <Cpu className="w-2.5 h-2.5" />
-                        <span>Jev: {leg.tip.prob}% prob</span>
+                        <span>{slip.isAiGenerated === false ? 'Prob. mercado' : 'Jev'}: {leg.tip.prob}% prob</span>
                       </span>
                     )}
                   </div>

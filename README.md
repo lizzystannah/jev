@@ -10,10 +10,13 @@ a partir de jogos reais (AiScore + odds de mercado).
 ## Fichas automáticas e persistentes
 
 - **Fichas do dia**: todos os dias às **00:00 de Angola** (`Africa/Luanda`), o
-  agendador cria automaticamente a fornada de fichas de "Hoje" (default: 3).
+  agendador cria automaticamente a fornada de fichas de "Hoje" (default: 4).
 - **Estoque por horizonte**: mantém um mínimo de fichas pendentes —
-  Hoje = 3, 2 a 3 dias = 3, Longo prazo = 2 (configurável em `.env`).
+  Hoje = 4, 2 a 3 dias = 4, Longo prazo = 4 (configurável em `.env`).
   Sempre que uma ficha cai (ganha/perde/expira), o agendador **repõe** o estoque.
+- **Só odds reais**: jogos sem odds 1X2 do fornecedor não entram no mercado.
+  Não há preenchimento com odds fixas "inventadas"; mercados derivados
+  (dupla chance, DNB, etc.) ficam marcados e não são usados para montar fichas.
 - **Persistência na base de dados**: todas as fichas vivem **exclusivamente**
   numa base de dados **MySQL** configurada por variáveis de ambiente
   (`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`,
@@ -141,6 +144,21 @@ Ou com um gestor de processos (produção):
 npx pm2 start "npm start" --name bilheteria
 ```
 
+## Tiers de fichas
+
+O motor gera quatro categorias por horizonte, com uma vaga reservada para cada uma:
+
+| Tier | Construção | Objetivo |
+| --- | --- | --- |
+| **Segura** | 2–3 jogos, probabilidade calibrada alta | Menor volatilidade |
+| **Moderada** | 5 jogos, odds reais entre 1.80 e 2.15 | Acumular pontos com volume, sem pernas de odd altíssima |
+| **Ousada** | 5–6 jogos, odds reais entre 2.15 e 3.00 | Mais retorno pelo número de jogos, não por pernas malucas |
+| **Maluca** | 4–6 jogos, mercados de odd alta, combinada acima de 1000x | Lotaria de risco máximo, com probabilidade estimada pelo mercado |
+
+A **Maluca** não usa a calibração Jev por perna: a probabilidade mostrada é a implícita nas odds do mercado. Ela é gerada automaticamente pelo agendador e também pode ser gerada manualmente pelo botão **Gerar**.
+
+Todas as pernas usam apenas mercados com odds reais (`odds.realMarkets`). O motor local pode calcular probabilidades a partir do scout, mas nunca inventa um preço para preencher uma ficha.
+
 ## Configuração (`.env`)
 
 Ver `.env.example`. Chaves relevantes:
@@ -154,9 +172,9 @@ Ver `.env.example`. Chaves relevantes:
 | `MYSQL_DATABASE` | *(vazio)* | Nome da base de dados (deve existir) |
 | `MYSQL_SSL` | *(desligado)* | `1` liga SSL na ligação ao MySQL |
 | `BILHETERIA_DB_PATH` | `.data/bilheteria.db` | SQLite local (só fallback de dev) |
-| `TICKETS_QUOTA_DIA` | `3` | Estoque mínimo de fichas de Hoje |
-| `TICKETS_QUOTA_MED` | `3` | Estoque mínimo de 2 a 3 dias |
-| `TICKETS_QUOTA_LONGO` | `2` | Estoque mínimo de longo prazo |
+| `TICKETS_QUOTA_DIA` | `4` | Estoque mínimo de fichas de Hoje (uma por tier) |
+| `TICKETS_QUOTA_MED` | `4` | Estoque mínimo de 2 a 3 dias (uma por tier) |
+| `TICKETS_QUOTA_LONGO` | `4` | Estoque mínimo de longo prazo (uma por tier) |
 | `TICKETS_EXPIRY_GRACE_HOURS` | `6` | Tolerância após o último jogo antes de marcar como vencida |
 | `PREMIERBET_LOGIN` | *(vazio)* | Login da conta Premier Bet |
 | `PREMIERBET_PASSWORD` | *(vazio)* | Password da conta Premier Bet |

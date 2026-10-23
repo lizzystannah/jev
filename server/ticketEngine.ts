@@ -3,8 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BetSlip, MatchItem, SlipScope, SlipTier } from './types.js';
-import { marketService, leaguePriorityRank, isObscureLeague, isMainLeague } from './marketService.js';
+import { BetSlip, MatchItem, MarketType, SlipScope, SlipTier } from './types.js';
+import {
+  marketService,
+  leaguePriorityRank,
+  isObscureLeague,
+  isMainLeague,
+  deriveCompleteOdds,
+  MARKET_LABELS,
+} from './marketService.js';
 import { callLocalInferenceEngine, type LocalDecisionInput } from './aiscoreEngine.js';
 import { aiscoreClient } from './aiscoreService.js';
 import { bilheteriaDb } from './db.js';
@@ -27,11 +34,24 @@ export function isTopTierLeague(league?: string | null, competitionId?: string |
   return leaguePriorityRank(league, competitionId) < 8;
 }
 
-// Metas de odd combinada por construção ousada.
-const OUSADA_MIN_ODDS = 10;
-// Super Acumulada: muitas pernas NORMAIS (tips do motor, sem lotaria).
-const SUPER_LEGS_TARGET = 20;
-const SUPER_LEGS_MIN = 8;
+// Ficha maluca: poucos jogos, mercados de odd alta e combinada acima de 1000x.
+const MALUCA_MIN_ODDS = 1000;
+const MALUCA_MIN_LEGS = 4;
+const MALUCA_MAX_LEGS = 6;
+// Mercados de odd alta usados na Ousada (risco controlado) e na Maluca.
+const HIGH_ODDS_MARKETS: MarketType[] = [
+  'home',
+  'draw',
+  'away',
+  'over25',
+  'over35',
+  'btts_yes',
+  'btts_no',
+  'under25',
+  'under35',
+  'dnb_home',
+  'dnb_away',
+];
 
 // Liga obscura (feminino/base/exótica) vale pouco na ordenação.
 const OBSCURE_PENALTY = 0.55;
@@ -39,11 +59,6 @@ const OBSCURE_PENALTY = 0.55;
 /** Score de ordenação: probabilidade calibrada × peso da liga (obscura penalizada). */
 function pickScore(m: MatchItem): number {
   return m.tip.prob * leagueWeight(m.league, m.competitionId) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
-}
-
-/** Valor esperado aproximado: odd × probabilidade × peso da liga (obscura penalizada). */
-function valueScore(m: MatchItem): number {
-  return m.tip.odds * (m.tip.prob / 100) * leagueWeight(m.league, m.competitionId) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
 }
 
 /**
@@ -130,14 +145,17 @@ function takeCoherent(
 export const TIERS_CONFIG = {
   segura: { min: 63, max: 101, color: 'var(--green-tier, #4FAE73)', hex: '#4FAE73' },
   moderada: { min: 48, max: 63, color: 'var(--amber-tier, #E7B33E)', hex: '#E7B33E' },
-  ousada: { min: 0, max: 48, color: 'var(--red-tier, #D1594B)', hex: '#D1594B' },
+  ousada: { min: 28, max: 48, color: 'var(--red-tier, #D1594B)', hex: '#D1594B' },
+  maluca: { min: 0, max: 28, color: 'var(--violet-tier, #C084FC)', hex: '#C084FC' },
 };
 
-// Configuração de pernas por categoria e longevidade
+// Configuração de pernas por categoria e longevidade.
+// Moderada e Ousada acumulam pontos com MAIS jogos e odds individuais
+// controladas — não com poucas pernas de odd altíssima.
 export const LEGS_CONFIG: Record<SlipScope, Record<SlipTier, number>> = {
-  dia: { segura: 2, moderada: 3, ousada: 3 },
-  '2_3_dias': { segura: 3, moderada: 3, ousada: 4 },
-  longo: { segura: 3, moderada: 4, ousada: 4 },
+  dia: { segura: 2, moderada: 5, ousada: 5, maluca: 5 },
+  '2_3_dias': { segura: 3, moderada: 5, ousada: 6, maluca: 5 },
+  longo: { segura: 3, moderada: 5, ousada: 6, maluca: 5 },
 };
 
 function envInt(name: string, fallback: number): number {
@@ -152,9 +170,10 @@ function envInt(name: string, fallback: number): number {
  * ou quando a mudança do dia cria a nova fornada de "Hoje".
  */
 export const SCOPE_QUOTAS: Record<SlipScope, number> = {
-  dia: envInt('TICKETS_QUOTA_DIA', 3),
-  '2_3_dias': envInt('TICKETS_QUOTA_MED', 3),
-  longo: envInt('TICKETS_QUOTA_LONGO', 2),
+  // Quatro vagas = uma ficha de cada tier (segura, moderada, ousada e maluca).
+  dia: envInt('TICKETS_QUOTA_DIA', 4),
+  '2_3_dias': envInt('TICKETS_QUOTA_MED', 4),
+  longo: envInt('TICKETS_QUOTA_LONGO', 4),
 };
 
 /** Teto de segurança para o botão manual "Gerar" não inundar o estoque. */
@@ -203,6 +222,28 @@ export class TicketEngine {
   public async init(): Promise<void> {
     if (this.initialized) return;
     this.slips = await bilheteriaDb.loadSlips();
+
+    // Migração de segurança: fichas pendentes antigas foram construídas com
+    // odds de fallback (2.10/3.20/3.40) e nunca foram enviadas. Essas odds
+    // sintéticas não podem continuar a ser apresentadas como mercado real;
+    // descartamos apenas as que não têm registo de submissão. As que já foram
+    // enviadas para a Premier Bet ficam no histórico (há dinheiro envolvido).
+    const uploadedIds = new Set(bilheteriaDb.getUploads().map((u) => u.slipId));
+    const syntheticPending = this.slips.filter(
+      (slip) =>
+        slip.status === 'pendente' &&
+        !uploadedIds.has(slip.id) &&
+        slip.legs.some((leg) => !leg.odds?.realMarkets)
+    );
+    if (syntheticPending.length > 0) {
+      const ids = new Set(syntheticPending.map((slip) => slip.id));
+      this.slips = this.slips.filter((slip) => !ids.has(slip.id));
+      bilheteriaDb.deleteSlips([...ids]);
+      console.log(
+        `[Bilheteria] ${syntheticPending.length} ficha(s) pendente(s) com odds sintéticas removida(s); serão regeneradas com odds reais.`
+      );
+    }
+
     // Continua a numeração a partir da última ficha persistida (evita IDs repetidos).
     let maxSeq = 100;
     for (const slip of this.slips) {
@@ -305,9 +346,12 @@ export class TicketEngine {
       return matchLeague && matchScopeMatches && notResolved && isFutureMatch;
     });
 
-    // Só ligas principais no pool de bilhetes: femininos, base/exóticas e
-    // segunda/terceira divisão ficam de fora (continuam visíveis nos jogos).
-    const eligible = filtered.filter((m) => isMainLeague(m.league, m.competitionId));
+    // Prefere ligas principais. Com odds reais o pool pode ser pequeno; nesse
+    // caso completa com outras competições masculinas (femininos/base já
+    // ficaram de fora na ingestão). A ordenação continua a dar prioridade
+    // às ligas grandes, mas evita ficar sem fichas por falta de 20 pernas.
+    const mainEligible = filtered.filter((m) => isMainLeague(m.league, m.competitionId));
+    const eligible = mainEligible.length >= 16 ? mainEligible : filtered;
 
     if (eligible.length === 0) {
       return { generated: [], all: this.slips, jevLatencyMs: 0 };
@@ -382,11 +426,12 @@ export class TicketEngine {
       return m;
     });
 
-    // Separação em Buckets de Probabilidade (Segura, Moderada, Ousada)
+    // Separação em Buckets de Probabilidade (Segura, Moderada, Ousada, Maluca)
     const buckets: Record<SlipTier, MatchItem[]> = {
       segura: [],
       moderada: [],
       ousada: [],
+      maluca: [],
     };
 
     evaluatedMatches.forEach((m) => {
@@ -394,102 +439,15 @@ export class TicketEngine {
         buckets.segura.push(m);
       } else if (m.tip.prob >= TIERS_CONFIG.moderada.min) {
         buckets.moderada.push(m);
-      } else {
+      } else if (m.tip.prob >= TIERS_CONFIG.ousada.min) {
         buckets.ousada.push(m);
+      } else {
+        buckets.maluca.push(m);
       }
     });
 
     // NÃO apagar fichas pendentes existentes: elas persistem até resolverem ou
     // expirarem. A geração apenas acrescenta novas oportunidades ao estoque.
-
-    // Construtor Especializado para o Tier "Ousada" (mínimo de odd combinada).
-    // Usa as tips REAIS do motor — nunca inventa probabilidades para forçar odd.
-    const buildOusadaSlip = (matchesPool: MatchItem[]): BetSlip | null => {
-      if (matchesPool.length < 3) return null;
-
-      const ordered = orderTopFirst([...matchesPool], (a, b) => valueScore(b) - valueScore(a));
-      const coherent = ordered.filter(
-        (m) => m.tip.prob >= 38 && m.tip.odds >= 1.25 && m.tip.odds <= 3.2
-      );
-      const pool = coherent.length >= 3 ? coherent : ordered;
-
-      const selectedLegs: MatchItem[] = [];
-      let currentCombinedOdds = 1.0;
-
-      for (const match of pool) {
-        if (selectedLegs.some((l) => l.id === match.id)) continue;
-
-        // Prefere ligas diferentes; só repete quando não há alternativa.
-        const usedLeagues = new Set(selectedLegs.map((l) => l.league));
-        const hasAlternative = pool.some(
-          (m) =>
-            !selectedLegs.some((l) => l.id === m.id) &&
-            !usedLeagues.has(m.league)
-        );
-        if (usedLeagues.has(match.league) && hasAlternative) continue;
-
-        selectedLegs.push(match);
-        currentCombinedOdds *= match.tip.odds;
-
-        // Atingiu o mínimo de odd combinada com pelo menos 3 pernas.
-        if (currentCombinedOdds >= OUSADA_MIN_ODDS && selectedLegs.length >= 3) break;
-        // Limite máximo de segurança de 7 pernas.
-        if (selectedLegs.length >= 7) break;
-      }
-
-      // Sem odd mínima com tips coerentes: não fabrica um bilhete "ousado" à força.
-      if (selectedLegs.length < 3 || currentCombinedOdds < OUSADA_MIN_ODDS) return null;
-
-      const finalLegs = ensureTopTierLegs(selectedLegs, pool);
-      const finalOdds = finalLegs.reduce((acc, l) => acc * l.tip.odds, 1);
-
-      return this.createSlip(scope, 'ousada', finalLegs, {
-        customTitle: `Super Múltipla Ousada (${finalOdds.toFixed(2)}x)`,
-        rationale: `Bilhete de alto retorno com odd combinada de ${finalOdds.toFixed(2)}, montado com as tips calibradas do motor e ligas diversificadas.`,
-      });
-    };
-
-    /**
-     * Super Acumulada: até 20 pernas NORMAIS (tips calibradas do motor,
-     * sem mercados de lotaria). Escolhe jogos de pontuação COERENTE em vez
-     * de empilhar só os maiores scores: piso de probabilidade, no máximo
-     * 2 jogos por liga e sem ligas obscuras/divisões inferiores.
-     */
-    const buildSuperOusadaSlip = (
-      matchesPool: MatchItem[], used: Set<string>
-    ): BetSlip | null => {
-      const ordered = orderTopFirst([...matchesPool],
-        (a, b) => pickScore(b) - pickScore(a));
-      const fresh = ordered.filter((m) => !used.has(m.id));
-      const reuse = ordered.filter((m) => used.has(m.id));
-
-      const pick = (floorProb: number): { legs: MatchItem[]; odds: number } => {
-        const legs: MatchItem[] = [];
-        const perLeague = new Map<string, number>();
-        let odds = 1.0;
-        for (const match of [...fresh, ...reuse]) {
-          if (legs.length >= SUPER_LEGS_TARGET) break;
-          if (legs.some((l) => l.id === match.id)) continue;
-          if (match.tip.prob < floorProb) continue;
-          const c = perLeague.get(match.league) || 0;
-          if (c >= 2) continue;
-          legs.push(match);
-          perLeague.set(match.league, c + 1);
-          odds *= match.tip.odds;
-        }
-        return { legs, odds };
-      };
-
-      let result = pick(58);
-      if (result.legs.length < SUPER_LEGS_MIN) result = pick(50);
-      if (result.legs.length < SUPER_LEGS_MIN) return null;
-
-      const { legs, odds } = result;
-      return this.createSlip(scope, 'ousada', legs, {
-        customTitle: `Super Acumulada (${legs.length} jogos • ${odds.toFixed(2)}x)`,
-        rationale: `Acumulador de ${legs.length} pernas de ligas principais com probabilidades coerentes, odd combinada de ${odds.toFixed(2)}.`,
-      });
-    };
 
     const candidateSlips: BetSlip[] = [];
     const legsMap = LEGS_CONFIG[scope];
@@ -500,22 +458,129 @@ export class TicketEngine {
     const claim = (legs: MatchItem[]): void => {
       legs.forEach((l) => usedIds.add(l.id));
     };
+
     /**
-     * Cria até duas variações de um tier usando pernas frescas e coerentes.
-     * A segunda variação só existe se houver jogos suficientes sem repetir.
+     * Converte um jogo para a melhor odd de mercado dentro de uma janela.
+     * Usado na Ousada e na Maluca para sair das tips "seguras" do motor e
+     * montar múltiplas com odds mais altas. A probabilidade é a implícita
+     * no preço (100 / odd), não a calibração Jev.
      */
-    const buildTierVariants = (
-      tier: SlipTier,
-      arr: MatchItem[],
-      legsCount: number,
-      floorProb: number
-    ): void => {
-      for (let i = 0; i < 2; i++) {
-        const legs = takeCoherent(arr, legsCount, usedIds, floorProb);
-        if (legs.length < legsCount) return;
-        candidateSlips.push(this.createSlip(scope, tier, ensureTopTierLegs(legs, arr)));
-        claim(legs);
+    const toMarketOddsLeg = (
+      m: MatchItem,
+      minOdds: number,
+      maxOdds: number
+    ): MatchItem | null => {
+      const marketOdds = deriveCompleteOdds(m.odds);
+      let best: { market: MarketType; odds: number; prob: number; label: string } | null = null;
+      const realMarkets = m.odds.realMarkets;
+      const allowedMarkets = realMarkets
+        ? HIGH_ODDS_MARKETS.filter((market) => realMarkets.includes(market))
+        : HIGH_ODDS_MARKETS.filter(
+            (market) => market === 'home' || market === 'draw' || market === 'away'
+          );
+
+      for (const market of allowedMarkets) {
+        const odd = Number(marketOdds[market]);
+        if (!Number.isFinite(odd) || odd < minOdds || odd > maxOdds) continue;
+        if (!best || odd > best.odds) {
+          const labelFn = MARKET_LABELS[market];
+          best = {
+            market,
+            odds: odd,
+            prob: Math.max(4, Math.min(45, Math.round(100 / odd))),
+            label: labelFn ? labelFn({ home: m.home, away: m.away }) : market,
+          };
+        }
       }
+
+      if (!best) return null;
+      return {
+        ...m,
+        tip: {
+          market: best.market,
+          label: best.label,
+          odds: best.odds,
+          prob: best.prob,
+        },
+        jevInference: undefined,
+      };
+    };
+
+    const pickDiverse = (ordered: MatchItem[], target: number): MatchItem[] => {
+      const picked: MatchItem[] = [];
+      const leagues = new Set<string>();
+      for (const m of ordered) {
+        if (picked.length >= target) break;
+        if (picked.some((l) => l.id === m.id)) continue;
+        if (leagues.has(m.league)) {
+          const hasAlternative = ordered.some(
+            (x) => !picked.some((l) => l.id === x.id) && !leagues.has(x.league)
+          );
+          if (hasAlternative) continue;
+        }
+        picked.push(m);
+        leagues.add(m.league);
+      }
+      return picked;
+    };
+
+    /**
+     * Constrói Moderada/Ousada com MUITAS pernas e odds de mercado numa janela
+     * controlada. A probabilidade exibida é a implícita (100 / odd), porque
+     * estas pernas não são a recomendação calibrada do Jev.
+     */
+    const buildMarketTier = (
+      tier: 'moderada' | 'ousada',
+      quantity: number,
+      minOdds: number,
+      maxOdds: number
+    ): BetSlip | null => {
+      const oddsDesc = (a: MatchItem, b: MatchItem) => b.tip.odds - a.tip.odds;
+      const toLegs = (source: MatchItem[], low: number, high: number): MatchItem[] =>
+        source
+          .map((m) => toMarketOddsLeg(m, low, high))
+          .filter((m): m is MatchItem => m !== null);
+
+      const buildOrdered = (low: number, high: number): MatchItem[] => {
+        const fresh = orderTopFirst(
+          toLegs(evaluatedMatches.filter((m) => !usedIds.has(m.id)), low, high),
+          oddsDesc
+        );
+        const reuse = orderTopFirst(
+          toLegs(evaluatedMatches.filter((m) => usedIds.has(m.id)), low, high),
+          oddsDesc
+        );
+        return [...fresh, ...reuse];
+      };
+
+      let ordered = buildOrdered(minOdds, maxOdds);
+      if (ordered.length < quantity) {
+        // Relaxa a janela só o suficiente para completar o número de jogos.
+        ordered = buildOrdered(Math.max(1.5, minOdds - 0.15), maxOdds + 0.2);
+      }
+      if (ordered.length < 4) return null;
+
+      let legs = pickDiverse(ordered, quantity);
+      if (legs.length < quantity) {
+        legs = pickDiverse(ordered, Math.max(4, quantity - 1));
+      }
+      if (legs.length < 4) return null;
+
+      const duplicate = candidateSlips.some(
+        (s) =>
+          s.legs.length === legs.length &&
+          s.legs.every((l) => legs.some((x) => x.id === l.id))
+      );
+      if (duplicate) return null;
+
+      const combinedOdds = legs.reduce((acc, l) => acc * l.tip.odds, 1);
+      const maxLegOdds = Math.max(...legs.map((l) => l.tip.odds));
+      const label = tier === 'moderada' ? 'Moderada' : 'Ousada';
+      return this.createSlip(scope, tier, legs, {
+        customTitle: `Múltipla ${label} (${legs.length} jogos • ${combinedOdds.toFixed(2)}x)`,
+        rationale: `Ficha ${tier} com ${legs.length} jogos e odds individuais até ${maxLegOdds.toFixed(2)}. Os pontos acumulam pelo número de jogos, não por pernas de odd altíssima. Probabilidades implícitas no mercado.`,
+        isAiGenerated: false,
+      });
     };
 
     // 1. Bilhetes Seguros (ligas principais primeiro, probabilidades coerentes)
@@ -523,62 +588,122 @@ export class TicketEngine {
       [...(buckets.segura.length >= 2 ? buckets.segura : evaluatedMatches)],
       (a, b) => pickScore(b) - pickScore(a)
     );
-    buildTierVariants('segura', sortedSegura, legsMap.segura, 58);
-
-    // 2. Bilhetes Moderados (ligas principais primeiro, equilíbrio de probabilidade)
-    const sortedModerada = orderTopFirst(
-      [...(buckets.moderada.length >= 2 ? buckets.moderada : evaluatedMatches)],
-      (a, b) => valueScore(b) - valueScore(a)
-    );
-    buildTierVariants('moderada', sortedModerada, legsMap.moderada, 45);
-
-    // 3. Bilhetes Ousados (mínimo de odd combinada garantido)
-    const freshOusada = (pool: MatchItem[]): MatchItem[] => {
-      const f = pool.filter((m) => !usedIds.has(m.id));
-      return f.length >= 3 ? f : pool;
-    };
-    const ousadaSlip1 = buildOusadaSlip(freshOusada(evaluatedMatches));
-    if (ousadaSlip1) {
-      candidateSlips.push(ousadaSlip1);
-      claim(ousadaSlip1.legs);
+    const seguraLegs = takeCoherent(sortedSegura, legsMap.segura, usedIds, 58);
+    if (seguraLegs.length >= legsMap.segura) {
+      candidateSlips.push(
+        this.createSlip(scope, 'segura', ensureTopTierLegs(seguraLegs, sortedSegura))
+      );
+      claim(seguraLegs);
     }
 
-    // Segunda variação de Ousada com pernas frescas
-    if (evaluatedMatches.length >= 4) {
-      const ousadaSlip2 = buildOusadaSlip(freshOusada(evaluatedMatches));
-      if (ousadaSlip2 && ousadaSlip2.combinedOdds !== ousadaSlip1?.combinedOdds) {
-        candidateSlips.push(ousadaSlip2);
-        claim(ousadaSlip2.legs);
+    // 2. Moderada: 5 jogos com odds de mercado entre 1.80 e 2.15.
+    // Janela baixa o suficiente para não repetir as pernas de 3.50, mas alta
+    // o suficiente para os pontos crescerem pelo número de jogos.
+    const moderada = buildMarketTier('moderada', legsMap.moderada, 1.8, 2.15);
+    if (moderada) {
+      candidateSlips.push(moderada);
+      claim(moderada.legs);
+    }
+
+    // 3. Ousada: 5-6 jogos, janela de mercado acima da moderada.
+    const ousada = buildMarketTier('ousada', legsMap.ousada, 2.15, 3.0);
+    if (ousada) {
+      candidateSlips.push(ousada);
+      claim(ousada.legs);
+    }
+
+    /**
+     * Ficha Maluca: poucos jogos (4 a 6), mercados de odd alta e combinada
+     * acima de 1000x. Usa a melhor odd disponível por jogo e estima a
+     * probabilidade pelo próprio preço de mercado (100 / odd).
+     */
+    const buildMalucaVariant = (): BetSlip | null => {
+      const fresh = evaluatedMatches.filter((m) => !usedIds.has(m.id));
+      const source = fresh.length >= MALUCA_MIN_LEGS ? fresh : evaluatedMatches;
+      const candidates = source
+        .map((m) => toMarketOddsLeg(m, 3.0, Number.POSITIVE_INFINITY))
+        .filter((m): m is MatchItem => m !== null);
+      if (candidates.length < MALUCA_MIN_LEGS) return null;
+
+      const ordered = orderTopFirst(candidates, (a, b) => b.tip.odds - a.tip.odds);
+      let legs = pickDiverse(ordered, MALUCA_MIN_LEGS);
+      let combinedOdds = legs.reduce((acc, l) => acc * l.tip.odds, 1);
+      for (
+        let target = MALUCA_MIN_LEGS + 1;
+        target <= MALUCA_MAX_LEGS && combinedOdds < MALUCA_MIN_ODDS;
+        target++
+      ) {
+        legs = pickDiverse(ordered, target);
+        combinedOdds = legs.reduce((acc, l) => acc * l.tip.odds, 1);
       }
-    }
 
-    // 4. SUPER ACUMULADA (até 20 jogos, tips normais).
-    const superOusada = buildSuperOusadaSlip(evaluatedMatches, usedIds);
-    if (superOusada) {
-      candidateSlips.push(superOusada);
-      claim(superOusada.legs);
+      if (legs.length < MALUCA_MIN_LEGS || combinedOdds < MALUCA_MIN_ODDS) {
+        return null;
+      }
+
+      return this.createSlip(scope, 'maluca', legs, {
+        customTitle: `Ficha Maluca (${legs.length} jogos • ${combinedOdds.toFixed(2)}x)`,
+        rationale: `Ficha maluca: ${legs.length} jogos de alto risco e odd combinada de ${combinedOdds.toFixed(2)}x. As probabilidades individuais são estimadas pelas odds do mercado; risco máximo.`,
+        isAiGenerated: false,
+      });
+    };
+
+    const maluca = buildMalucaVariant();
+    if (maluca) {
+      candidateSlips.push(maluca);
+      claim(maluca.legs);
     }
 
     // REGRA DE NEGÓCIO: reter bilhetes COERENTES (probabilidades próximas,
     // ligas diversificadas), não apenas os de maior pontuação/odd.
-    const finalSlips: BetSlip[] = [];
-    const seguraList = candidateSlips.filter((s) => s.tier === 'segura').sort((a, b) => legsCoherence(b.legs) - legsCoherence(a.legs));
-    const moderadaList = candidateSlips.filter((s) => s.tier === 'moderada').sort((a, b) => legsCoherence(b.legs) - legsCoherence(a.legs));
-    const ousadaList = candidateSlips.filter((s) => s.tier === 'ousada').sort((a, b) => legsCoherence(b.legs) - legsCoherence(a.legs));
+    const existingPending = this.slips.filter(
+      (s) => s.scope === scope && s.status === 'pendente'
+    );
+    const existingByTier: Record<SlipTier, number> = {
+      segura: 0,
+      moderada: 0,
+      ousada: 0,
+      maluca: 0,
+    };
+    existingPending.forEach((s) => {
+      existingByTier[s.tier] += 1;
+    });
 
-    if (seguraList[0]) finalSlips.push(seguraList[0]);
-    if (seguraList[1]) finalSlips.push(seguraList[1]);
-    if (moderadaList[0]) finalSlips.push(moderadaList[0]);
-    if (moderadaList[1]) finalSlips.push(moderadaList[1]);
-    if (ousadaList[0]) finalSlips.push(ousadaList[0]);
-    if (ousadaList[1] && finalSlips.length < 5) finalSlips.push(ousadaList[1]);
+    const tierOrder: SlipTier[] = ['segura', 'moderada', 'ousada', 'maluca'];
+    const tierPriority = [...tierOrder].sort(
+      (a, b) =>
+        existingByTier[a] - existingByTier[b] ||
+        tierOrder.indexOf(a) - tierOrder.indexOf(b)
+    );
+    const byTier: Record<SlipTier, BetSlip[]> = {
+      segura: [],
+      moderada: [],
+      ousada: [],
+      maluca: [],
+    };
+    candidateSlips.forEach((s) => byTier[s.tier].push(s));
+    tierOrder.forEach((tier) => {
+      byTier[tier].sort((a, b) =>
+        tier === 'maluca'
+          ? b.combinedOdds - a.combinedOdds
+          : legsCoherence(b.legs) - legsCoherence(a.legs)
+      );
+    });
+
+    // Um candidato de cada tier primeiro (priorizando o tier mais em falta),
+    // depois as segundas variações. Assim a quota de 4 rende uma ficha de
+    // cada categoria em vez de duas seguras + uma moderada.
+    const finalSlips: BetSlip[] = [];
+    tierPriority.forEach((tier) => {
+      if (byTier[tier][0]) finalSlips.push(byTier[tier][0]);
+    });
+    tierPriority.forEach((tier) => {
+      for (let i = 1; i < byTier[tier].length; i++) finalSlips.push(byTier[tier][i]);
+    });
 
     // Evita repetir pernas de fichas que já estão no estoque pendente do mesmo
     // horizonte. Se não houver candidatos totalmente frescos, aceita os que não
     // sejam exatamente iguais a uma ficha existente (mercado pode estar curto).
-    const existingPending = this.slips.filter(
-      (s) => s.scope === scope && s.status === 'pendente'
-    );
     const reservedLegIds = new Set<string>();
     existingPending.forEach((s) => s.legs.forEach((l) => reservedLegIds.add(l.id)));
 
@@ -594,7 +719,12 @@ export class TicketEngine {
         )
     );
 
-    const candidatePool = freshCandidates.length > 0 ? freshCandidates : notIdentical;
+    // Frescas primeiro, mas completa com as restantes distintas em vez de
+    // descartar tudo só porque uma perna já existe noutra ficha pendente.
+    const candidatePool = [
+      ...freshCandidates,
+      ...notIdentical.filter((s) => !freshCandidates.includes(s)),
+    ];
     const wanted = Math.max(1, options?.limit ?? 5);
     const topSlips = candidatePool.slice(0, wanted);
 

@@ -342,6 +342,7 @@ export default function App() {
     segura: slipsInScope.filter((s) => s.tier === 'segura').length,
     moderada: slipsInScope.filter((s) => s.tier === 'moderada').length,
     ousada: slipsInScope.filter((s) => s.tier === 'ousada').length,
+    maluca: slipsInScope.filter((s) => s.tier === 'maluca').length,
   };
 
   const displayedSlips = slipsInScope
@@ -389,18 +390,13 @@ export default function App() {
   // Tier note text matching longevity scope
   const tierNoteText = () => {
     const legsCount =
-      scope === 'dia'
-        ? tier === 'segura' ? 2 : 3
-        : scope === '2_3_dias'
-        ? tier === 'segura' ? 3 : 3
-        : tier === 'segura' ? 3 : 4;
-
-    const range =
       tier === 'segura'
-        ? 'acima de 63% (menor volatilidade e odds seguras)'
+        ? scope === 'dia' ? 2 : 3
         : tier === 'moderada'
-        ? 'entre 48% e 63% (ótimo equilíbrio de retorno e probabilidade)'
-        : 'Super Acumulada de Alto Retorno (Garantia de Mínimo 10.00 Odds Totais)';
+        ? 5
+        : tier === 'ousada'
+        ? scope === 'dia' ? 5 : 6
+        : 5;
 
     const spread =
       scope === 'dia'
@@ -409,11 +405,19 @@ export default function App() {
         ? 'jogos dos próximos 2 a 3 dias'
         : 'jogos de longo prazo (4+ dias)';
 
-    if (tier === 'ousada') {
-      return `Bilhetes de alta odd combinada (${spread}) desenhados com multiplicador expressivo de no mínimo 10.00 odds totais.`;
+    if (tier === 'segura') {
+      return `Bilhetes de ${legsCount} ${spread}, com inferência do Jev de probabilidade calibrada acima de 63% (menor volatilidade e odds seguras).`;
     }
 
-    return `Bilhetes de ${legsCount} ${spread}, com inferência do Jev de probabilidade calibrada ${range}.`;
+    if (tier === 'moderada') {
+      return `Bilhetes de ${legsCount} ${spread}, com odds individuais controladas (sem pernas de 3.50). Os pontos vêm de acumular jogos, não de poucas pernas de odd altíssima.`;
+    }
+
+    if (tier === 'ousada') {
+      return `Bilhetes de ${legsCount} ${spread}, com odds individuais mais altas mas sem empilhar pernas malucas. Mais jogos para acumular odd.`;
+    }
+
+    return `Ficha Maluca: 4 a 6 ${spread}, com mercados de odd alta e odd combinada acima de 1000x. Probabilidades estimadas pelo mercado — risco máximo.`;
   };
 
   return (
@@ -586,7 +590,7 @@ export default function App() {
             {scope !== 'historico' && (
               <>
                 <div
-                  className="flex gap-1 mb-3 border-b border-[rgba(245,243,236,0.14)]"
+                  className="flex flex-wrap gap-x-5 gap-y-1 mb-3 border-b border-[rgba(245,243,236,0.14)]"
                   role="tablist"
                   aria-label="Categorias de probabilidade"
                 >
@@ -635,6 +639,22 @@ export default function App() {
                     </span>
                     {tier === 'ousada' && (
                       <span className="absolute left-0 right-0 bottom-[-1px] h-[2px] bg-[#D1594B]" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTier('maluca')}
+                    className={`cursor-pointer font-body font-semibold text-sm pb-2.5 mr-6 relative transition-colors ${
+                      tier === 'maluca' ? 'text-[#F5F3EC]' : 'text-[rgba(245,243,236,0.45)] hover:text-[#F5F3EC]'
+                    }`}
+                  >
+                    <span>Maluca</span>
+                    <span className="font-display ml-1.5 text-xs text-[#C084FC]">
+                      {tierCounts.maluca}
+                    </span>
+                    {tier === 'maluca' && (
+                      <span className="absolute left-0 right-0 bottom-[-1px] h-[2px] bg-[#C084FC]" />
                     )}
                   </button>
                 </div>

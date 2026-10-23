@@ -77,6 +77,10 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
       total: resolvedSlips.filter((s) => s.tier === 'ousada').length,
       won: resolvedSlips.filter((s) => s.tier === 'ousada' && s.status === 'ganhou').length,
     },
+    maluca: {
+      total: resolvedSlips.filter((s) => s.tier === 'maluca').length,
+      won: resolvedSlips.filter((s) => s.tier === 'maluca' && s.status === 'ganhou').length,
+    },
   };
 
   return (
@@ -305,6 +309,14 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
                     <strong className="text-[#F5F3EC]">
                       {tierStats.ousada.total > 0
                         ? `${Math.round((tierStats.ousada.won / tierStats.ousada.total) * 100)}% (${tierStats.ousada.won}/${tierStats.ousada.total})`
+                        : '0 finalizados'}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#C084FC]">Maluca:</span>
+                    <strong className="text-[#F5F3EC]">
+                      {tierStats.maluca.total > 0
+                        ? `${Math.round((tierStats.maluca.won / tierStats.maluca.total) * 100)}% (${tierStats.maluca.won}/${tierStats.maluca.total})`
                         : '0 finalizados'}
                     </strong>
                   </div>

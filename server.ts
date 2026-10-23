@@ -207,7 +207,7 @@ async function startServer() {
       const result = await ticketScheduler.generateMore(
         scope,
         Array.isArray(leagues) ? leagues : undefined,
-        Number(limit) > 0 ? Number(limit) : 2
+        Number(limit) > 0 ? Number(limit) : 4
       );
       res.json({
         ...result,

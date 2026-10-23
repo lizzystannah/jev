@@ -83,12 +83,23 @@ export interface AiMatchAnalysis {
 }
 
 export async function analyzeMatchTactics(match: MatchItem): Promise<AiMatchAnalysis> {
+  const real = match.odds.realMarkets;
+  const marketOdds = [
+    `Casa: ${match.odds.home}`,
+    `Empate: ${match.odds.draw}`,
+    `Fora: ${match.odds.away}`,
+  ];
+  if (real?.includes('over25')) marketOdds.push(`Mais de 2.5: ${match.odds.over25}`);
+  if (real?.includes('under25')) marketOdds.push(`Menos de 2.5: ${match.odds.under25}`);
+  if (real?.includes('btts_yes')) marketOdds.push(`Ambas Marcam Sim: ${match.odds.btts_yes}`);
+  if (real?.includes('btts_no')) marketOdds.push(`Ambas Marcam Não: ${match.odds.btts_no}`);
+
   const prompt = `Você é um analista estatístico sénior de apostas desportivas e probabilidades de futebol.
 Analise a seguinte partida:
 - Liga: ${match.league}
 - Jogo: ${match.home} (Casa) vs ${match.away} (Fora)
 - Horário: ${match.time} (Dias a partir de hoje: ${match.daysFromNow})
-- Odds decimais do mercado: Casa: ${match.odds.home}, Empate: ${match.odds.draw}, Fora: ${match.odds.away}, Mais de 2.5: ${match.odds.over25}, Menos de 2.5: ${match.odds.under25}, Ambas Marcam Sim: ${match.odds.btts_yes}, Ambas Marcam Não: ${match.odds.btts_no}
+- Odds decimais do mercado: ${marketOdds.join(', ')}
 - Dica pré-calculada do motor: ${match.tip.label} (Odd: ${match.tip.odds}, Probabilidade calculada: ${match.tip.prob}%)
 
 Responda em formato estritamente JSON (sem markdown de bloco code \`\`\`json) com a seguinte estrutura:

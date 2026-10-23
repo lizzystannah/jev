@@ -19,6 +19,8 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
 }) => {
   if (!isOpen || !match) return null;
 
+  const showOver25 = match.odds.realMarkets?.includes('over25') ?? false;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
       <div className="relative w-full max-w-xl bg-[#0E2A1C] border border-[rgba(245,243,236,0.22)] rounded-lg shadow-2xl p-6 overflow-hidden max-h-[90vh] flex flex-col">
@@ -129,7 +131,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                 <div className="text-[10.5px] text-[rgba(245,243,236,0.45)] uppercase tracking-wider mb-1.5">
                   Odds Decimal do Mercado
                 </div>
-                <div className="grid grid-cols-4 gap-1 text-center font-display text-sm">
+                <div className={`grid ${showOver25 ? 'grid-cols-4' : 'grid-cols-3'} gap-1 text-center font-display text-sm`}>
                   <div className="bg-[#173C27]/50 p-1.5 rounded">
                     <span className="text-[10px] block text-[rgba(245,243,236,0.4)]">1 (Casa)</span>
                     <span className="text-[#F5F3EC]">{match.odds.home.toFixed(2)}</span>
@@ -142,10 +144,12 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                     <span className="text-[10px] block text-[rgba(245,243,236,0.4)]">2 (Fora)</span>
                     <span className="text-[#F5F3EC]">{match.odds.away.toFixed(2)}</span>
                   </div>
-                  <div className="bg-[#173C27]/50 p-1.5 rounded">
-                    <span className="text-[10px] block text-[rgba(245,243,236,0.4)]">+2.5 Golos</span>
-                    <span className="text-[#F5F3EC]">{match.odds.over25.toFixed(2)}</span>
-                  </div>
+                  {showOver25 && (
+                    <div className="bg-[#173C27]/50 p-1.5 rounded">
+                      <span className="text-[10px] block text-[rgba(245,243,236,0.4)]">+2.5 Golos</span>
+                      <span className="text-[#F5F3EC]">{match.odds.over25.toFixed(2)}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </>

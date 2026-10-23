@@ -3,8 +3,8 @@
  *
  * Responsabilidades:
  *  1. Todos os dias à meia-noite de Angola (Africa/Luanda), cria a fornada de
- *     fichas de "Hoje" (quota configurável, default 3).
- *  2. Mantém o estoque mínimo dos horizontes 2-3 dias (3) e longo prazo (2),
+ *     fichas de "Hoje" (quota configurável, default 4).
+ *  2. Mantém o estoque mínimo dos horizontes 2-3 dias (4) e longo prazo (4),
  *     repondo automaticamente quando uma ficha é resolvida ou expira.
  *  3. Valida/expira fichas em background, mesmo sem nenhum browser aberto.
  *  4. Mantém os dados de mercado frescos (sincronização periódica).
@@ -248,7 +248,7 @@ export class TicketScheduler {
   public generateMore(
     scope: SlipScope,
     activeLeagues?: string[],
-    limit = 2
+    limit = 4
   ): Promise<{
     generated: BetSlip[];
     all: BetSlip[];

@@ -197,49 +197,108 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
   const pBtts = impliedProb(odds.btts_yes);
 
   const candidates: { market: MarketType; prob: number; odds: number; reason: string }[] = [];
+  // Só mercados com odds reais entram na dica. Sem `realMarkets` (dados
+  // antigos) assume-se apenas 1X2: nunca usar um preço sem proveniência.
+  const realMarkets = odds.realMarkets;
+  const allows = (market: MarketType): boolean =>
+    realMarkets
+      ? realMarkets.includes(market)
+      : market === 'home' || market === 'draw' || market === 'away';
 
-  // Dupla Chance 1X
-  const p1X = pHome + pDraw * 0.55;
-  const odds1X = Number(Math.max(1.10, Math.min(1.80, 1 / (p1X / 100) * 1.05)).toFixed(2));
-  candidates.push({
-    market: 'double_chance_1x',
-    prob: Math.min(88, Math.round(p1X)),
-    odds: odds1X,
-    reason: `Forte favoritismo do ${home} em casa com cobertura de empate.`,
-  });
+  // 1X2 real
+  if (allows('home')) {
+    candidates.push({
+      market: 'home',
+      prob: Math.round(pHome),
+      odds: odds.home,
+      reason: `Superioridade evidente do ${home} no confronto direto.`,
+    });
+  }
+  if (allows('draw')) {
+    candidates.push({
+      market: 'draw',
+      prob: Math.round(pDraw),
+      odds: odds.draw,
+      reason: `Equilíbrio no confronto direto favorece o empate.`,
+    });
+  }
+  if (allows('away')) {
+    candidates.push({
+      market: 'away',
+      prob: Math.round(pAway),
+      odds: odds.away,
+      reason: `Excelente fase de ${away} conferindo vantagem de mercado.`,
+    });
+  }
 
-  // Dupla Chance X2
-  const pX2 = pAway + pDraw * 0.55;
-  const oddsX2 = Number(Math.max(1.10, Math.min(1.85, 1 / (pX2 / 100) * 1.05)).toFixed(2));
-  candidates.push({
-    market: 'double_chance_x2',
-    prob: Math.min(85, Math.round(pX2)),
-    odds: oddsX2,
-    reason: `Boa consistência de ${away} fora com segurança em caso de empate.`,
-  });
+  // Dupla Chance 1X (mercado derivado: só quando não há restrição de odds reais)
+  if (allows('double_chance_1x')) {
+    const p1X = pHome + pDraw * 0.55;
+    const odds1X = Number(Math.max(1.10, Math.min(1.80, 1 / (p1X / 100) * 1.05)).toFixed(2));
+    candidates.push({
+      market: 'double_chance_1x',
+      prob: Math.min(88, Math.round(p1X)),
+      odds: odds1X,
+      reason: `Forte favoritismo do ${home} em casa com cobertura de empate.`,
+    });
+  }
 
-  // +1.5 Golos
-  const pOver15 = pOver * 1.35;
-  const oddsOver15 = Number(Math.max(1.12, Math.min(1.65, 1 / (Math.min(85, pOver15) / 100) * 1.05)).toFixed(2));
-  candidates.push({
-    market: 'over15',
-    prob: Math.min(85, Math.round(pOver15)),
-    odds: oddsOver15,
-    reason: `Expectativa alta de golos com linha protegida de mais de 1.5.`,
-  });
+  // Dupla Chance X2 (mercado derivado)
+  if (allows('double_chance_x2')) {
+    const pX2 = pAway + pDraw * 0.55;
+    const oddsX2 = Number(Math.max(1.10, Math.min(1.85, 1 / (pX2 / 100) * 1.05)).toFixed(2));
+    candidates.push({
+      market: 'double_chance_x2',
+      prob: Math.min(85, Math.round(pX2)),
+      odds: oddsX2,
+      reason: `Boa consistência de ${away} fora com segurança em caso de empate.`,
+    });
+  }
 
-  // -3.5 Golos
-  const pUnder35 = pUnder * 1.30;
-  const oddsUnder35 = Number(Math.max(1.12, Math.min(1.60, 1 / (Math.min(85, pUnder35) / 100) * 1.05)).toFixed(2));
-  candidates.push({
-    market: 'under35',
-    prob: Math.min(85, Math.round(pUnder35)),
-    odds: oddsUnder35,
-    reason: `Jogo de perfil tático com cobertura elástica de menos de 3.5 golos.`,
-  });
+  // +1.5 Golos (derivado)
+  if (allows('over15')) {
+    const pOver15 = pOver * 1.35;
+    const oddsOver15 = Number(Math.max(1.12, Math.min(1.65, 1 / (Math.min(85, pOver15) / 100) * 1.05)).toFixed(2));
+    candidates.push({
+      market: 'over15',
+      prob: Math.min(85, Math.round(pOver15)),
+      odds: oddsOver15,
+      reason: `Expectativa alta de golos com linha protegida de mais de 1.5.`,
+    });
+  }
 
-  // BTTS
-  if (pBtts > 48) {
+  // -3.5 Golos (derivado)
+  if (allows('under35')) {
+    const pUnder35 = pUnder * 1.30;
+    const oddsUnder35 = Number(Math.max(1.12, Math.min(1.60, 1 / (Math.min(85, pUnder35) / 100) * 1.05)).toFixed(2));
+    candidates.push({
+      market: 'under35',
+      prob: Math.min(85, Math.round(pUnder35)),
+      odds: oddsUnder35,
+      reason: `Jogo de perfil tático com cobertura elástica de menos de 3.5 golos.`,
+    });
+  }
+
+  if (allows('over25')) {
+    candidates.push({
+      market: 'over25',
+      prob: Math.min(85, Math.round(pOver)),
+      odds: odds.over25,
+      reason: `Mercado de golos com preço real acima de 2.5.`,
+    });
+  }
+
+  if (allows('under25')) {
+    candidates.push({
+      market: 'under25',
+      prob: Math.min(85, Math.round(pUnder)),
+      odds: odds.under25,
+      reason: `Mercado de golos com preço real abaixo de 2.5.`,
+    });
+  }
+
+  // BTTS (só com odd real)
+  if (allows('btts_yes') && pBtts > 48) {
     candidates.push({
       market: 'btts_yes',
       prob: Math.min(75, Math.round(pBtts)),
@@ -248,20 +307,13 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
     });
   }
 
-  // 1X2 Direto
-  if (pHome > 55) {
+  if (candidates.length === 0) {
+    // Dados antigos sem realMarkets válidos: usa o favorito 1X2.
     candidates.push({
       market: 'home',
       prob: Math.round(pHome),
       odds: odds.home,
-      reason: `Superioridade evidente do ${home} no confronto direto.`,
-    });
-  } else if (pAway > 52) {
-    candidates.push({
-      market: 'away',
-      prob: Math.round(pAway),
-      odds: odds.away,
-      reason: `Excelente fase de ${away} conferindo vantagem de mercado.`,
+      reason: `Favoritismo do ${home} segundo o mercado.`,
     });
   }
 
@@ -495,16 +547,16 @@ export class MarketService {
           return;
         }
 
-        // Dia 0: aguardado, com odds reais 1X2 para os 10 primeiros priorizados.
-        await this.syncAiscoreDay(0, { limit: 40, oddsLimit: 10 });
+        // Dia 0: aguardado, com odds reais 1X2 para os primeiros priorizados.
+        // Como já não usamos odds sintéticas, precisamos de mais jogos reais.
+        await this.syncAiscoreDay(0, { limit: 120, oddsLimit: 30 });
         this.aiscoreLastSync = Date.now();
 
         // Dias 1..7: background sequencial (respeita o throttle do bridge).
-        // Só os 4 primeiros priorizados de cada dia trazem odds (economia).
         void (async () => {
           for (let d = 1; d <= 7; d++) {
             try {
-              await this.syncAiscoreDay(d, { limit: 40, oddsLimit: 4 });
+              await this.syncAiscoreDay(d, { limit: 100, oddsLimit: 12 });
             } catch (err: any) {
               console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
             }
@@ -571,25 +623,30 @@ export class MarketService {
           if (existingKeys.has(dedupeKey)) continue;
           existingKeys.add(dedupeKey);
 
-          const odds: MatchOdds = meta.odds?.home
-            ? {
-                home: meta.odds.home,
-                draw: meta.odds.draw,
-                away: meta.odds.away,
-                over25: 1.90,
-                under25: 1.90,
-                btts_yes: 1.85,
-                btts_no: 1.90,
-              }
-            : {
-                home: 2.10,
-                draw: 3.20,
-                away: 3.40,
-                over25: 1.90,
-                under25: 1.90,
-                btts_yes: 1.85,
-                btts_no: 1.90,
-              };
+          // Só entram jogos com odds 1X2 reais. Sem odds, o jogo fica de fora:
+          // nunca preencher com 2.10/3.20/3.40 "inventados" (isso produzia
+          // 1X a 1.62 e EV falso em todos os jogos).
+          const real = meta.odds;
+          if (!real) continue;
+          const validReal = [real.home, real.draw, real.away].every(
+            (v) => Number.isFinite(v) && v > 1.01 && v < 1000
+          );
+          if (!validReal) continue;
+
+          const overround = 1 / real.home + 1 / real.draw + 1 / real.away;
+          if (overround < 0.9 || overround > 1.3) continue;
+
+          const odds: MatchOdds = {
+            home: real.home,
+            draw: real.draw,
+            away: real.away,
+            // Placeholders: não são odds reais e ficam fora de realMarkets.
+            over25: 1.90,
+            under25: 1.90,
+            btts_yes: 1.85,
+            btts_no: 1.90,
+            realMarkets: ['home', 'draw', 'away'],
+          };
 
           const timeStr = matchDate.toLocaleTimeString('pt-PT', {
             hour: '2-digit',
@@ -714,6 +771,29 @@ export class MarketService {
     };
   }
 
+  private averageBtts(bookmakers: any[]) {
+    let yesSum = 0, yesCount = 0, noSum = 0, noCount = 0;
+
+    for (const bm of bookmakers || []) {
+      const btts = bm.markets?.find((m: any) => m.key === 'btts');
+      if (!btts?.outcomes) continue;
+      for (const outcome of btts.outcomes) {
+        if (outcome.name === 'Yes') {
+          yesSum += outcome.price;
+          yesCount++;
+        } else if (outcome.name === 'No') {
+          noSum += outcome.price;
+          noCount++;
+        }
+      }
+    }
+
+    return {
+      yes: yesCount ? yesSum / yesCount : null,
+      no: noCount ? noSum / noCount : null,
+    };
+  }
+
   private async fetchFromOddsApi(apiKey: string) {
     const envSports = process.env.ODDS_API_SPORTS?.split(',').map((s) => s.trim()).filter(Boolean);
     
@@ -776,6 +856,7 @@ export class MarketService {
 
           const h2h = this.averageH2hOdds(event.bookmakers, event.home_team, event.away_team);
           const totals = this.averageTotals25(event.bookmakers);
+          const btts = this.averageBtts(event.bookmakers);
 
           if (h2h.home === null || h2h.draw === null || h2h.away === null) continue;
 
@@ -783,14 +864,23 @@ export class MarketService {
           const diffMs = commenceTime - now;
           const kickoffInSeconds = Math.max(30, Math.round(diffMs / 1000));
 
+          const realMarkets: MarketType[] = ['home', 'draw', 'away'];
+          if (totals.over25 != null && totals.under25 != null) {
+            realMarkets.push('over25', 'under25');
+          }
+          if (btts.yes != null && btts.no != null) {
+            realMarkets.push('btts_yes', 'btts_no');
+          }
+
           const odds = {
             home: Number(h2h.home.toFixed(2)),
             draw: Number(h2h.draw.toFixed(2)),
             away: Number(h2h.away.toFixed(2)),
             over25: totals.over25 ? Number(totals.over25.toFixed(2)) : 1.90,
             under25: totals.under25 ? Number(totals.under25.toFixed(2)) : 1.90,
-            btts_yes: 1.85,
-            btts_no: 1.90,
+            btts_yes: btts.yes ? Number(btts.yes.toFixed(2)) : 1.85,
+            btts_no: btts.no ? Number(btts.no.toFixed(2)) : 1.90,
+            realMarkets,
           };
 
           const matchDate = new Date(commenceTime);
