@@ -84,7 +84,8 @@ function legsCoherence(legs: MatchItem[]): number {
  */
 function pickUntilTarget(
   ordered: MatchItem[],
-  cfg: { targetOdds: number; maxLegs: number; minLegs: number }
+  cfg: { targetOdds: number; maxLegs: number; minLegs: number },
+  diversifyLeagues = true
 ): MatchItem[] | null {
   const picked: MatchItem[] = [];
   const leagues = new Set<string>();
@@ -95,7 +96,7 @@ function pickUntilTarget(
     if (picked.length >= cfg.maxLegs) break;
     if (picked.some((leg) => leg.id === match.id)) continue;
 
-    if (leagues.has(match.league)) {
+    if (diversifyLeagues && leagues.has(match.league)) {
       const hasAlternative = ordered.some(
         (candidate) =>
           !picked.some((leg) => leg.id === candidate.id) &&
@@ -503,7 +504,14 @@ export class TicketEngine {
      */
     const buildTargetTier = (
       tier: SlipTier,
-      overrides?: { pool?: MatchItem[]; sortFn?: (a: MatchItem, b: MatchItem) => number }
+      overrides?: {
+        pool?: MatchItem[];
+        sortFn?: (a: MatchItem, b: MatchItem) => number;
+        /** Se false, pode reutilizar jogos já usados noutras fichas desde o início. */
+        preferFresh?: boolean;
+        /** Se false, permite várias pernas da mesma liga (mais jogos na Ousada). */
+        diversifyLeagues?: boolean;
+      }
     ): BetSlip | null => {
       const cfg = TICKET_TARGETS[tier];
       const primary = (overrides?.pool ?? buckets[tier]).filter((m) => m.tip.odds > 1.01);
@@ -511,13 +519,14 @@ export class TicketEngine {
 
       const sortFn = overrides?.sortFn ?? ((a, b) => pickScore(b) - pickScore(a));
       const tryPool = (pool: MatchItem[]): MatchItem[] | null =>
-        pickUntilTarget(orderTopFirst(pool, sortFn), cfg);
+        pickUntilTarget(orderTopFirst(pool, sortFn), cfg, overrides?.diversifyLeagues !== false);
 
       // Prefere pernas frescas; se não chegarem ao alvo, permite reutilizar
       // um jogo já usado noutra ficha (a tip continua a ser a mesma, real).
-      const fresh = primary.filter((m) => !usedIds.has(m.id));
+      const fresh =
+        overrides?.preferFresh === false ? [] : primary.filter((m) => !usedIds.has(m.id));
       let legs = fresh.length >= cfg.minLegs ? tryPool(fresh) : null;
-      if (!legs && fresh.length !== primary.length) legs = tryPool(primary);
+      if (!legs) legs = tryPool(primary);
       if (!legs) return null;
 
       const duplicate = candidateSlips.some(
@@ -564,11 +573,20 @@ export class TicketEngine {
     const ousadaLastResort = highRiskPool.filter(
       (m) => m.tip.odds >= 2.0 && m.tip.odds <= 4.0
     );
+    const ousadaAsc = (a: MatchItem, b: MatchItem): number => a.tip.odds - b.tip.odds;
     const ousada =
       buildTargetTier('ousada', {
         pool: ousadaPool.length >= TICKET_TARGETS.ousada.minLegs ? ousadaPool : selectionPool,
+        sortFn: ousadaAsc,
+        preferFresh: false,
+        diversifyLeagues: false,
       }) ??
-      buildTargetTier('ousada', { pool: selectionPool }) ??
+      buildTargetTier('ousada', {
+        pool: selectionPool,
+        sortFn: ousadaAsc,
+        preferFresh: false,
+        diversifyLeagues: false,
+      }) ??
       buildTargetTier('ousada', {
         pool: ousadaLastResort,
         sortFn: (a, b) => b.tip.prob - a.tip.prob,
