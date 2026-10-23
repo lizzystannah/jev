@@ -259,7 +259,7 @@ async function startServer() {
     }
 
     const dryRun = Boolean(req.body?.dryRun) || status.dryRun;
-    const force = Boolean(req.body?.force);
+    const force = req.body?.force === true;
     const existing = bilheteriaDb.getUpload(slip.id);
 
     if (!dryRun && existing?.status === 'placed' && !force) {
@@ -297,6 +297,7 @@ async function startServer() {
     }
 
     uploadsInFlight.add(slip.id);
+    let completedUpload: SlipUpload | null = null;
     try {
       // Registo de "em curso" ANTES de clicar em qualquer coisa: se o servidor
       // morrer a meio, o arranque seguinte marca a ficha como "por confirmar"
@@ -333,11 +334,20 @@ async function startServer() {
         at: Date.now(),
       };
       bilheteriaDb.saveUpload(record);
+      completedUpload = record;
       console.log(
         `[PremierBet] Ficha ${slip.id}: ${uploadStatus} (${result.durationMs ?? 0} ms).`
       );
       return res.json({ ...result, upload: record });
     } catch (err: any) {
+      if (completedUpload) {
+        // A colocação já ficou registada; um erro ao responder ao cliente não
+        // pode transformar uma aposta colocada em "falhou" (permitiria duplicar).
+        console.warn(
+          `[PremierBet] Ficha ${slip.id}: resultado já registado (${completedUpload.status}); falha ao responder: ${err?.message}`
+        );
+        return;
+      }
       const message = err?.message || 'Falha ao subir a ficha para a Premier Bet.';
       const record: SlipUpload = {
         slipId: slip.id,
