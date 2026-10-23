@@ -50,6 +50,16 @@ _COMP_ID_PRIORITY: dict[str, int] = {
     "n527r3ipms17evx": 7,   # Portuguese Primeira Liga
     "r8lk2dil5t0736d": 7,   # Brazilian Serie A
     "zjek33ien6ivko2": 7,   # UEFA Conference League
+    "4ndqmliwou5kveg": 7,   # Turkish Super Lig
+    "eg6763ig9s47ryv": 7,   # J1 League (Japan)
+    "g63kv9imm6iz7ez": 7,   # Saudi Pro League
+    "yzrkn6i2rcjqle4": 8,   # Netherlands Eredivisie
+    "n527r3imms17evx": 8,   # Belgian Pro League
+    "2j374oixwu4qo6d": 8,   # Mexico Liga MX
+    "w34kgmi82i1ko92": 8,   # United States MLS
+    "el6kegimxin75dp": 8,   # Greek Super League
+    "5wv78ximvcjkrjn": 8,   # Ukrainian Premier League
+    "4ndqmligru5kveg": 8,   # Russian Premier League
 }
 
 # Divisões inferiores conhecidas: nunca à frente das principais.
@@ -61,6 +71,13 @@ _COMP_LOWER_ID: set[str] = {
     "0m2q15i5obp76xw",  # French Ligue 2
     "5wv78xin5hjkrjn",  # Liga Portugal 2
     "59gklzinwwa37xd",  # Liga 3 portuguesa
+    "2ezk96i4zs2kn51",  # J2 League (Japan)
+    "el6kegilncn75dp",  # Japan Football League (J3/J4)
+    "el6kegie0an75dp",  # English Conference North
+    "2ezk96i5wc2kn51",  # English Conference South
+    "zjek33i66pivko2",  # Saudi First Division
+    "mo07dnidd8ixknx",  # Saudi Second Division
+    "8vrqwnioo5ujqn2",  # Saudi Youth League
 }
 
 # Prioridade de competições (ligas principais primeiro).
@@ -83,8 +100,14 @@ _COMP_PRIORITY: list[tuple[int, str]] = [
     (9, "liga portugal"),
     (10, "primeira liga"),
     (10, "liga primera de portugal"),
-    (11, "conference league"),
-    (11, "conferencia"),
+    (7, "conference league"),
+    (7, "conferencia"),
+    (7, "j1 league"),
+    (7, "j1 de japon"),
+    (7, "super lig"),
+    (7, "süper lig"),
+    (7, "liga profesional saud"),
+    (7, "saudi pro league"),
 ]
 
 # Exclusões por chave (falsos positivos verificados no feed).
@@ -135,6 +158,11 @@ _COMP_LOWER_KEYS = (
     "primera b", "primera c", "primera nacional", "primera federacion",
     "segunda federacion", "tercera federacion", "tercera division",
     "liga 2", "liga 3", "liga portugal 2", "campeonato de portugal",
+    "j2 league", "j2 de japon", "japonesa",
+    "conferencia inglesa", "conference north", "conference south",
+    "division norte de la conferencia", "division sur de la conferencia",
+    "arabia saudita division 1", "arabia saudita division 2",
+    "liga juvenil de arabia saudita", "saudi first division", "saudi second division",
 )
 
 

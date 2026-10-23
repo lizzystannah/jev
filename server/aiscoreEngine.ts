@@ -32,7 +32,7 @@
  * Espelha motor_aiscore.py do workspace Scraping (port fiel).
  */
 
-import type { MarketType, MatchOdds, SlipScope, SlipTier } from './types.js';
+import type { MarketType, MatchOdds, MatchTip, SlipScope, SlipTier } from './types.js';
 import { deriveCompleteOdds, MARKET_LABELS } from './marketService.js';
 
 export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v1';
@@ -63,6 +63,8 @@ export interface LocalEvaluatedMatch {
   marketLabel: string;
   selectedOdds: number;
   riskTier: SlipTier;
+  /** Tip alternativa de odd alta para a ficha Maluca (mercado real). */
+  highRiskTip?: MatchTip;
   confidence: number;
   localScore: number;
 }
@@ -585,6 +587,31 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   });
 
   const b = best!;
+
+  // Tip alternativa de odd alta para a Maluca. Usa o mesmo modelo e apenas
+  // mercados com preço real; não é uma odd inventada, é outro mercado do jogo.
+  const highRiskPool = markets
+    .map((m) => ({
+      m,
+      p: P[m] ?? 0,
+      odd: sanitizeOdd((compOdds as any)[m]),
+    }))
+    .filter((x) => Number.isFinite(x.odd) && x.odd > 1.01 && x.p > 0.01);
+  const preferredHighRisk = highRiskPool.filter((x) => x.p >= 0.08);
+  const highRisk = (preferredHighRisk.length > 0 ? preferredHighRisk : highRiskPool)
+    .sort((a, b) => b.odd - a.odd)[0];
+  const highRiskLabel = highRisk ? MARKET_LABELS[highRisk.m] : undefined;
+  const highRiskTip: MatchTip | undefined = highRisk
+    ? {
+        market: highRisk.m,
+        label: highRiskLabel
+          ? highRiskLabel({ home: match.home, away: match.away })
+          : highRisk.m,
+        odds: highRisk.odd,
+        prob: Math.round(clamp(highRisk.p, 0.01, 0.99) * 100),
+      }
+    : undefined;
+
   const calib = Math.round(clamp(b.p, 0.1, 0.95) * 100);
   const edgePct = Math.round(b.edge * 100 * 10) / 10;
   const riskTier: SlipTier =
@@ -601,6 +628,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     marketLabel: labelFn ? labelFn({ home: match.home, away: match.away }) : b.m,
     selectedOdds: b.odd,
     riskTier,
+    highRiskTip,
     confidence: Math.round(confidence * 1000) / 1000,
     localScore: Math.round(calib * 0.7 + Math.max(0, edgePct) * 1.2),
   };

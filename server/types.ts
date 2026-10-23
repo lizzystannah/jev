@@ -98,6 +98,12 @@ export interface MatchItem {
   kickoffInSeconds: number;
   odds: MatchOdds;
   tip: MatchTip;
+  /**
+   * Tip alternativa de odd alta, calculada pelo mesmo motor a partir dos
+   * mercados reais. É usada apenas na ficha Maluca; não substitui a tip
+   * principal e nunca contém odds sintéticas.
+   */
+  highRiskTip?: MatchTip;
   context: MatchContext | null;
   /**
    * Scout COMPLETO do AiScore (match/history decodificado): home_form,

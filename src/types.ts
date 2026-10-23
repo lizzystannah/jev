@@ -93,6 +93,8 @@ export interface MatchItem {
   kickoffInSeconds: number;
   odds: MatchOdds;
   tip: MatchTip;
+  /** Tip alternativa de odd alta, calculada pelo motor para a ficha Maluca. */
+  highRiskTip?: MatchTip;
   context: MatchContext | null;
   jevInference?: {
     calibratedProb: number;

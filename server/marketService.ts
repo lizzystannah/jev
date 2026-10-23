@@ -24,8 +24,8 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
   { test: /bundesliga/i, exclude: /femen|feminin|women|mujer| ii\b| 2\b/i, label: 'Bundesliga' },
   { test: /ligue 1/i, exclude: /femen|feminin|women|mujer/i, label: 'Ligue 1' },
   {
-    test: /brasileir|liga portugal|liga primera de portugal|primeira liga|conference|conferencia/i,
-    exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil/i,
+    test: /brasileir|liga portugal|liga primera de portugal|primeira liga|conference league|liga confer[eê]ncia|confer[eê]ncia europa|j1 league|j1 de jap[oó]n|s[uü]per lig|liga profesional saud[ií]|saudi pro league/i,
+    exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil|j[2-4]|english conference|confer[eê]ncia inglesa|conference (north|south)|confer[eê]ncia (norte|sur)|liga de f[uú]tbol japonesa|divisi[oó]n (1|2)|saudi (first|second) division/i,
     label: 'Outras top',
   },
 ];
@@ -47,6 +47,16 @@ export const MAIN_COMPETITION_IDS: Map<string, number> = new Map([
   ['n527r3ipms17evx', 7], // Portuguese Primeira Liga
   ['r8lk2dil5t0736d', 7], // Brazilian Serie A
   ['zjek33ien6ivko2', 7], // UEFA Conference League
+  ['4ndqmliwou5kveg', 7], // Turkish Super Lig
+  ['eg6763ig9s47ryv', 7], // J1 League (Japan)
+  ['g63kv9imm6iz7ez', 7], // Saudi Pro League
+  ['yzrkn6i2rcjqle4', 8], // Netherlands Eredivisie
+  ['n527r3imms17evx', 8], // Belgian Pro League
+  ['2j374oixwu4qo6d', 8], // Mexico Liga MX
+  ['w34kgmi82i1ko92', 8], // United States MLS
+  ['el6kegimxin75dp', 8], // Greek Super League
+  ['5wv78ximvcjkrjn', 8], // Ukrainian Premier League
+  ['4ndqmligru5kveg', 8], // Russian Premier League
 ]);
 
 /** IDs de divisões inferiores conhecidas (nunca entram em bilhetes). */
@@ -58,6 +68,13 @@ export const LOWER_COMPETITION_IDS: Set<string> = new Set([
   '0m2q15i5obp76xw', // French Ligue 2
   '5wv78xin5hjkrjn', // Liga Portugal 2
   '59gklzinwwa37xd', // Liga 3 portuguesa
+  '2ezk96i4zs2kn51', // J2 League (Japan)
+  'el6kegilncn75dp', // Japan Football League (J3/J4)
+  'el6kegie0an75dp', // English Conference North
+  '2ezk96i5wc2kn51', // English Conference South
+  'zjek33i66pivko2', // Saudi First Division
+  'mo07dnidd8ixknx', // Saudi Second Division
+  '8vrqwnioo5ujqn2', // Saudi Youth League
 ]);
 
 /** Penaliza feminino/base/obscuro — espelha _COMP_PENALTY_KEYS do bridge. */
@@ -88,7 +105,7 @@ function normalizeLeague(league?: string | null): string {
  * LaLiga Hypermotion, Primera Federación, Liga 3, Regionalliga, etc.
  */
 const LOWER_DIVISION =
-  /\bserie\s*[b-d]\b|\b(segunda|segundo|intermedia|reserva|reservas|reserve|reserves|filial|filiais)\b|\b(2|ii|2a)\s*\.?\s*(divis|division|divisao|divisione|liga|bundesliga|league)\b|\b(bundesliga|ligue|la ?liga|laliga|league|liga|divisie|division|divisao)\s*(2|ii|3|iii)\b|\b(championship|league one|league two|national league|regionalliga|oberliga|landesliga|verbandsliga|superettan|challenger pro league|eerste divisie|tweede divisie|keuken kampioen|hypermotion|campeonato de portugal|liga portugal 2|primera b|primera c|primera nacional|primera federacion|segunda federacion|tercera federacion|tercera division|tff 1\.\s*lig|1\.\s*lig|liga ii|liga 2|liga 3|division 2|division 3|divisao 2|divisao 3|divisie 2|divisie 3)\b/;
+  /\bserie\s*[b-d]\b|\b(segunda|segundo|intermedia|reserva|reservas|reserve|reserves|filial|filiais)\b|\b(2|ii|2a)\s*\.?\s*(divis|division|divisao|divisione|liga|bundesliga|league)\b|\b(bundesliga|ligue|la ?liga|laliga|league|liga|divisie|division|divisao)\s*(2|ii|3|iii)\b|\b(championship|league one|league two|national league|regionalliga|oberliga|landesliga|verbandsliga|superettan|challenger pro league|eerste divisie|tweede divisie|keuken kampioen|hypermotion|campeonato de portugal|liga portugal 2|primera b|primera c|primera nacional|primera federacion|segunda federacion|tercera federacion|tercera division|tff 1\.\s*lig|1\.\s*lig|liga ii|liga 2|liga 3|division 2|division 3|divisao 2|divisao 3|divisie 2|divisie 3)\b|\bj[2-4]\b|\bliga de futbol japonesa\b|\b(conference|conferencia)\s*(north|south|norte|sur|inglesa|english)\b|\b(arabia saudita|saudi)\s*(division|first|second)\s*(1|2)?\b/;
 
 export function isLowerDivisionLeague(league?: string | null): boolean {
   return LOWER_DIVISION.test(normalizeLeague(league));
@@ -549,14 +566,16 @@ export class MarketService {
 
         // Dia 0: aguardado, com odds reais 1X2 para os primeiros priorizados.
         // Como já não usamos odds sintéticas, precisamos de mais jogos reais.
-        await this.syncAiscoreDay(0, { limit: 120, oddsLimit: 30 });
+        // A prioridade do bridge inclui Conference, J1, Süper Lig e Saudi Pro
+        // League, para que estas ligas não sejam cortadas pelo odds_limit.
+        await this.syncAiscoreDay(0, { limit: 160, oddsLimit: 40 });
         this.aiscoreLastSync = Date.now();
 
         // Dias 1..7: background sequencial (respeita o throttle do bridge).
         void (async () => {
           for (let d = 1; d <= 7; d++) {
             try {
-              await this.syncAiscoreDay(d, { limit: 40, oddsLimit: 8 });
+              await this.syncAiscoreDay(d, { limit: 80, oddsLimit: 20 });
             } catch (err: any) {
               console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
             }

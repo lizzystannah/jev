@@ -148,14 +148,16 @@ npx pm2 start "npm start" --name bilheteria
 
 O motor gera quatro categorias por horizonte, com uma vaga reservada para cada uma:
 
-| Tier | Construção | Objetivo |
+| Tier | Alvo | Construção |
 | --- | --- | --- |
-| **Segura** | 2–3 jogos, probabilidade calibrada alta | Menor volatilidade |
-| **Moderada** | 5 jogos, odds reais entre 1.80 e 2.15 | Acumular pontos com volume, sem pernas de odd altíssima |
-| **Ousada** | 5–6 jogos, odds reais entre 2.15 e 3.00 | Mais retorno pelo número de jogos, não por pernas malucas |
-| **Maluca** | 4–6 jogos, mercados de odd alta, combinada acima de 1000x | Lotaria de risco máximo, com probabilidade estimada pelo mercado |
+| **Segura** | 3x | Tips de probabilidade calibrada alta; o número de jogos é o necessário para chegar ao alvo |
+| **Moderada** | 15x | Tips de risco moderado; mais jogos e odds individuais controladas, sem pernas artificiais |
+| **Ousada** | 100x | Tips de odds controladas; o alvo é alcançado acumulando mais jogos, não inventando odds altas |
+| **Maluca** | 1000x | 4–8 jogos de odd alta, usando a tip alternativa de odd alta calculada pelo motor para cada jogo |
 
-A **Maluca** não usa a calibração Jev por perna: a probabilidade mostrada é a implícita nas odds do mercado. Ela é gerada automaticamente pelo agendador e também pode ser gerada manualmente pelo botão **Gerar**.
+O motor calcula primeiro uma tip para **todos os jogos com odds reais** do horizonte e, para cada jogo, também uma tip alternativa de odd alta (outro mercado real do mesmo jogo). A ficha é apenas uma seleção dessas tips: ordena por probabilidade, acrescenta jogos até a odd combinada atingir o alvo e pára. Se não houver tips suficientes para o alvo, **não é criada uma ficha forçada** — nunca se inventa uma perna de odd alta para "completar pontos".
+
+As ligas elegíveis incluem as principais (Champions, Europa, Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Primeira Liga, Brasileirão) e ainda **Conference League, J1 League (Japão), Süper Lig (Turquia) e Saudi Pro League**. Divisões inferiores, femininos e ligas juvenis ficam de fora.
 
 Todas as pernas usam apenas mercados com odds reais (`odds.realMarkets`). O motor local pode calcular probabilidades a partir do scout, mas nunca inventa um preço para preencher uma ficha.
 
@@ -175,6 +177,14 @@ Ver `.env.example`. Chaves relevantes:
 | `TICKETS_QUOTA_DIA` | `4` | Estoque mínimo de fichas de Hoje (uma por tier) |
 | `TICKETS_QUOTA_MED` | `4` | Estoque mínimo de 2 a 3 dias (uma por tier) |
 | `TICKETS_QUOTA_LONGO` | `4` | Estoque mínimo de longo prazo (uma por tier) |
+| `TICKETS_TARGET_SEGURA` | `3` | Alvo de odd combinada da ficha Segura |
+| `TICKETS_TARGET_MODERADA` | `15` | Alvo de odd combinada da ficha Moderada |
+| `TICKETS_TARGET_OUSADA` | `100` | Alvo de odd combinada da ficha Ousada |
+| `TICKETS_TARGET_MALUCA` | `1000` | Alvo de odd combinada da ficha Maluca |
+| `TICKETS_MAX_LEGS_SEGURA` | `8` | Teto de jogos da Segura |
+| `TICKETS_MAX_LEGS_MODERADA` | `12` | Teto de jogos da Moderada |
+| `TICKETS_MAX_LEGS_OUSADA` | `15` | Teto de jogos da Ousada |
+| `TICKETS_MAX_LEGS_MALUCA` | `8` | Teto de jogos da Maluca |
 | `TICKETS_EXPIRY_GRACE_HOURS` | `6` | Tolerância após o último jogo antes de marcar como vencida |
 | `PREMIERBET_LOGIN` | *(vazio)* | Login da conta Premier Bet |
 | `PREMIERBET_PASSWORD` | *(vazio)* | Password da conta Premier Bet |

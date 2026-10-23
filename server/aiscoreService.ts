@@ -52,7 +52,7 @@ const PYTHON_BIN = resolvePythonBin();
 
 const CACHE_FILE = path.join(PROJECT_ROOT, '.aiscore_context_cache.json');
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
-const BRIDGE_TIMEOUT_MS = 90_000;
+const BRIDGE_TIMEOUT_MS = 120_000;
 const SPAWN_GAP_MS = 1700; // >= 1.6s between bridge processes
 
 // ---------------------------------------------------------------- zigzag ---

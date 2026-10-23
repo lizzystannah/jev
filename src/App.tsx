@@ -389,15 +389,6 @@ export default function App() {
 
   // Tier note text matching longevity scope
   const tierNoteText = () => {
-    const legsCount =
-      tier === 'segura'
-        ? scope === 'dia' ? 2 : 3
-        : tier === 'moderada'
-        ? 5
-        : tier === 'ousada'
-        ? scope === 'dia' ? 5 : 6
-        : 5;
-
     const spread =
       scope === 'dia'
         ? 'jogos de hoje'
@@ -406,18 +397,18 @@ export default function App() {
         : 'jogos de longo prazo (4+ dias)';
 
     if (tier === 'segura') {
-      return `Bilhetes de ${legsCount} ${spread}, com inferência do Jev de probabilidade calibrada acima de 63% (menor volatilidade e odds seguras).`;
+      return `Fichas de ${spread} escolhidas entre as tips de maior probabilidade, até ao alvo de 3x. O número de jogos é o necessário para chegar ao alvo — sem odds inventadas.`;
     }
 
     if (tier === 'moderada') {
-      return `Bilhetes de ${legsCount} ${spread}, com odds individuais controladas (sem pernas de 3.50). Os pontos vêm de acumular jogos, não de poucas pernas de odd altíssima.`;
+      return `Fichas de ${spread} com alvo de 15x: o motor pega nas tips de risco moderado e acrescenta jogos até completar os pontos, sem pernas de odd artificial.`;
     }
 
     if (tier === 'ousada') {
-      return `Bilhetes de ${legsCount} ${spread}, com odds individuais mais altas mas sem empilhar pernas malucas. Mais jogos para acumular odd.`;
+      return `Fichas de ${spread} com alvo de 100x: mais jogos e odds individuais do tier ousado, sem empilhar pernas inventadas para chegar aos pontos.`;
     }
 
-    return `Ficha Maluca: 4 a 6 ${spread}, com mercados de odd alta e odd combinada acima de 1000x. Probabilidades estimadas pelo mercado — risco máximo.`;
+    return `Ficha Maluca: 4 a 8 ${spread}, com tips de odd alta e alvo de 1000x. A seleção usa apenas as tips reais já calculadas — risco máximo.`;
   };
 
   return (
