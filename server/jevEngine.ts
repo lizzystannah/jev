@@ -64,14 +64,46 @@ function resolveProvider(endpoint: string): JevProvider {
   return 'jev';
 }
 
+/**
+ * URL de chat completions embutida por omissão (OpenRouter). Basta definir
+ * JEV_API_KEY e JEV_MODEL para funcionar.
+ */
+const DEFAULT_JEV_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+
+/**
+ * Aceita a URL exatamente como vier ou apenas a base:
+ *   https://openrouter.ai/api/v1          -> .../api/v1/chat/completions
+ *   https://openrouter.ai/api/v1/         -> .../api/v1/chat/completions
+ *   https://meu-redirector.com/v1         -> .../v1/chat/completions
+ *   https://meu-redirector.com            -> .../v1/chat/completions
+ * Se já terminar em /chat/completions, é usada tal e qual.
+ */
+function normalizeEndpoint(raw?: string): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    let path = url.pathname.replace(/\/+$/, '');
+    if (!path || path === '/') {
+      path = '/v1/chat/completions';
+    } else if (!path.endsWith('/chat/completions')) {
+      path = path.endsWith('/v1') ? `${path}/chat/completions` : `${path}/v1/chat/completions`;
+    }
+    url.pathname = path;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function resolveConfig(): JevConfig {
   const openRouterKey = readEnv('OPENROUTER_API_KEY');
   const apiKey = readEnv('JEV_API_KEY') ?? openRouterKey ?? readEnv('OPENAI_API_KEY') ?? null;
+  // Prioridade: JEV_CHAT_COMPLETIONS_URL > JEV_API_URL > OpenRouter embutido.
   const endpoint =
-    readEnv('JEV_API_URL') ??
-    (openRouterKey
-      ? 'https://openrouter.ai/api/v1/chat/completions'
-      : 'https://api.openai.com/v1/chat/completions');
+    normalizeEndpoint(readEnv('JEV_CHAT_COMPLETIONS_URL')) ??
+    normalizeEndpoint(readEnv('JEV_API_URL')) ??
+    DEFAULT_JEV_ENDPOINT;
   const model = readEnv('JEV_MODEL') ?? readEnv('OPENROUTER_MODEL') ?? 'openrouter/free';
   const provider = resolveProvider(endpoint);
 

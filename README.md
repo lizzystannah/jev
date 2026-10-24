@@ -173,8 +173,9 @@ ConfiguraÃ§Ã£o do JEV (API compatÃvel com OpenAI Chat Completions):
 
 ```env
 JEV_API_KEY=            # vazio usa OPENROUTER_API_KEY
-JEV_API_URL=            # default OpenRouter (ou OpenAI)
 JEV_MODEL=              # default openrouter/free
+JEV_API_URL=            # opcional; default embutido: https://openrouter.ai/api/v1/chat/completions
+JEV_CHAT_COMPLETIONS_URL=  # opcional; prioridade sobre JEV_API_URL (base ou URL completa)
 JEV_TIMEOUT_MS=60000
 ```
 
