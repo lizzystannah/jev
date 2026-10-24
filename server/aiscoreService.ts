@@ -250,6 +250,13 @@ export interface AiscoreMatchMeta {
   competition?: string | null;
   competition_id?: string | null;
   statusId?: number | null;
+  matchStatus?: number | null;
+  /** Jogo terminado (statusId 8 / matchStatus 3), com placar no day card. */
+  finished?: boolean;
+  ft_home?: number | null;
+  ft_away?: number | null;
+  ht_home?: number | null;
+  ht_away?: number | null;
 }
 
 export interface AiscoreDayCardMatch extends AiscoreMatchMeta {

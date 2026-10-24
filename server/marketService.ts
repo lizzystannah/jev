@@ -1050,6 +1050,124 @@ export class MarketService {
   /** Falhas de resolução (evita head-of-line blocking no tick). */
   private resolveFails = new Map<string, { n: number; at: number }>();
 
+  /** Normaliza nomes de equipas para o fallback por nome. */
+  private static normName(name?: string | null): string {
+    return (name || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Resolve em MASSA com UMA chamada ao day card (matches?date=), que já traz
+   * statusId + placares empacotados. Só aplica jogos terminados.
+   *
+   * `allowIds` permite criar a partida em memória quando ela ainda não está na
+   * lista mas é perna de uma ficha pendente (ex.: servidor reiniciou depois do
+   * jogo ter terminado).
+   */
+  public async resolveFromDayResults(
+    opts: { offsets?: number[]; allowIds?: Set<string> } = {}
+  ): Promise<MatchItem[]> {
+    const offsets = opts.offsets ?? [0, -1];
+    const allowIds = opts.allowIds ?? new Set<string>();
+    const resolved: MatchItem[] = [];
+
+    for (const offset of offsets) {
+      let metas: Awaited<ReturnType<typeof aiscoreClient.getMatchesForDate>> = [];
+      try {
+        metas = await aiscoreClient.getMatchesForDate(aiscoreYmd(offset));
+      } catch (err: any) {
+        console.warn(
+          `[Resultados] matches?date (offset ${offset}) falhou:`,
+          err?.message
+        );
+        continue;
+      }
+
+      for (const meta of metas) {
+        if (!meta.finished) continue;
+        if (meta.ft_home == null || meta.ft_away == null) continue;
+        const id = `aiscore_${meta.match_id}`;
+
+        let local = this.matches.find((m) => m.id === id);
+        if (!local) {
+          // Fallback por nomes + data (ex.: jogo veio da The Odds API).
+          const home = MarketService.normName(meta.home?.name);
+          const away = MarketService.normName(meta.away?.name);
+          const kickoff = parseKickoffMs(meta.kickoff);
+          local = this.matches.find((m) => {
+            if (MarketService.normName(m.home) !== home) return false;
+            if (MarketService.normName(m.away) !== away) return false;
+            if (!kickoff) return true;
+            return Math.abs(m.kickoffAt - kickoff) <= 6 * 60 * 60 * 1000;
+          });
+        }
+        if (!local && allowIds.has(id)) {
+          const kickoff = parseKickoffMs(meta.kickoff);
+          if (!kickoff) continue;
+          local = this.placeholderFromMeta(meta, kickoff);
+          this.matches.push(local);
+        }
+        if (!local || local.status === 'resolved') continue;
+
+        const result = this.applyRealResult(local.id, meta.ft_home, meta.ft_away);
+        if (result) resolved.push(result);
+      }
+    }
+
+    if (resolved.length > 0) {
+      console.log(
+        `[Resultados] ${resolved.length} jogo(s) resolvido(s) pela varredura do dia.`
+      );
+    }
+    return resolved;
+  }
+
+  /** Cria um MatchItem mínimo (sem odds reais) a partir do day card. */
+  private placeholderFromMeta(
+    meta: Awaited<ReturnType<typeof aiscoreClient.getMatchesForDate>>[number],
+    kickoffAt: number
+  ): MatchItem {
+    const timezone = 'Africa/Luanda';
+    const home = (meta.home?.name || '').trim() || 'Casa';
+    const away = (meta.away?.name || '').trim() || 'Fora';
+    const date = new Date(kickoffAt);
+    const dateStr = date.toLocaleDateString('pt-PT', {
+      day: '2-digit', month: '2-digit', year: 'numeric', timeZone: timezone,
+    });
+    const time = date.toLocaleTimeString('pt-PT', {
+      hour: '2-digit', minute: '2-digit', timeZone: timezone,
+    });
+    const odds: MatchOdds = {
+      home: 2.6, draw: 3.3, away: 2.9,
+      over25: 1.9, under25: 1.9, btts_yes: 1.85, btts_no: 1.9,
+      realMarkets: [],
+    };
+    return {
+      id: `aiscore_${meta.match_id}`,
+      league: meta.competition || 'AiScore',
+      competitionId: meta.competition_id ?? null,
+      home, away, time, dateStr,
+      daysFromNow: getCalendarDayDiff(kickoffAt, timezone),
+      kickoffAt,
+      kickoffInSeconds: Math.max(30, Math.round((kickoffAt - Date.now()) / 1000)),
+      odds,
+      tip: {
+        market: 'home',
+        label: 'Sem odds reais',
+        odds: 0,
+        prob: 0,
+      },
+      context: null,
+      status: 'pending',
+      result: null,
+      sourceProvider: 'aiscore',
+    };
+  }
+
   private async resolveAiscoreId(match: MatchItem): Promise<string | null> {
     if (match.id.startsWith('aiscore_')) return match.id.slice('aiscore_'.length);
     const cached = this.aiscoreIdCache.get(match.id);
@@ -1157,7 +1275,10 @@ export class MarketService {
    * Limitado a N partidas por tick (cada consulta ~1.7s de throttle).
    * Partidas que falham 3x seguidas são puladas por 30min (sem head-of-line).
    */
-  public async resolveDueMatches(maxPerTick = 8): Promise<MatchItem[]> {
+  public async resolveDueMatches(
+    maxPerTick = 8,
+    priorityIds?: Set<string>
+  ): Promise<MatchItem[]> {
     const now = Date.now();
     const resolved: MatchItem[] = [];
     const due = this.matches.filter((m) => {
@@ -1166,8 +1287,14 @@ export class MarketService {
       if (fail && fail.n >= 3 && now - fail.at < 30 * 60 * 1000) return false;
       return true;
     });
-    // Terminados há mais tempo primeiro (bilhetes expiram mais rápido).
-    due.sort((a, b) => a.kickoffAt - b.kickoffAt);
+    // Pernas de fichas pendentes primeiro; depois os terminados há mais tempo
+    // (bilhetes expiram mais rápido).
+    due.sort((a, b) => {
+      const pa = priorityIds?.has(a.id) ? 0 : 1;
+      const pb = priorityIds?.has(b.id) ? 0 : 1;
+      if (pa !== pb) return pa - pb;
+      return a.kickoffAt - b.kickoffAt;
+    });
     for (const m of due.slice(0, maxPerTick)) {
       try {
         const res = await this.resolveMatchLive(m.id);

@@ -1,4 +1,4 @@
-"""JSON bridge for the Bilheteria Node server (child_process -> stdout).
+﻿"""JSON bridge for the Bilheteria Node server (child_process -> stdout).
 
 Uses the validated workspace Python stack (curl_cffi + protobuf decoders).
 Run with the workspace venv:
@@ -28,17 +28,21 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Workspace root (parent of bilheteria project): .../Documents/Scraping
-WORKSPACE = Path(__file__).resolve().parents[2]
+# Pasta do bridge (modulos empacotados) tem prioridade; o workspace fica
+# apenas como fallback (evita importar copias antigas de batch_scout).
+ROOT = Path(__file__).resolve().parent
+WORKSPACE = ROOT.parents[1]
 os.chdir(WORKSPACE)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(WORKSPACE) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE))
+    sys.path.append(str(WORKSPACE))
 
 TZ = timezone(timedelta(hours=-3))
 
-# IDs oficiais (AiScore) das competições permitidas nos bilhetes.
+# IDs oficiais (AiScore) das competiÃ§Ãµes permitidas nos bilhetes.
 # O nome localizado engana ("Premier League egipto/siria/iraque/catar");
-# o ID não. Fonte: football/comp/map + day_card.
+# o ID nÃ£o. Fonte: football/comp/map + day_card.
 _COMP_ID_PRIORITY: dict[str, int] = {
     "xo17pji02i37jw5": 0,   # UEFA Champions League
     "2jr7owi6es1q0em": 1,   # UEFA Europa League
@@ -63,7 +67,7 @@ _COMP_ID_PRIORITY: dict[str, int] = {
     "4ndqmligru5kveg": 8,   # Russian Premier League
 }
 
-# Divisões inferiores conhecidas: nunca à frente das principais.
+# DivisÃµes inferiores conhecidas: nunca Ã  frente das principais.
 _COMP_LOWER_ID: set[str] = {
     "8vrqwnin9sjqn2o",  # English Championship
     "w34kgmixet1ko92",  # 2. Bundesliga
@@ -81,8 +85,8 @@ _COMP_LOWER_ID: set[str] = {
     "8vrqwnioo5ujqn2",  # Saudi Youth League
 }
 
-# Prioridade de competições (ligas principais primeiro).
-# Usado no day_card para que o corte limit/odds_limit não enterre
+# Prioridade de competiÃ§Ãµes (ligas principais primeiro).
+# Usado no day_card para que o corte limit/odds_limit nÃ£o enterre
 # Premier League, La Liga, Champions, Europa etc. no meio de 1000+ jogos.
 _COMP_PRIORITY: list[tuple[int, str]] = [
     (0, "champions"),
@@ -106,7 +110,7 @@ _COMP_PRIORITY: list[tuple[int, str]] = [
     (7, "j1 league"),
     (7, "j1 de japon"),
     (7, "super lig"),
-    (7, "süper lig"),
+    (7, "sÃ¼per lig"),
     (7, "liga profesional saud"),
     (7, "saudi pro league"),
     (7, "super liga s"),
@@ -114,7 +118,7 @@ _COMP_PRIORITY: list[tuple[int, str]] = [
     (7, "srbij"),
 ]
 
-# Exclusões por chave (falsos positivos verificados no feed).
+# ExclusÃµes por chave (falsos positivos verificados no feed).
 _COMP_EXCLUDE: dict[str, tuple[str, ...]] = {
     "champions": ("femen", "women", "mujer", "youth", "u19", "juvenil"),
     "europa league": ("femen", "women", "mujer", "conference"),
@@ -138,8 +142,8 @@ _COMP_EXCLUDE: dict[str, tuple[str, ...]] = {
 
 
 # Qualificadores que rebaixam a prioridade (feminino/base/obscuro).
-# Evita p.ex. "Premier League de Butão" ou "Serie A femenina" passar
-# à frente das ligas principais masculinas.
+# Evita p.ex. "Premier League de ButÃ£o" ou "Serie A femenina" passar
+# Ã  frente das ligas principais masculinas.
 _COMP_PENALTY_KEYS = (
     "femenina", "femenino", "feminina", "feminino", "women", "(w)",
     "(mujeres)", "woman", "ladies", "lady",
@@ -150,8 +154,8 @@ _COMP_PENALTY_KEYS = (
     "nadeshiko", "nepal", "tanzania", "uganda", "kenya", "zambia",
 )
 
-# Divisões inferiores: sempre atrás de ligas principais e de campeonatos
-# desconhecidos (mas de primeira divisão).
+# DivisÃµes inferiores: sempre atrÃ¡s de ligas principais e de campeonatos
+# desconhecidos (mas de primeira divisÃ£o).
 _COMP_LOWER_KEYS = (
     "segunda", "segundo", "intermedia", "reserva", "reservas", "reserve",
     "reserves", "filial", "serie b", "serie c", "serie d",
@@ -177,7 +181,7 @@ def _comp_priority(name: str | None, comp_id: str | None = None) -> int:
             return 149
         if cid in _COMP_ID_PRIORITY:
             return _COMP_ID_PRIORITY[cid]
-        # Competição fora da whitelist: não confiar no nome localizado.
+        # CompetiÃ§Ã£o fora da whitelist: nÃ£o confiar no nome localizado.
         return 99
     s = (name or "").lower()
     if any(k in s for k in _COMP_LOWER_KEYS):
@@ -186,15 +190,15 @@ def _comp_priority(name: str | None, comp_id: str | None = None) -> int:
     for r, key in _COMP_PRIORITY:
         if key not in s:
             continue
-        # "Copa de la Liga" (Peru/Bolívia) não é a La Liga espanhola.
+        # "Copa de la Liga" (Peru/BolÃ­via) nÃ£o Ã© a La Liga espanhola.
         if key == "la liga" and "copa de la liga" in s:
             continue
-        # "Primera División X" genérico (Hong Kong, Chile...) não é Espanha.
+        # "Primera DivisiÃ³n X" genÃ©rico (Hong Kong, Chile...) nÃ£o Ã© Espanha.
         if key == "primera divisi" and not any(
             k in s for k in ("spanish", "espa", "rfef", "laliga", "la liga")
         ):
             continue
-        # Falsos positivos verificados (ex.: Premier de Butão, U21, Norte).
+        # Falsos positivos verificados (ex.: Premier de ButÃ£o, U21, Norte).
         if any(x in s for x in _COMP_EXCLUDE.get(key, ())):
             continue
         rank = r
@@ -371,9 +375,9 @@ def _resolve_match_id(c, home: str, away: str, date: str) -> dict | None:
 def _full_standings(c, comp_id: str, season_id: str) -> list:
     """Todas as tabelas do football/comp (todos os grupos), com contexto.
 
-    c.standings() só lê a PRIMEIRA tabela — aqui varremos recursivamente
+    c.standings() sÃ³ lÃª a PRIMEIRA tabela â€” aqui varremos recursivamente
     cada lista que tenha um campo 'rows', herdando name/group/id mais
-    próximos. Devolve [{table_id, group, name, rows:[{team_id, team,
+    prÃ³ximos. Devolve [{table_id, group, name, rows:[{team_id, team,
     position, total, won, draw, loss, goals, goalsAgainst, goalDiff,
     points}]}]. O Node filtra pelos 2 times do confronto.
     """
@@ -413,7 +417,7 @@ def _full_standings(c, comp_id: str, season_id: str) -> list:
             rows_list: list = []
             meta = dict(ctx)
             for _, n, _, v in node:
-                # ATENÇÃO: "rows" repete-se (uma ocorrência = UMA linha);
+                # ATENÃ‡ÃƒO: "rows" repete-se (uma ocorrÃªncia = UMA linha);
                 # colectam-se todas. Cada valor pode ser uma linha (fields)
                 # ou, noutros payloads, lista de linhas.
                 if n == "rows" and isinstance(v, list):
@@ -455,12 +459,12 @@ def _full_standings(c, comp_id: str, season_id: str) -> list:
 
 
 def _parse_lineups(raw: bytes) -> dict:
-    """match/lineups bytes -> escalações resumidas por lado.
+    """match/lineups bytes -> escalaÃ§Ãµes resumidas por lado.
 
-    Navegação genérica (f15 envelope -> f1 container): managers (f3/f4),
+    NavegaÃ§Ã£o genÃ©rica (f15 envelope -> f1 container): managers (f3/f4),
     confirmed (f5), formations (f6/f7), details f10 (casa) / f11 (fora).
     Detail: team f1, player f2{id}, status f3 (1 = titular; ausente = reserva;
-    outro valor = indisponível), reason f4, rating f5, captain f6,
+    outro valor = indisponÃ­vel), reason f4, rating f5, captain f6,
     shirt f7, position f8 (G/D/M/F), incidents f13.
     """
     from decode_raw import decode
@@ -638,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
             })
 
         if action == "advanced":
-            # Todas as variáveis restantes do match/history a partir dos
+            # Todas as variÃ¡veis restantes do match/history a partir dos
             # MESMOS bytes (sem endpoint extra): GoalDistribution por
             # janelas 0-15..76-90+ (all/home/away), trend_sc, team_stats
             # last10/all e h2h_stats. Ver motor_aiscore.py / TS aiscoreEngine.
@@ -683,8 +687,8 @@ def main(argv: list[str] | None = None) -> int:
             })
 
         if action == "tables":
-            # Classificação via football/comp (parser validado). Precisa de
-            # comp_id + season_id — o Node passa os do scout/advanced; em
+            # ClassificaÃ§Ã£o via football/comp (parser validado). Precisa de
+            # comp_id + season_id â€” o Node passa os do scout/advanced; em
             # falta resolve-se aqui (match/data + goalDistributions).
             # Devolve TODAS as linhas; o Node filtra pelos 2 times.
             mid = payload.get("match_id")
@@ -712,10 +716,10 @@ def main(argv: list[str] | None = None) -> int:
                                   "tables": rows}})
 
         if action == "lineups":
-            # Escalações via match/lineups (navegação genérica — o payload traz
+            # EscalaÃ§Ãµes via match/lineups (navegaÃ§Ã£o genÃ©rica â€” o payload traz
             # um wrapper com o Lineup no campo 1). status 1 = titular;
-            # qualquer outro status = indisponível (lesão/dúvida) + reason.
-            # Sem nomes de jogadores no payload (só IDs) — sem custo extra.
+            # qualquer outro status = indisponÃ­vel (lesÃ£o/dÃºvida) + reason.
+            # Sem nomes de jogadores no payload (sÃ³ IDs) â€” sem custo extra.
             mid = payload.get("match_id")
             if not mid:
                 return _out({"ok": False, "error": "match_id required"})
@@ -733,8 +737,8 @@ def main(argv: list[str] | None = None) -> int:
             metas = matches_for_date(
                 c, date, upcoming_only=bool(payload.get("upcoming", True))
             )
-            # Ligas principais primeiro — sem isso o limit/odds_limit corta
-            # o dia (1000+ jogos) e só sobram ligas obscuras.
+            # Ligas principais primeiro â€” sem isso o limit/odds_limit corta
+            # o dia (1000+ jogos) e sÃ³ sobram ligas obscuras.
             metas.sort(
                 key=lambda m: (
                     _comp_priority(m.get("competition"), m.get("competition_id")),
@@ -745,8 +749,8 @@ def main(argv: list[str] | None = None) -> int:
             if limit:
                 metas = metas[:limit]
             odds_limit = int(payload.get("odds_limit") or 15)
-            # Limite de TENTATIVAS (não só de sucessos). Dias futuros muitas
-            # vezes não têm odds nenhumas no AiScore: sem isto, o bridge
+            # Limite de TENTATIVAS (nÃ£o sÃ³ de sucessos). Dias futuros muitas
+            # vezes nÃ£o tÃªm odds nenhumas no AiScore: sem isto, o bridge
             # tentava os 200 jogos um a um (~1.6s cada) e estourava o timeout
             # de 120s, perdendo o dia inteiro.
             odds_attempts = int(payload.get("odds_attempts") or odds_limit)
@@ -811,7 +815,7 @@ def main(argv: list[str] | None = None) -> int:
         if action == "live_result":
             # Placar REAL via match/data (WebMatchData.match).
             # Fonte da verdade para resolver bilhetes: statusId 8 + matchStatus 3
-            # = jogo terminado; FT = scores[0] (nunca somar períodos).
+            # = jogo terminado; FT = scores[0] (nunca somar perÃ­odos).
             mid = payload.get("match_id")
             if not mid:
                 return _out({"ok": False, "error": "match_id required"})
@@ -826,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
                 return _out({"ok": False, "error": "no match data", "type": "live_result"})
             sc = _match_scores(m)
             # FT = scores[0] SEMPRE (tempo normal). match_scores() prefere
-            # pênaltis[5] em mata-mata — para 1X2/apostas vale o tempo normal.
+            # pÃªnaltis[5] em mata-mata â€” para 1X2/apostas vale o tempo normal.
             raw_h, raw_a = _get(m, "homeScores"), _get(m, "awayScores")
             ph = _decode_sint(raw_h) if isinstance(raw_h, (bytes, bytearray)) else []
             pa = _decode_sint(raw_a) if isinstance(raw_a, (bytes, bytearray)) else []
@@ -895,3 +899,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

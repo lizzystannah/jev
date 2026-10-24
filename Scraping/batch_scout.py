@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from aiscore_client import AiscoreClient
+from aiscore_client import AiscoreClient, decode_packed_sint32
 from schema_decode import decode_response, get
 
 TZ = timezone(timedelta(hours=-3))  # client default tz=-03:00
@@ -84,6 +84,21 @@ def matches_for_date(c: AiscoreClient, date: str, upcoming_only: bool = False) -
         mid = get(r, "id")
         if not mid:
             continue
+
+        # Placar ja vem no day card (homeScores/awayScores empacotados em
+        # sint32 zigzag: [FT, 1H, 2H, ET1, ET2, Penaltis]). Permite validar
+        # TODOS os jogos do dia com uma unica chamada a matches?date=.
+        raw_h = get(r, "homeScores")
+        raw_a = get(r, "awayScores")
+        ph = decode_packed_sint32(raw_h) if isinstance(raw_h, (bytes, bytearray)) else []
+        pa = decode_packed_sint32(raw_a) if isinstance(raw_a, (bytes, bytearray)) else []
+        mstatus = get(r, "matchStatus")
+        ft_home = ph[0] if ph else None
+        ft_away = pa[0] if pa else None
+        ht_home = ph[1] if len(ph) > 1 else None
+        ht_away = pa[1] if len(pa) > 1 else None
+        finished = status == 8 or mstatus == 3
+
         out.append({
             "match_id": mid,
             "kickoff": kickoff_str(get(r, "matchTime")),
@@ -92,6 +107,12 @@ def matches_for_date(c: AiscoreClient, date: str, upcoming_only: bool = False) -
             "competition": cname,
             "competition_id": cid,
             "statusId": status,
+            "matchStatus": mstatus,
+            "finished": finished,
+            "ft_home": ft_home,
+            "ft_away": ft_away,
+            "ht_home": ht_home,
+            "ht_away": ht_away,
         })
     out.sort(key=lambda x: x["kickoff"] or "")
     return out

@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+﻿import dotenv from 'dotenv';
 dotenv.config();
 
 import express, { Request, Response } from 'express';
@@ -34,36 +34,61 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const isProd = process.env.NODE_ENV === 'production';
 
 async function startServer() {
-  // Persistência primeiro: sem base de dados pronta não há fichas nem agendador.
+  // PersistÃªncia primeiro: sem base de dados pronta nÃ£o hÃ¡ fichas nem agendador.
   await bilheteriaDb.init();
   await ticketEngine.init();
 
   const app = express();
   app.use(express.json());
 
-  /** Anexa à ficha o estado da última submissão à Premier Bet. */
+  /** Anexa Ã  ficha o estado da Ãºltima submissÃ£o Ã  Premier Bet. */
   const withUploads = (slips: BetSlip[]): BetSlip[] =>
     slips.map((slip) => ({ ...slip, upload: bilheteriaDb.getUpload(slip.id) }));
 
-  /** Evita dois cliques simultâneos na mesma ficha (risco de aposta duplicada). */
+  /** Evita dois cliques simultÃ¢neos na mesma ficha (risco de aposta duplicada). */
   const uploadsInFlight = new Set<string>();
 
-  // Background resolver: placar REAL via AiScore (match/data), a cada 90s.
-  // Só resolve jogos terminados (statusId 8); jogos iniciados viram 'live'.
-  // Bilhetes com 1 perna falhada caem para 'perdeu' na hora (validateSlips).
+  // ========================== validaÃ§Ã£o de resultados ==========================
+  //
+  // 1) VARREDURA EM MASSA a cada RESULTS_SWEEP_MINUTES (default 15): UMA Ãºnica
+  //    chamada matches?date= traz statusId + placares de todos os jogos do dia.
+  //    SÃ³ jogos terminados sÃ£o aplicados. Inclui ontem (jogos que acabam apÃ³s
+  //    a meia-noite).
+  // 2) A cada minuto, um passe prioritÃ¡rio resolve as pernas das FICHAS
+  //    pendentes via match/data, sem esperar a varredura.
+  const RESULT_SWEEP_MS =
+    Math.max(1, Number(process.env.RESULTS_SWEEP_MINUTES || 15)) * 60_000;
+  let lastResultSweepAt = 0;
   let resolving = false;
-  setInterval(async () => {
+
+  const pendingSlipLegIds = (): Set<string> =>
+    new Set(
+      ticketEngine
+        .getSlips()
+        .filter((s) => s.status === 'pendente')
+        .flatMap((s) => s.legs.map((l) => l.id))
+    );
+
+  const runResultsCycle = async (): Promise<void> => {
     if (resolving) return;
     resolving = true;
     try {
-      const resolved = await marketService.resolveDueMatches(8);
+      const allowIds = pendingSlipLegIds();
+      if (Date.now() - lastResultSweepAt >= RESULT_SWEEP_MS) {
+        lastResultSweepAt = Date.now();
+        await marketService.resolveFromDayResults({ offsets: [0, -1, -2], allowIds });
+      }
+      const resolved = await marketService.resolveDueMatches(12, allowIds);
       if (resolved.length > 0) {
         const { updatedSlips } = ticketEngine.validateSlips();
-        console.log(`[Bilheteria Engine] ${resolved.length} jogo(s) resolvido(s) com placar real. ${updatedSlips.length} bilhete(s) atualizados.`);
-        // Repõe imediatamente o estoque das fichas que caíram (ganhas/perdidas/vencidas).
+        console.log(
+          `[Bilheteria Engine] ${resolved.length} jogo(s) resolvido(s) com placar real. ` +
+            `${updatedSlips.length} bilhete(s) atualizados.`
+        );
+        // RepÃµe imediatamente o estoque das fichas que caÃ­ram.
         void ticketScheduler.tick('resolution');
       } else {
-        // Mesmo sem FT novo, propaga 'live' e valida expiração de bilhetes.
+        // Mesmo sem FT novo, propaga 'live' e valida expiraÃ§Ã£o de bilhetes.
         marketService.resolveAllOverdue();
         const { updatedSlips } = ticketEngine.validateSlips();
         if (updatedSlips.length > 0) {
@@ -71,11 +96,17 @@ async function startServer() {
         }
       }
     } catch (err) {
-      console.warn('[Bilheteria Engine] Falha no ciclo de resolução real:', (err as Error)?.message);
+      console.warn(
+        '[Bilheteria Engine] Falha no ciclo de resoluÃ§Ã£o real:',
+        (err as Error)?.message
+      );
     } finally {
       resolving = false;
     }
-  }, 90_000);
+  };
+
+  void runResultsCycle();
+  setInterval(() => void runResultsCycle(), 60_000);
 
   // ==========================================
   // API ROUTES
@@ -93,11 +124,11 @@ async function startServer() {
       provider: providerStatus,
       jevEngine: {
         // Mesmo nome de chave por compatibilidade com o frontend;
-        // o conteúdo agora é o motor LOCAL (sem Jev/OpenRouter).
+        // o conteÃºdo agora Ã© o motor LOCAL (sem Jev/OpenRouter).
         isRemoteKeyConfigured: true,
         provider: 'local',
         modelVersion: AISCORE_ENGINE_VERSION,
-        architecture: 'Local AiScore Engine (Poisson + taxas empíricas + H2H)',
+        architecture: 'Local AiScore Engine (Poisson + taxas empÃ­ricas + H2H)',
         latencyMs: ticketEngine.getLastJevLatency(),
         supportedScopes: ['dia', '2_3_dias', 'longo'],
         strictlyEnforced: false,
@@ -106,7 +137,7 @@ async function startServer() {
       aiEngine: {
         hasGeminiApiKey,
         model: hasGeminiApiKey ? 'gemini-3.8-flash' : AISCORE_ENGINE_VERSION,
-        features: ['Análise Tática de Jogos (OpenRouter Free)', 'Gerador de Bilhetes Estratégicos com IA'],
+        features: ['AnÃ¡lise TÃ¡tica de Jogos (OpenRouter Free)', 'Gerador de Bilhetes EstratÃ©gicos com IA'],
       },
       stats: {
         totalMatches: providerStatus.totalMatches,
@@ -125,7 +156,7 @@ async function startServer() {
   ];
 
   // Matches list com TODAS as tips calculadas (probabilidade por mercado).
-  // O motor é local e determinístico, por isso roda sobre a lista inteira.
+  // O motor Ã© local e determinÃ­stico, por isso roda sobre a lista inteira.
   app.get('/api/matches', async (req: Request, res: Response) => {
     try {
       const forceRefresh = req.query.refresh === 'true';
@@ -137,9 +168,9 @@ async function startServer() {
       const matches = await marketService.getMatches(forceRefresh);
       let enriched = matches;
       try {
-        // Calibração persistida: reutiliza as tips se a assinatura de odds não
-        // mudou. Só recalcula o que é novo ou cujas odds mudaram (nem rede nem
-        // CPU a cada redeploy). Sem odds e sem scout não se inventa prob.
+        // CalibraÃ§Ã£o persistida: reutiliza as tips se a assinatura de odds nÃ£o
+        // mudou. SÃ³ recalcula o que Ã© novo ou cujas odds mudaram (nem rede nem
+        // CPU a cada redeploy). Sem odds e sem scout nÃ£o se inventa prob.
         const needsCalibration = (m: MatchItem): boolean =>
           (!m.calibration || m.calibration.oddsHash !== oddsSignature(m.odds)) &&
           ((m.odds.realMarkets?.length || 0) > 0 || Boolean(m.scout));
@@ -189,7 +220,7 @@ async function startServer() {
           marketService.saveCacheSoon();
         }
 
-        // Aplica a calibração persistida a todos os jogos que a tenham.
+        // Aplica a calibraÃ§Ã£o persistida a todos os jogos que a tenham.
         enriched = matches.map((m) => {
           if (!m.calibration) return m;
           const chosen = m.calibration.tips.find(
@@ -229,7 +260,7 @@ async function startServer() {
     );
   });
 
-  // Sincronização explícita e protegida com The Odds API (disparada intencionalmente pelo usuário)
+  // SincronizaÃ§Ã£o explÃ­cita e protegida com The Odds API (disparada intencionalmente pelo usuÃ¡rio)
   app.post('/api/market/sync-odds', async (req: Request, res: Response) => {
     try {
       const matches = await marketService.getMatches(true);
@@ -237,7 +268,7 @@ async function startServer() {
       await cacheDel('matches:api:v2');
       res.json({
         success: true,
-        message: 'Sincronização processada com sucesso.',
+        message: 'SincronizaÃ§Ã£o processada com sucesso.',
         status,
         matchesCount: matches.length,
       });
@@ -246,12 +277,12 @@ async function startServer() {
     }
   });
 
-  // Resolve manual — SOMENTE dev (ALLOW_SIMULATION=true). Em produção, a
-  // resolução é automática com placar real do AiScore (resolveDueMatches).
+  // Resolve manual â€” SOMENTE dev (ALLOW_SIMULATION=true). Em produÃ§Ã£o, a
+  // resoluÃ§Ã£o Ã© automÃ¡tica com placar real do AiScore (resolveDueMatches).
   app.post('/api/matches/resolve', async (req: Request, res: Response) => {
     try {
       if (process.env.ALLOW_SIMULATION !== 'true') {
-        return res.status(403).json({ error: 'Resolução manual desativada em produção. Bilhetes resolvem automaticamente com o placar real.' });
+        return res.status(403).json({ error: 'ResoluÃ§Ã£o manual desativada em produÃ§Ã£o. Bilhetes resolvem automaticamente com o placar real.' });
       }
       const { matchId, resolveNextPending } = req.body;
       const allMatches = await marketService.getMatches();
@@ -283,7 +314,7 @@ async function startServer() {
       if (uploadsInFlight.size > 0) {
         return res.status(409).json({
           error:
-            'Há uma submissão à Premier Bet em curso. Aguarde o resultado antes de reiniciar as fichas.',
+            'HÃ¡ uma submissÃ£o Ã  Premier Bet em curso. Aguarde o resultado antes de reiniciar as fichas.',
         });
       }
       const matches = marketService.resetMatches();
@@ -306,32 +337,32 @@ async function startServer() {
     res.json(withUploads(slips));
   });
 
-  // Stock/quota status (usado pelo frontend e por monitorização)
+  // Stock/quota status (usado pelo frontend e por monitorizaÃ§Ã£o)
   app.get('/api/tickets/stock', (req: Request, res: Response) => {
     res.json(ticketScheduler.getStatus());
   });
 
-  // Excluir ficha (memória + base de dados + registo de submissão).
+  // Excluir ficha (memÃ³ria + base de dados + registo de submissÃ£o).
   app.delete('/api/tickets/:id', async (req: Request, res: Response) => {
     const slip = ticketEngine.getSlips().find((s) => s.id === req.params.id);
     if (!slip) {
-      return res.status(404).json({ error: 'Ficha não encontrada.' });
+      return res.status(404).json({ error: 'Ficha nÃ£o encontrada.' });
     }
     if (uploadsInFlight.has(slip.id)) {
       return res.status(409).json({
         error:
-          'Esta ficha está a ser subida para a Premier Bet. Aguarde o resultado antes de excluir.',
+          'Esta ficha estÃ¡ a ser subida para a Premier Bet. Aguarde o resultado antes de excluir.',
       });
     }
     const deleted = ticketEngine.deleteSlip(slip.id);
     if (!deleted) {
-      return res.status(404).json({ error: 'Ficha não encontrada.' });
+      return res.status(404).json({ error: 'Ficha nÃ£o encontrada.' });
     }
-    // Garante que o DELETE chega à BD antes de responder (sem resquícios).
+    // Garante que o DELETE chega Ã  BD antes de responder (sem resquÃ­cios).
     try {
       await bilheteriaDb.flush();
     } catch {
-      /* a escrita é write-behind; o erro fica no log da BD */
+      /* a escrita Ã© write-behind; o erro fica no log da BD */
     }
     await cacheDel('matches:api:v2');
     res.json({
@@ -342,16 +373,16 @@ async function startServer() {
     });
   });
 
-  // Generate slips for scope (botão manual em qualquer parte do site)
+  // Generate slips for scope (botÃ£o manual em qualquer parte do site)
   app.post('/api/tickets/generate', async (req: Request, res: Response) => {
     try {
       const { scope = 'dia', leagues, limit, market } = req.body || {};
       const validScopes = ['dia', '2_3_dias', 'longo'];
       if (!validScopes.includes(scope)) {
-        return res.status(400).json({ error: `Escopo inválido: ${scope}` });
+        return res.status(400).json({ error: `Escopo invÃ¡lido: ${scope}` });
       }
       if (market !== undefined && market !== null && market !== '' && !ALL_MARKETS.includes(market)) {
-        return res.status(400).json({ error: `Tipo de tip inválido: ${market}` });
+        return res.status(400).json({ error: `Tipo de tip invÃ¡lido: ${market}` });
       }
       const result = await ticketScheduler.generateMore(
         scope,
@@ -373,7 +404,7 @@ async function startServer() {
 
   // ------------------------------------------------------------------- JEV ---
 
-  // Estado do JEV (configuração/modelo; nunca expõe a chave).
+  // Estado do JEV (configuraÃ§Ã£o/modelo; nunca expÃµe a chave).
   app.get('/api/jev/status', (_req: Request, res: Response) => {
     res.json(jevStatus());
   });
@@ -386,13 +417,13 @@ async function startServer() {
       if (!status.configured) {
         return res.status(503).json({
           error:
-            'JEV não configurado. Defina JEV_API_KEY (ou OPENROUTER_API_KEY), JEV_MODEL e JEV_API_URL na env.',
+            'JEV nÃ£o configurado. Defina JEV_API_KEY (ou OPENROUTER_API_KEY), JEV_MODEL e JEV_API_URL na env.',
         });
       }
       const { scope = 'dia', leagues, limit } = req.body || {};
       const validScopes = ['dia', '2_3_dias', 'longo'];
       if (!validScopes.includes(scope)) {
-        return res.status(400).json({ error: `Escopo inválido: ${scope}` });
+        return res.status(400).json({ error: `Escopo invÃ¡lido: ${scope}` });
       }
       const result = await ticketScheduler.generateMore(
         scope,
@@ -406,7 +437,7 @@ async function startServer() {
       if (result.jevMeta) {
         const meta = result.jevMeta;
         message =
-          `${message} JEV: ${meta.newPicks} decisão(ões) nova(s), ` +
+          `${message} JEV: ${meta.newPicks} decisÃ£o(Ãµes) nova(s), ` +
           `${meta.reused} reutilizada(s), ${meta.stale} antiga(s) descartada(s), ` +
           `${meta.apiCalls} chamada(s), custo ${meta.costUsd.toFixed(6)} USD.`;
       }
@@ -421,17 +452,17 @@ async function startServer() {
     }
   });
 
-  // Ficha manual: legs explícitas escolhidas na lista de tips.
+  // Ficha manual: legs explÃ­citas escolhidas na lista de tips.
   app.post('/api/tickets/custom', async (req: Request, res: Response) => {
     try {
       const { scope = 'dia', tier = 'moderada', legs } = req.body || {};
       const validScopes = ['dia', '2_3_dias', 'longo'];
       const validTiers = ['segura', 'moderada', 'ousada', 'maluca'];
       if (!validScopes.includes(scope)) {
-        return res.status(400).json({ error: `Escopo inválido: ${scope}` });
+        return res.status(400).json({ error: `Escopo invÃ¡lido: ${scope}` });
       }
       if (!validTiers.includes(tier)) {
-        return res.status(400).json({ error: `Tier inválido: ${tier}` });
+        return res.status(400).json({ error: `Tier invÃ¡lido: ${tier}` });
       }
       if (!Array.isArray(legs) || legs.length === 0) {
         return res.status(400).json({ error: 'Escolha pelo menos um jogo/tip.' });
@@ -444,17 +475,17 @@ async function startServer() {
         (s) => !s.matchId || !ALL_MARKETS.includes(s.market)
       );
       if (invalid) {
-        return res.status(400).json({ error: `Seleção inválida: ${invalid.market || '?'}` });
+        return res.status(400).json({ error: `SeleÃ§Ã£o invÃ¡lida: ${invalid.market || '?'}` });
       }
       if (new Set(selections.map((s) => s.matchId)).size !== selections.length) {
-        return res.status(400).json({ error: 'O mesmo jogo não pode entrar duas vezes na ficha.' });
+        return res.status(400).json({ error: 'O mesmo jogo nÃ£o pode entrar duas vezes na ficha.' });
       }
       const now = Date.now();
       const matches = await marketService.getMatches(false);
       const byId = new Map(matches.map((m) => [m.id, m]));
 
-      // Odds reais em falta: consulta a Premier Bet (só API) para os mercados
-      // que o feed do AiScore não cobre (DC, over/under 1.5/3.5, DNB).
+      // Odds reais em falta: consulta a Premier Bet (sÃ³ API) para os mercados
+      // que o feed do AiScore nÃ£o cobre (DC, over/under 1.5/3.5, DNB).
       const needPb = selections
         .map((sel, index) => ({ sel, index, match: byId.get(sel.matchId) }))
         .filter(
@@ -495,11 +526,11 @@ async function startServer() {
       selections.forEach((sel, index) => {
         const match = byId.get(sel.matchId);
         if (!match) {
-          errors.push(`jogo não encontrado (${sel.matchId})`);
+          errors.push(`jogo nÃ£o encontrado (${sel.matchId})`);
           return;
         }
         if (match.kickoffAt <= now) {
-          errors.push(`${match.home} v ${match.away}: jogo já começou`);
+          errors.push(`${match.home} v ${match.away}: jogo jÃ¡ comeÃ§ou`);
           return;
         }
         let odds = match.odds;
@@ -549,14 +580,14 @@ async function startServer() {
 
       if (built.length !== selections.length) {
         return res.status(409).json({
-          error: errors.join('; ') || 'Não foi possível precificar todas as seleções.',
+          error: errors.join('; ') || 'NÃ£o foi possÃ­vel precificar todas as seleÃ§Ãµes.',
         });
       }
 
       const slip = ticketEngine.createSlip(scope as SlipScope, tier as SlipTier, built, {
         customTitle: `Ficha manual (${built.length} jogos)`,
         rationale:
-          'Ficha montada manualmente a partir das tips calculadas pelo motor; todas as odds são reais.',
+          'Ficha montada manualmente a partir das tips calculadas pelo motor; todas as odds sÃ£o reais.',
         isAiGenerated: false,
         engine: 'manual',
       });
@@ -573,40 +604,40 @@ async function startServer() {
 
   // ---------------------------------------------------------------- premier bet ---
 
-  // Configuração visível ao frontend (sem expor credenciais).
+  // ConfiguraÃ§Ã£o visÃ­vel ao frontend (sem expor credenciais).
   app.get('/api/premierbet/status', (req: Request, res: Response) => {
     res.json(premierBetStatus());
   });
 
-  // Sobe uma ficha para a Premier Bet: login, boletim e (se não for dry-run)
-  // colocação da aposta com o valor indicado em Kwanzas.
+  // Sobe uma ficha para a Premier Bet: login, boletim e (se nÃ£o for dry-run)
+  // colocaÃ§Ã£o da aposta com o valor indicado em Kwanzas.
   app.post('/api/tickets/:id/upload', async (req: Request, res: Response) => {
     const slip = ticketEngine.getSlips().find((s) => s.id === req.params.id);
     if (!slip) {
-      return res.status(404).json({ error: 'Ficha não encontrada.' });
+      return res.status(404).json({ error: 'Ficha nÃ£o encontrada.' });
     }
     if (slip.status !== 'pendente') {
       return res.status(409).json({
-        error: 'Só é possível subir fichas pendentes (ainda não resolvidas ou expiradas).',
+        error: 'SÃ³ Ã© possÃ­vel subir fichas pendentes (ainda nÃ£o resolvidas ou expiradas).',
       });
     }
     if (uploadsInFlight.has(slip.id)) {
       return res.status(409).json({
-        error: 'Esta ficha já está a ser subida para a Premier Bet. Aguarde o resultado.',
+        error: 'Esta ficha jÃ¡ estÃ¡ a ser subida para a Premier Bet. Aguarde o resultado.',
       });
     }
 
     const stake = Number(req.body?.stake);
     const status = premierBetStatus();
     if (!Number.isFinite(stake) || stake <= 0) {
-      return res.status(400).json({ error: 'Indique um valor de aposta válido (em Kwanzas).' });
+      return res.status(400).json({ error: 'Indique um valor de aposta vÃ¡lido (em Kwanzas).' });
     }
     if (stake < status.minStake) {
-      return res.status(400).json({ error: `O valor mínimo é ${status.minStake} Kz.` });
+      return res.status(400).json({ error: `O valor mÃ­nimo Ã© ${status.minStake} Kz.` });
     }
     if (status.maxStake > 0 && stake > status.maxStake) {
       return res.status(400).json({
-        error: `O valor máximo configurado é ${status.maxStake} Kz.`,
+        error: `O valor mÃ¡ximo configurado Ã© ${status.maxStake} Kz.`,
       });
     }
 
@@ -616,7 +647,7 @@ async function startServer() {
 
     if (!dryRun && existing?.status === 'placed' && !force) {
       return res.status(409).json({
-        error: `Esta ficha já foi colocada na Premier Bet${
+        error: `Esta ficha jÃ¡ foi colocada na Premier Bet${
           existing.betId ? ` (ID ${existing.betId})` : ''
         }. Confirme para subir novamente.`,
         upload: existing,
@@ -632,19 +663,19 @@ async function startServer() {
     if (!dryRun && existing?.status === 'in_progress' && !force) {
       return res.status(409).json({
         error:
-          'Esta ficha está a ser subida para a Premier Bet. Aguarde o resultado ou verifique as apostas abertas antes de tentar novamente.',
+          'Esta ficha estÃ¡ a ser subida para a Premier Bet. Aguarde o resultado ou verifique as apostas abertas antes de tentar novamente.',
         upload: existing,
       });
     }
     if (!dryRun && !status.configured) {
       return res.status(503).json({
         error:
-          'Credenciais da Premier Bet não configuradas no servidor (PREMIERBET_LOGIN / PREMIERBET_PASSWORD).',
+          'Credenciais da Premier Bet nÃ£o configuradas no servidor (PREMIERBET_LOGIN / PREMIERBET_PASSWORD).',
       });
     }
     if (!status.scriptExists) {
       return res.status(503).json({
-        error: 'Bridge da Premier Bet não encontrado no servidor (Scraping/premierbet_book.py).',
+        error: 'Bridge da Premier Bet nÃ£o encontrado no servidor (Scraping/premierbet_book.py).',
       });
     }
 
@@ -653,26 +684,26 @@ async function startServer() {
     try {
       // Registo de "em curso" ANTES de clicar em qualquer coisa: se o servidor
       // morrer a meio, o arranque seguinte marca a ficha como "por confirmar"
-      // em vez de deixar margem para uma segunda aposta automática.
+      // em vez de deixar margem para uma segunda aposta automÃ¡tica.
       if (!dryRun) {
         bilheteriaDb.saveUpload({
           slipId: slip.id,
           status: 'in_progress',
           stake,
-          message: 'Submissão em curso na Premier Bet...',
+          message: 'SubmissÃ£o em curso na Premier Bet...',
           at: Date.now(),
         });
         try {
           await bilheteriaDb.flush();
         } catch {
-          /* a submissão continua; o resultado final volta a ser gravado */
+          /* a submissÃ£o continua; o resultado final volta a ser gravado */
         }
       }
 
       const result = await uploadSlipToPremierBet({ slip, stake, dryRun });
 
-      // Ficha parcial: algumas pernas não foram localizadas na Premier Bet e
-      // a aposta seguiu com as disponíveis. Sincroniza a ficha local com o
+      // Ficha parcial: algumas pernas nÃ£o foram localizadas na Premier Bet e
+      // a aposta seguiu com as disponÃ­veis. Sincroniza a ficha local com o
       // que foi realmente apostado (remove ausentes, recalcula odd/prob).
       if (result.ok && result.partial) {
         const norm = (s?: string) => (s || '').trim().toLowerCase();
@@ -699,7 +730,7 @@ async function startServer() {
           slip.expiresAt = Math.min(...kept.map((l) => l.kickoffAt));
           bilheteriaDb.upsertSlip(slip);
           console.log(
-            `[PremierBet] Ficha ${slip.id}: ${before - kept.length} perna(s) não localizada(s) removida(s); ficha sincronizada com ${kept.length} jogo(s).`
+            `[PremierBet] Ficha ${slip.id}: ${before - kept.length} perna(s) nÃ£o localizada(s) removida(s); ficha sincronizada com ${kept.length} jogo(s).`
           );
         }
       }
@@ -727,10 +758,10 @@ async function startServer() {
       return res.json({ ...result, upload: record });
     } catch (err: any) {
       if (completedUpload) {
-        // A colocação já ficou registada; um erro ao responder ao cliente não
+        // A colocaÃ§Ã£o jÃ¡ ficou registada; um erro ao responder ao cliente nÃ£o
         // pode transformar uma aposta colocada em "falhou" (permitiria duplicar).
         console.warn(
-          `[PremierBet] Ficha ${slip.id}: resultado já registado (${completedUpload.status}); falha ao responder: ${err?.message}`
+          `[PremierBet] Ficha ${slip.id}: resultado jÃ¡ registado (${completedUpload.status}); falha ao responder: ${err?.message}`
         );
         return;
       }
@@ -743,7 +774,7 @@ async function startServer() {
         at: Date.now(),
       };
       bilheteriaDb.saveUpload(record);
-      console.warn(`[PremierBet] Ficha ${slip.id}: falha — ${message}`);
+      console.warn(`[PremierBet] Ficha ${slip.id}: falha â€” ${message}`);
       return res
         .status(err instanceof PremierBetConfigError ? 503 : 502)
         .json({ error: message, upload: record });
@@ -760,7 +791,7 @@ async function startServer() {
       const match = matches.find((m) => m.id === matchId);
 
       if (!match) {
-        return res.status(404).json({ error: 'Partida não encontrada' });
+        return res.status(404).json({ error: 'Partida nÃ£o encontrada' });
       }
 
       const analysis = await analyzeMatchTactics(match);
@@ -834,27 +865,27 @@ async function startServer() {
     }
   });
 
-  // Placar REAL (FT/HT + status) — fonte da verdade para expiração de bilhetes
+  // Placar REAL (FT/HT + status) â€” fonte da verdade para expiraÃ§Ã£o de bilhetes
   app.get('/api/aiscore/live/:id', async (req: Request, res: Response) => {
     try {
       if (!/^[A-Za-z0-9_-]{4,64}$/.test(req.params.id)) {
-        return res.status(400).json({ error: 'match id inválido' });
+        return res.status(400).json({ error: 'match id invÃ¡lido' });
       }
       const live = await aiscoreClient.getLiveResult(req.params.id);
-      if (!live) return res.status(404).json({ error: 'Sem placar real disponível' });
+      if (!live) return res.status(404).json({ error: 'Sem placar real disponÃ­vel' });
       res.json({ ok: true, data: live });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao consultar placar real' });
     }
   });
 
-  // Força um ciclo de resolução real sob demanda (placar AiScore + validação).
+  // ForÃ§a um ciclo de resoluÃ§Ã£o real sob demanda (placar AiScore + validaÃ§Ã£o).
   // Rate-limit 60s: cada ciclo consome throttle do bridge (~1.7s por jogo).
   let lastResolveDueAt = 0;
   app.post('/api/matches/resolve-due', async (req: Request, res: Response) => {
     try {
       if (Date.now() - lastResolveDueAt < 60_000) {
-        return res.status(429).json({ error: 'Aguarde 60s entre ciclos de resolução.' });
+        return res.status(429).json({ error: 'Aguarde 60s entre ciclos de resoluÃ§Ã£o.' });
       }
       lastResolveDueAt = Date.now();
       const resolved = await marketService.resolveDueMatches(8);
@@ -865,16 +896,16 @@ async function startServer() {
     }
   });
 
-  // MatchContext pronto para o motor (H2H/forma/importância/descanso)
+  // MatchContext pronto para o motor (H2H/forma/importÃ¢ncia/descanso)
   app.get('/api/aiscore/context', async (req: Request, res: Response) => {
     try {
       const { home, away, date } = req.query as Record<string, string>;
       if (!home || !away || !date) {
-        return res.status(400).json({ error: 'Parâmetros obrigatórios: home, away, date' });
+        return res.status(400).json({ error: 'ParÃ¢metros obrigatÃ³rios: home, away, date' });
       }
       const meta = await aiscoreClient.resolveMatchId(home, away, date);
       if (!meta?.match_id) {
-        return res.status(404).json({ error: 'Partida não encontrada no AiScore' });
+        return res.status(404).json({ error: 'Partida nÃ£o encontrada no AiScore' });
       }
       const scout = await aiscoreClient.getScout(meta.match_id);
       const kickoffMs = meta.kickoff ? Date.parse(meta.kickoff.replace(' ', 'T') + '-03:00') : undefined;
@@ -911,12 +942,12 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Bilheteria Backend] Servidor ativo em http://0.0.0.0:${PORT}`);
 
-    // Agendador em background: fichas do dia à meia-noite (Angola), reposição de
-    // estoque, expiração e sincronização de mercado — funciona sem browser aberto.
+    // Agendador em background: fichas do dia Ã  meia-noite (Angola), reposiÃ§Ã£o de
+    // estoque, expiraÃ§Ã£o e sincronizaÃ§Ã£o de mercado â€” funciona sem browser aberto.
     ticketScheduler.start();
 
-    // Quando o backfill dos dias +1..+8 termina, repõe as quotas dos escopos
-    // futuros (2-3 dias / longo) sem esperar o próximo tick.
+    // Quando o backfill dos dias +1..+8 termina, repÃµe as quotas dos escopos
+    // futuros (2-3 dias / longo) sem esperar o prÃ³ximo tick.
     marketService.onAiscoreBackfillDone(() => {
       void ticketScheduler.tick('aiscore-backfill');
     });
@@ -939,3 +970,4 @@ async function startServer() {
 startServer().catch((err) => {
   console.error('[Bilheteria Backend] Falha fatal ao iniciar servidor:', err);
 });
+

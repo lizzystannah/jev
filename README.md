@@ -283,3 +283,10 @@ docker compose restart           # restart: as fichas mantÃƒÂªm-se
   container: as fichas vivem sÃƒÂ³ enquanto o container existir e perdem-se no
   prÃƒÂ³ximo redeploy/recriaÃƒÂ§ÃƒÂ£o.
 
+
+## Validacao de resultados
+
+- A cada minuto, as pernas das fichas PENDENTES sao verificadas via `match/data` (prioridade).
+- A cada `RESULTS_SWEEP_MINUTES` (default 15) corre uma varredura em massa: UMA chamada `matches?date=` traz `statusId` + placares de todos os jogos do dia. So se aplicam jogos terminados (`statusId 8` / `matchStatus 3`) com placar valido.
+- Inclui o dia anterior (jogos que terminam depois da meia-noite).
+- Antes de criar as fichas do dia (00:00), a varredura corre primeiro e as fichas sao validadas.

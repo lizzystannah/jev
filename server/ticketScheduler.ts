@@ -1,16 +1,16 @@
-/**
- * Agendador de fichas (bilhetes) — o "coração" sempre ativo do backend.
+﻿/**
+ * Agendador de fichas (bilhetes) â€” o "coraÃ§Ã£o" sempre ativo do backend.
  *
  * Responsabilidades:
- *  1. Todos os dias à meia-noite de Angola (Africa/Luanda), cria a fornada de
- *     fichas de "Hoje" (quota configurável, default 4).
- *  2. Mantém o estoque mínimo dos horizontes 2-3 dias (4) e longo prazo (4),
- *     repondo automaticamente quando uma ficha é resolvida ou expira.
+ *  1. Todos os dias Ã  meia-noite de Angola (Africa/Luanda), cria a fornada de
+ *     fichas de "Hoje" (quota configurÃ¡vel, default 4).
+ *  2. MantÃ©m o estoque mÃ­nimo dos horizontes 2-3 dias (4) e longo prazo (4),
+ *     repondo automaticamente quando uma ficha Ã© resolvida ou expira.
  *  3. Valida/expira fichas em background, mesmo sem nenhum browser aberto.
- *  4. Mantém os dados de mercado frescos (sincronização periódica).
+ *  4. MantÃ©m os dados de mercado frescos (sincronizaÃ§Ã£o periÃ³dica).
  *
- * Tudo é serializado numa fila para nunca haver duas gerações concorrentes
- * (o enriquecimento AiScore é caro e usa um bridge Python com throttle).
+ * Tudo Ã© serializado numa fila para nunca haver duas geraÃ§Ãµes concorrentes
+ * (o enriquecimento AiScore Ã© caro e usa um bridge Python com throttle).
  */
 
 import {
@@ -69,10 +69,10 @@ export class TicketScheduler {
     this.started = true;
 
     console.log(
-      `[Scheduler] Ativo. Fuso ${DAY_TIMEZONE} | quotas: dia=${SCOPE_QUOTAS.dia}, 2-3d=${SCOPE_QUOTAS['2_3_dias']}, longo=${SCOPE_QUOTAS.longo} | tolerância de expiração=${EXPIRY_GRACE_HOURS}h`
+      `[Scheduler] Ativo. Fuso ${DAY_TIMEZONE} | quotas: dia=${SCOPE_QUOTAS.dia}, 2-3d=${SCOPE_QUOTAS['2_3_dias']}, longo=${SCOPE_QUOTAS.longo} | tolerÃ¢ncia de expiraÃ§Ã£o=${EXPIRY_GRACE_HOURS}h`
     );
 
-    // Tick de segurança a cada minuto (também cobre relógios/event loop atrasados).
+    // Tick de seguranÃ§a a cada minuto (tambÃ©m cobre relÃ³gios/event loop atrasados).
     this.tickTimer = setInterval(() => void this.tick('interval'), 60_000);
     this.tickTimer.unref?.();
 
@@ -153,37 +153,40 @@ export class TicketScheduler {
   }
 
   private async tickNow(reason: string): Promise<void> {
-    // 1. Resolve estados e expira o que já passou do prazo.
+    // 1. Resolve estados e expira o que jÃ¡ passou do prazo.
     ticketEngine.validateSlips();
 
-    // 2. Mudança de dia em Angola: força dados frescos e garante a fornada do dia.
+    // 2. MudanÃ§a de dia em Angola: forcÌ§a dados frescos e garante a fornada do dia.
     const today = getDayKey();
     const lastDaily = bilheteriaDb.getMeta('last_daily_run');
     if (lastDaily !== today) {
-      console.log(`[Scheduler] Mudança de dia -> ${today}. A preparar fichas de Hoje...`);
+      console.log(`[Scheduler] MudanÃ§a de dia -> ${today}. A preparar fichas de Hoje...`);
+      // Antes de criar as fichas do dia: validar resultados dos jogos jÃ¡
+      // terminados (uma Ãºnica chamada de day card por dia, com placares).
+      await this.resolveResultsBeforeDaily();
       try {
         this.lastMatchSyncAt = Date.now();
         await marketService.getMatches(true);
       } catch (err: any) {
-        console.warn('[Scheduler] Refresh forçado do dia falhou:', err?.message);
+        console.warn('[Scheduler] Refresh forÃ§ado do dia falhou:', err?.message);
       }
       await this.ensureScopeNow('dia', true);
       bilheteriaDb.setMeta('last_daily_run', today);
       console.log(`[Scheduler] Fichas de Hoje garantidas (${this.pendingCount('dia')}/${SCOPE_QUOTAS.dia}).`);
     }
 
-    // 3. Reposição normal das quotas (dia incluído, para cobrir falhas/expirações).
+    // 3. ReposiÃ§Ã£o normal das quotas (dia incluÃ­do, para cobrir falhas/expiraÃ§Ãµes).
     for (const scope of SCOPES) {
       await this.ensureScopeNow(scope, false);
     }
 
-    // 4. Mantém o mercado fresco mesmo sem browser aberto.
+    // 4. MantÃ©m o mercado fresco mesmo sem browser aberto.
     if (Date.now() - this.lastMatchSyncAt > MATCH_REFRESH_INTERVAL_MS) {
       this.lastMatchSyncAt = Date.now();
       try {
         await marketService.getMatches(false);
       } catch (err: any) {
-        console.warn('[Scheduler] Refresh periódico de jogos falhou:', err?.message);
+        console.warn('[Scheduler] Refresh periÃ³dico de jogos falhou:', err?.message);
       }
     }
 
@@ -217,12 +220,12 @@ export class TicketScheduler {
       }
       return result.generated.length;
     } catch (err: any) {
-      console.warn(`[Scheduler] Geração "${scope}" falhou:`, err?.message);
+      console.warn(`[Scheduler] GeraÃ§Ã£o "${scope}" falhou:`, err?.message);
       return 0;
     }
   }
 
-  /** Reposição forçada (usada no reset e após resoluções em lote). */
+  /** ReposiÃ§Ã£o forÃ§ada (usada no reset e apÃ³s resoluÃ§Ãµes em lote). */
   public forceRefillAll(): Promise<void> {
     return this.enqueue(async () => {
       this.lastEnsureAttempt.clear();
@@ -233,11 +236,36 @@ export class TicketScheduler {
     });
   }
 
+  /** Valida resultados dos jogos terminados antes de criar as fichas do dia. */
+  private async resolveResultsBeforeDaily(): Promise<void> {
+    try {
+      const allowIds = new Set(
+        ticketEngine
+          .getSlips()
+          .filter((slip) => slip.status === 'pendente')
+          .flatMap((slip) => slip.legs.map((leg) => leg.id))
+      );
+      const resolved = await marketService.resolveFromDayResults({
+        offsets: [0, -1, -2],
+        allowIds,
+      });
+      if (resolved.length > 0) {
+        ticketEngine.validateSlips();
+        console.log(
+          `[Scheduler] ${resolved.length} resultado(s) validado(s) antes das fichas do dia.`
+        );
+      }
+    } catch (err: any) {
+      console.warn('[Scheduler] Varredura de resultados antes do dia falhou:', err?.message);
+    }
+  }
+
   public runDailyRollover(reason: string): Promise<void> {
     return this.enqueue(async () => {
       const today = getDayKey();
       if (bilheteriaDb.getMeta('last_daily_run') === today) return;
       void reason;
+      await this.resolveResultsBeforeDaily();
       try {
         this.lastMatchSyncAt = Date.now();
         await marketService.getMatches(true);
@@ -274,7 +302,7 @@ export class TicketScheduler {
           generated: [],
           all: ticketEngine.getSlips(),
           stock: this.getStatus(),
-          message: `Estoque de "${scope}" no limite (${pending}/${max}). Aguarde a resolução de fichas.`,
+          message: `Estoque de "${scope}" no limite (${pending}/${max}). Aguarde a resoluÃ§Ã£o de fichas.`,
         };
       }
 
@@ -309,3 +337,4 @@ export class TicketScheduler {
 }
 
 export const ticketScheduler = new TicketScheduler();
+
