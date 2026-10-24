@@ -18,6 +18,9 @@ services:
     environment:
       # SQLite persistido no volume nomeado (ignorado quando MYSQL_* está ativo).
       BILHETERIA_DB_PATH: /data/bilheteria.db
+      # Cache Redis (acelera a navegação entre abas). Opcional: sem o serviço
+      # redis ou sem REDIS_URL o cache cai para memória do processo.
+      REDIS_URL: redis://redis:6379
 
       # ----------------------------------------------------------------------
       # OPCIONAL: MySQL como persistência (em vez do volume SQLite).
@@ -38,5 +41,15 @@ services:
       # Nunca uses "docker compose down -v" se quiseres manter as fichas.
       - bilheteria_data:/data
 
+  # Cache opcional. Se removeres este serviço, define REDIS_URL="" no .env e o
+  # backend usa cache em memória (continua a funcionar, só sem partilha).
+  redis:
+    image: redis:7-alpine
+    container_name: bilheteria-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
 volumes:
   bilheteria_data:
+  redis_data:

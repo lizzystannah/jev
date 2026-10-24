@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   MatchItem,
   MatchTip,
@@ -17,6 +17,7 @@ import {
   PremierBetUploadResult,
   TipMarket,
   CartLeg,
+  JevStatus,
 } from './types.js';
 import * as api from './api.js';
 import { Header } from './components/Header.tsx';
@@ -29,9 +30,20 @@ import { ApiConfigModal } from './components/ApiConfigModal.tsx';
 import { AiAnalysisModal } from './components/AiAnalysisModal.tsx';
 import { AiSmartSlipModal } from './components/AiSmartSlipModal.tsx';
 import { CustomSlipDrawer } from './components/CustomSlipDrawer.tsx';
+import { EngineTabs, EngineTab } from './components/EngineTabs.tsx';
+import { ManualTab } from './components/ManualTab.tsx';
+import { JevTab } from './components/JevTab.tsx';
 import { Zap, CheckCircle2, RotateCcw, Cpu, Loader2, ShoppingCart } from 'lucide-react';
 import { getSavedTimezone, saveTimezone, getDayKeyInTz } from './utils/timezone.js';
 import { leagueRank } from './utils/leagues.js';
+import {
+  byMostRecent,
+  engineOf,
+  isSlipToday,
+  matchInScope,
+  ScopeOption,
+  scopeLabel,
+} from './utils/slips.js';
 
 const DAY_TIMEZONE = 'Africa/Luanda';
 
@@ -46,6 +58,12 @@ export default function App() {
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('andamento');
   const [lastGeneratedTime, setLastGeneratedTime] = useState<string>('');
   const [timezone, setTimezone] = useState<string>(() => getSavedTimezone());
+  const [activeEngine, setActiveEngine] = useState<EngineTab>('principal');
+
+  const [jevStatus, setJevStatus] = useState<JevStatus | null>(null);
+  const [jevStatusLoading, setJevStatusLoading] = useState(false);
+  const [jevStatusError, setJevStatusError] = useState(false);
+  const [generatingJev, setGeneratingJev] = useState(false);
 
   // Modals & loading states
   const [isApiModalOpen, setIsApiModalOpen] = useState(false);
@@ -99,21 +117,36 @@ export default function App() {
         return next;
       });
 
-      if (!lastGeneratedTime) {
-        setLastGeneratedTime(
-          new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })
-        );
-      }
+      setLastGeneratedTime(
+        (prev) =>
+          prev || new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })
+      );
     } catch (err: any) {
       console.error('Erro ao sincronizar com backend:', err);
     } finally {
       if (isRefresh) setLoading(false);
     }
-  }, [lastGeneratedTime]);
+  }, []);
 
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData]);
+
+  const loadJevStatus = useCallback(async () => {
+    setJevStatusLoading(true);
+    setJevStatusError(false);
+    try {
+      setJevStatus(await api.fetchJevStatus());
+    } catch {
+      setJevStatusError(true);
+    } finally {
+      setJevStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadJevStatus();
+  }, [loadJevStatus]);
 
   // Tipos de tip disponíveis para a geração automática.
   useEffect(() => {
@@ -125,25 +158,33 @@ export default function App() {
       });
   }, []);
 
-  // Periodic refresh & live tick (every 4s sync with backend)
+  // Polling de bilhetes mais espaçado (evita re-renders e pedidos em rajada).
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const [updatedMatches, updatedSlips] = await Promise.all([
-          api.fetchMatches(),
-          api.fetchTickets(),
-        ]);
-        setMatches(updatedMatches);
-        setSlips(updatedSlips);
-      } catch (e) {
+        setSlips(await api.fetchTickets());
+      } catch {
         // Silently catch background polling errors
       }
-    }, 4000);
+    }, 20000);
 
     return () => clearInterval(interval);
   }, []);
 
-  // Stock/quota refresh (less frequent — geração é pesada, leitura é leve)
+  // Os jogos só são atualizados na aba Manual (e no refresh explícito).
+  useEffect(() => {
+    if (activeEngine !== 'manual') return;
+    const interval = setInterval(async () => {
+      try {
+        setMatches(await api.fetchMatches());
+      } catch {
+        /* silencioso */
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [activeEngine]);
+
+  // Stock/quota refresh (pouco frequente — geração é pesada, leitura é leve)
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -151,7 +192,7 @@ export default function App() {
       } catch {
         /* silencioso */
       }
-    }, 15000);
+    }, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -205,6 +246,35 @@ export default function App() {
     }
   };
 
+  // ------------------------------------------------------------- geração JEV ---
+  const handleGenerateJev = async (targetScope: ScopeOption, limit: number) => {
+    try {
+      setGeneratingJev(true);
+      const result = await api.generateJevTickets(targetScope, limit);
+      setSlips(result.all);
+      if (result.stock) setStock(result.stock);
+      setLastGeneratedTime(
+        new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })
+      );
+
+      if (result.generated.length > 0) {
+        showToast(
+          `${result.generated.length} nova(s) ficha(s) JEV de ${scopeLabel(
+            targetScope
+          )} geradas e guardadas.`
+        );
+      } else {
+        showToast(
+          result.message || `Sem fichas novas do JEV para ${scopeLabel(targetScope)} neste momento.`
+        );
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Erro ao gerar fichas com o JEV');
+    } finally {
+      setGeneratingJev(false);
+    }
+  };
+
   // -------------------------------------------------- ficha manual / carrinho ---
   const isInCart = (matchId: string, market: string) =>
     cart.some((leg) => leg.matchId === matchId && leg.market === market);
@@ -249,6 +319,7 @@ export default function App() {
       setSlips(result.all);
       setScope(targetScope);
       setTier(result.slip.tier);
+      setActiveEngine('manual');
       setLastGeneratedTime(
         new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })
       );
@@ -368,42 +439,56 @@ export default function App() {
 
   // Rank por ID oficial quando existir (evita "Premier League" do Catar
   // ser confundida com a inglesa); senão, cai no nome.
-  const leagueRankById = new Map<string, number>();
-  for (const m of matches) {
-    const rank = leagueRank(m.league, m.competitionId);
-    const prev = leagueRankById.get(m.league);
-    if (prev === undefined || rank < prev) leagueRankById.set(m.league, rank);
-  }
-  const rankOf = (league: string) => leagueRankById.get(league) ?? leagueRank(league);
+  const leagueRankById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of matches) {
+      const rank = leagueRank(m.league, m.competitionId);
+      const prev = map.get(m.league);
+      if (prev === undefined || rank < prev) map.set(m.league, rank);
+    }
+    return map;
+  }, [matches]);
 
-  // Filtered pool by longevity horizon & chronological ordering
-  const allLeaguesList = Array.from(new Set(matches.map((m) => m.league))).sort(
-    (a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b)
+  const rankOf = useCallback(
+    (league: string) => leagueRankById.get(league) ?? leagueRank(league),
+    [leagueRankById]
   );
-  const filteredMatches = matches.filter((m) => activeLeagues.has(m.league));
 
-  const poolMatches = filteredMatches
-    .filter((m) => {
-      if (scope === 'dia') {
-        return m.daysFromNow === 0 || (m.kickoffAt - Date.now() <= 24 * 60 * 60 * 1000 && m.kickoffAt >= Date.now() - 2 * 60 * 60 * 1000);
-      }
-      if (scope === '2_3_dias') {
-        return m.daysFromNow >= 1 && m.daysFromNow <= 3;
-      }
-      if (scope === 'longo') {
-        return m.daysFromNow >= 4;
-      }
-      return true; // historico
-    })
-    // Ligas principais primeiro, depois cronológico.
-    .sort((a, b) => rankOf(a.league) - rankOf(b.league) || a.kickoffAt - b.kickoffAt);
+  const allLeaguesList = useMemo(
+    () =>
+      Array.from(new Set(matches.map((m) => m.league))).sort(
+        (a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b)
+      ),
+    [matches, rankOf]
+  );
+
+  // Ligas principais primeiro, depois cronológico.
+  const filteredMatches = useMemo(
+    () =>
+      matches
+        .filter((m) => activeLeagues.has(m.league))
+        .sort((a, b) => rankOf(a.league) - rankOf(b.league) || a.kickoffAt - b.kickoffAt),
+    [matches, activeLeagues, rankOf]
+  );
+
+  const poolMatches = useMemo(() => {
+    if (scope === 'historico') return filteredMatches;
+    return filteredMatches.filter((m) => matchInScope(m, scope));
+  }, [filteredMatches, scope]);
 
   // Toggle "Só principais": filtra para Champions/Europa/EPL/La Liga/Serie A/Bundesliga/Ligue 1+
-  const topTierLeagues = allLeaguesList.filter((l) => rankOf(l) < 8);
-  const onlyTopActive =
-    topTierLeagues.length > 0 &&
-    topTierLeagues.every((l) => activeLeagues.has(l)) &&
-    Array.from(activeLeagues).every((l) => rankOf(l) < 8);
+  const topTierLeagues = useMemo(
+    () => allLeaguesList.filter((l) => rankOf(l) < 8),
+    [allLeaguesList, rankOf]
+  );
+
+  const onlyTopActive = useMemo(
+    () =>
+      topTierLeagues.length > 0 &&
+      topTierLeagues.every((l) => activeLeagues.has(l)) &&
+      Array.from(activeLeagues).every((l) => rankOf(l) < 8),
+    [topTierLeagues, activeLeagues, rankOf]
+  );
 
   const handleOnlyTopLeagues = () => {
     if (onlyTopActive) {
@@ -419,38 +504,79 @@ export default function App() {
   // "Hoje" mostra apenas as fichas pendentes criadas no dia-calendário de
   // Angola. As mais antigas continuam a persistir e aparecem no histórico
   // (Em andamento) até serem resolvidas ou expirarem.
+  const principalSlips = useMemo(() => slips.filter((s) => engineOf(s) === 'local'), [slips]);
+  const manualSlips = useMemo(() => slips.filter((s) => engineOf(s) === 'manual'), [slips]);
+  const jevSlips = useMemo(() => slips.filter((s) => engineOf(s) === 'jev'), [slips]);
+
+  const engineCounts = useMemo<Record<EngineTab, number>>(() => {
+    const counts: Record<EngineTab, number> = { principal: 0, manual: 0, jev: 0 };
+    for (const slip of slips) {
+      if (slip.status !== 'pendente') continue;
+      const engine = engineOf(slip);
+      if (engine === 'manual') counts.manual += 1;
+      else if (engine === 'jev') counts.jev += 1;
+      else counts.principal += 1;
+    }
+    return counts;
+  }, [slips]);
+
   const todayKey = getDayKeyInTz(Date.now(), DAY_TIMEZONE);
-  const isTodaySlip = (s: BetSlip) =>
-    (s.dayKey || getDayKeyInTz(s.createdAt, DAY_TIMEZONE)) === todayKey;
 
-  const slipsInScope = slips.filter(
-    (s) =>
-      s.scope === scope &&
-      s.status === 'pendente' &&
-      (scope !== 'dia' || isTodaySlip(s))
+  const slipsInScope = useMemo(
+    () =>
+      principalSlips.filter(
+        (s) =>
+          s.scope === scope &&
+          s.status === 'pendente' &&
+          (scope !== 'dia' || isSlipToday(s, todayKey, DAY_TIMEZONE))
+      ),
+    [principalSlips, scope, todayKey]
   );
-  const tierCounts: Record<SlipTier, number> = {
-    segura: slipsInScope.filter((s) => s.tier === 'segura').length,
-    moderada: slipsInScope.filter((s) => s.tier === 'moderada').length,
-    ousada: slipsInScope.filter((s) => s.tier === 'ousada').length,
-    maluca: slipsInScope.filter((s) => s.tier === 'maluca').length,
-  };
 
-  const displayedSlips = slipsInScope
-    .filter((s) => s.tier === tier)
-    .sort((a, b) => b.createdAt - a.createdAt);
+  const tierCounts = useMemo<Record<SlipTier, number>>(() => {
+    const counts: Record<SlipTier, number> = {
+      segura: 0,
+      moderada: 0,
+      ousada: 0,
+      maluca: 0,
+    };
+    for (const slip of slipsInScope) counts[slip.tier] += 1;
+    return counts;
+  }, [slipsInScope]);
 
-  const byMostRecent = (a: BetSlip, b: BetSlip) =>
-    (b.resolvedAt || b.createdAt) - (a.resolvedAt || a.createdAt);
+  const displayedSlips = useMemo(
+    () =>
+      slipsInScope
+        .filter((s) => s.tier === tier)
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [slipsInScope, tier]
+  );
 
-  const historyBuckets: Record<HistoryFilter, BetSlip[]> = {
-    andamento: slips.filter((s) => s.status === 'pendente').sort(byMostRecent),
-    ganhas: slips.filter((s) => s.status === 'ganhou').sort(byMostRecent),
-    perdidas: slips.filter((s) => s.status === 'perdeu').sort(byMostRecent),
-    vencidas: slips.filter((s) => s.status === 'expirado').sort(byMostRecent),
-  };
+  const historyBuckets = useMemo<Record<HistoryFilter, BetSlip[]>>(() => {
+    const next: Record<HistoryFilter, BetSlip[]> = {
+      andamento: [],
+      ganhas: [],
+      perdidas: [],
+      vencidas: [],
+    };
+    for (const slip of principalSlips) {
+      if (slip.status === 'pendente') next.andamento.push(slip);
+      else if (slip.status === 'ganhou') next.ganhas.push(slip);
+      else if (slip.status === 'perdeu') next.perdidas.push(slip);
+      else next.vencidas.push(slip);
+    }
+    next.andamento.sort(byMostRecent);
+    next.ganhas.sort(byMostRecent);
+    next.perdidas.sort(byMostRecent);
+    next.vencidas.sort(byMostRecent);
+    return next;
+  }, [principalSlips]);
+
   const historySlips = historyBuckets[historyFilter];
-  const historyTotal = slips.filter((s) => s.status !== 'pendente').length;
+  const historyTotal = useMemo(
+    () => principalSlips.filter((s) => s.status !== 'pendente').length,
+    [principalSlips]
+  );
 
   const historyFilterLabel: Record<HistoryFilter, string> = {
     andamento: 'Em andamento',
@@ -529,25 +655,33 @@ export default function App() {
         }}
       />
 
-      {/* Hero & Aggregate Stats with Jev & 3-horizon buttons */}
-      <HeroStats
-        matches={matches}
-        slips={slips}
-        stock={stock}
-        backendStatus={backendStatus}
-        lastGeneratedTime={lastGeneratedTime}
-        activeScope={scope}
-        onGenerateScope={handleGenerateScope}
-        onOpenAiSlipModal={() => setIsAiSlipModalOpen(true)}
-        generating={generating}
-        tipMarkets={tipMarkets}
-        selectedMarket={selectedMarket}
-        onMarketChange={setSelectedMarket}
+      <EngineTabs
+        active={activeEngine}
+        onChange={setActiveEngine}
+        counts={engineCounts}
       />
 
-      {/* Main Layout */}
-      <main className="flex-1 max-w-[1180px] w-full mx-auto px-4 sm:px-6 py-9">
-        <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-8 items-start">
+      {activeEngine === 'principal' && (
+        <>
+          {/* Hero & Aggregate Stats with Jev & 3-horizon buttons */}
+          <HeroStats
+            matches={matches}
+            slips={principalSlips}
+            stock={stock}
+            backendStatus={backendStatus}
+            lastGeneratedTime={lastGeneratedTime}
+            activeScope={scope}
+            onGenerateScope={handleGenerateScope}
+            onOpenAiSlipModal={() => setIsAiSlipModalOpen(true)}
+            generating={generating}
+            tipMarkets={tipMarkets}
+            selectedMarket={selectedMarket}
+            onMarketChange={setSelectedMarket}
+          />
+
+          {/* Main Layout */}
+          <main className="flex-1 max-w-[1180px] w-full mx-auto px-4 sm:px-6 py-9">
+            <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-8 items-start">
           {/* Left Sidebar: Fixtures */}
           <FixturesSidebar
             matches={poolMatches}
@@ -757,6 +891,7 @@ export default function App() {
             {/* Slips Grid / History List */}
             {scope === 'historico' ? (
               <HistoryList
+                key={historyFilter}
                 slips={historySlips}
                 timezone={timezone}
                 emptyTitle={historyEmpty[historyFilter].title}
@@ -798,6 +933,46 @@ export default function App() {
           </section>
         </div>
       </main>
+        </>
+      )}
+
+      {activeEngine === 'manual' && (
+        <ManualTab
+          matches={filteredMatches}
+          allLeagues={allLeaguesList}
+          activeLeagues={activeLeagues}
+          onToggleLeague={handleToggleLeague}
+          onlyTopActive={onlyTopActive}
+          onOnlyTopLeagues={handleOnlyTopLeagues}
+          timezone={timezone}
+          manualSlips={manualSlips}
+          onUpload={setUploadSlip}
+          onAnalyzeMatch={handleAnalyzeMatch}
+          onSimulateNext={handleSimulateNext}
+          isSimulating={isSimulating}
+          onAddToCart={handleAddToCart}
+          isInCart={isInCart}
+          cartCount={cart.length}
+          onOpenCart={() => setIsCartOpen(true)}
+        />
+      )}
+
+      {activeEngine === 'jev' && (
+        <JevTab
+          jevStatus={jevStatus}
+          statusLoading={jevStatusLoading}
+          statusError={jevStatusError}
+          onRefreshStatus={() => {
+            void loadJevStatus();
+          }}
+          onGenerate={handleGenerateJev}
+          generating={generatingJev}
+          slips={jevSlips}
+          allSlips={slips}
+          timezone={timezone}
+          onUpload={setUploadSlip}
+        />
+      )}
 
       {/* Carrinho da ficha manual */}
       {cart.length > 0 && (
@@ -813,22 +988,24 @@ export default function App() {
       )}
 
       {/* Ação global: gerar ficha a partir de qualquer parte do site */}
-      <button
-        type="button"
-        onClick={() =>
-          handleGenerateScope(scope === 'historico' ? 'dia' : (scope as 'dia' | '2_3_dias' | 'longo'))
-        }
-        disabled={generating}
-        className="fixed bottom-6 right-6 z-40 cursor-pointer flex items-center gap-2 px-4 py-3 rounded-full bg-[#E7B33E] hover:bg-[#F0C869] text-[#3A2A06] font-semibold text-sm shadow-2xl disabled:opacity-60 active:translate-y-[1px]"
-        title="Gerar novas fichas para o horizonte ativo"
-      >
-        {generating ? (
-          <Loader2 className="w-4 h-4 animate-spin" />
-        ) : (
-          <Zap className="w-4 h-4 fill-current" />
-        )}
-        <span>Gerar ficha</span>
-      </button>
+      {activeEngine === 'principal' && (
+        <button
+          type="button"
+          onClick={() =>
+            handleGenerateScope(scope === 'historico' ? 'dia' : (scope as 'dia' | '2_3_dias' | 'longo'))
+          }
+          disabled={generating}
+          className="fixed bottom-6 right-6 z-40 cursor-pointer flex items-center gap-2 px-4 py-3 rounded-full bg-[#E7B33E] hover:bg-[#F0C869] text-[#3A2A06] font-semibold text-sm shadow-2xl disabled:opacity-60 active:translate-y-[1px]"
+          title="Gerar novas fichas para o horizonte ativo"
+        >
+          {generating ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Zap className="w-4 h-4 fill-current" />
+          )}
+          <span>Gerar ficha</span>
+        </button>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-[rgba(245,243,236,0.14)] py-7 bg-[#081C13]">
@@ -854,7 +1031,7 @@ export default function App() {
       <CustomSlipDrawer
         isOpen={isCartOpen}
         legs={cart}
-        defaultScope={scope === 'historico' ? 'dia' : scope}
+        defaultScope={activeEngine === 'manual' ? 'dia' : scope === 'historico' ? 'dia' : scope}
         creating={creatingCustom}
         onClose={() => setIsCartOpen(false)}
         onRemove={handleRemoveFromCart}

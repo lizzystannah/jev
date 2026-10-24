@@ -18,6 +18,8 @@ import {
   evaluateOne,
 } from './server/aiscoreEngine.js';
 import { resolvePremierBetOdds } from './server/premierbetOdds.js';
+import { jevStatus } from './server/jevEngine.js';
+import { cacheGet, cacheSet, cacheDel } from './server/cache.js';
 import type { BetSlip, MarketType, MatchItem, SlipScope, SlipTier, SlipUpload } from './server/types.js';
 import {
   PremierBetConfigError,
@@ -127,6 +129,11 @@ async function startServer() {
   app.get('/api/matches', async (req: Request, res: Response) => {
     try {
       const forceRefresh = req.query.refresh === 'true';
+      const cacheKey = 'matches:api:v2';
+      if (!forceRefresh) {
+        const cached = await cacheGet(cacheKey);
+        if (cached) return res.type('application/json').send(cached);
+      }
       const matches = await marketService.getMatches(forceRefresh);
       let enriched = matches;
       try {
@@ -202,7 +209,9 @@ async function startServer() {
       } catch (err: any) {
         console.warn('[Tips] falha ao calcular tips da lista:', err?.message);
       }
-      res.json(enriched);
+      const body = JSON.stringify(enriched);
+      await cacheSet(cacheKey, body, 25_000);
+      res.type('application/json').send(body);
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao carregar jogos' });
     }
@@ -225,6 +234,7 @@ async function startServer() {
     try {
       const matches = await marketService.getMatches(true);
       const status = marketService.getProviderStatus();
+      await cacheDel('matches:api:v2');
       res.json({
         success: true,
         message: 'Sincronização processada com sucesso.',
@@ -285,11 +295,15 @@ async function startServer() {
     }
   });
 
-  // Slips list
+  // Slips list (filtro opcional por motor: local|manual|jev)
   app.get('/api/tickets', (req: Request, res: Response) => {
     // Run validation sweep before returning
     ticketEngine.validateSlips();
-    res.json(withUploads(ticketEngine.getSlips()));
+    const engine = String(req.query.engine || '').trim();
+    const slips = ['local', 'manual', 'jev'].includes(engine)
+      ? ticketEngine.getSlips().filter((s) => (s.engine ?? 'local') === engine)
+      : ticketEngine.getSlips();
+    res.json(withUploads(slips));
   });
 
   // Stock/quota status (usado pelo frontend e por monitorização)
@@ -312,8 +326,10 @@ async function startServer() {
         scope,
         Array.isArray(leagues) ? leagues : undefined,
         Number(limit) > 0 ? Number(limit) : 4,
-        market || undefined
+        market || undefined,
+        'local'
       );
+      await cacheDel('matches:api:v2');
       res.json({
         ...result,
         all: withUploads(result.all),
@@ -321,6 +337,47 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao gerar bilhetes' });
+    }
+  });
+
+  // ------------------------------------------------------------------- JEV ---
+
+  // Estado do JEV (configuração/modelo; nunca expõe a chave).
+  app.get('/api/jev/status', (_req: Request, res: Response) => {
+    res.json(jevStatus());
+  });
+
+  // Gera fichas com o JEV a decidir a tip de cada jogo (probabilidades
+  // continuam a ser as do motor local).
+  app.post('/api/jev/generate', async (req: Request, res: Response) => {
+    try {
+      const status = jevStatus();
+      if (!status.configured) {
+        return res.status(503).json({
+          error:
+            'JEV não configurado. Defina JEV_API_KEY (ou OPENROUTER_API_KEY), JEV_MODEL e JEV_API_URL na env.',
+        });
+      }
+      const { scope = 'dia', leagues, limit } = req.body || {};
+      const validScopes = ['dia', '2_3_dias', 'longo'];
+      if (!validScopes.includes(scope)) {
+        return res.status(400).json({ error: `Escopo inválido: ${scope}` });
+      }
+      const result = await ticketScheduler.generateMore(
+        scope,
+        Array.isArray(leagues) ? leagues : undefined,
+        Number(limit) > 0 ? Number(limit) : 4,
+        undefined,
+        'jev'
+      );
+      await cacheDel('matches:api:v2');
+      res.json({
+        ...result,
+        all: withUploads(result.all),
+        generated: withUploads(result.generated),
+      });
+    } catch (err: any) {
+      res.status(502).json({ error: err?.message || 'Erro ao gerar fichas com JEV' });
     }
   });
 
@@ -461,8 +518,10 @@ async function startServer() {
         rationale:
           'Ficha montada manualmente a partir das tips calculadas pelo motor; todas as odds são reais.',
         isAiGenerated: false,
+        engine: 'manual',
       });
       const added = ticketEngine.addCustomSlip(slip);
+      await cacheDel('matches:api:v2');
       res.json({
         slip: { ...added, upload: bilheteriaDb.getUpload(added.id) },
         all: withUploads(ticketEngine.getSlips()),

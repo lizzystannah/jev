@@ -76,7 +76,17 @@ export const FixturesSidebar: React.FC<FixturesSidebarProps> = ({
     });
   }, [matches]);
 
-  const pendingMatches = uniqueMatches.filter((m) => m.status !== 'resolved');
+  const [visibleCount, setVisibleCount] = React.useState(60);
+
+  React.useEffect(() => {
+    setVisibleCount(60);
+  }, [scope]);
+
+  const pendingMatches = React.useMemo(
+    () => uniqueMatches.filter((m) => m.status !== 'resolved'),
+    [uniqueMatches]
+  );
+  const visibleMatches = uniqueMatches.slice(0, visibleCount);
 
   return (
     <aside className="w-full">
@@ -162,7 +172,7 @@ export const FixturesSidebar: React.FC<FixturesSidebarProps> = ({
             Nenhuma partida encontrada neste horizonte temporal com os filtros selecionados.
           </div>
         ) : (
-          uniqueMatches.map((m) => {
+          visibleMatches.map((m) => {
             const dayLabel = formatMatchSchedule(m.kickoffAt, timezone, m.daysFromNow);
 
             const isResolved = m.status === 'resolved';
@@ -323,6 +333,16 @@ export const FixturesSidebar: React.FC<FixturesSidebarProps> = ({
               </div>
             );
           })
+        )}
+
+        {uniqueMatches.length > visibleCount && (
+          <button
+            type="button"
+            onClick={() => setVisibleCount((current) => current + 60)}
+            className="cursor-pointer mt-1 w-full rounded border border-[rgba(245,243,236,0.2)] bg-[#0E2A1C] px-3 py-2 text-xs font-medium text-[#E7B33E] hover:bg-[#173C27] transition-colors"
+          >
+            Mostrar mais ({uniqueMatches.length - visibleCount} restantes)
+          </button>
         )}
       </div>
     </aside>

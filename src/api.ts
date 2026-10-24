@@ -2,6 +2,7 @@ import {
   BackendStatus,
   MatchItem,
   BetSlip,
+  BetEngine,
   AiMatchAnalysis,
   TicketStockStatus,
   PremierBetStatus,
@@ -9,6 +10,7 @@ import {
   SlipUpload,
   TipMarket,
   SlipTier,
+  JevStatus,
 } from './types.js';
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
@@ -26,6 +28,20 @@ export async function fetchMatches(forceRefresh = false): Promise<MatchItem[]> {
 export async function fetchTickets(): Promise<BetSlip[]> {
   const res = await fetch('/api/tickets');
   if (!res.ok) throw new Error('Falha ao obter bilhetes');
+  return res.json();
+}
+
+/** Bilhetes de um motor específico (`local` = principal, `manual` ou `jev`). */
+export async function fetchTicketsByEngine(engine: BetEngine): Promise<BetSlip[]> {
+  const res = await fetch(`/api/tickets?engine=${encodeURIComponent(engine)}`);
+  if (!res.ok) throw new Error('Falha ao obter bilhetes do motor');
+  return res.json();
+}
+
+/** Estado do motor JEV remoto (configuração e modelo). */
+export async function fetchJevStatus(): Promise<JevStatus> {
+  const res = await fetch('/api/jev/status');
+  if (!res.ok) throw new Error('Falha ao obter o estado do JEV');
   return res.json();
 }
 
@@ -95,6 +111,29 @@ export async function generateTickets(
     throw new Error(err.error || 'Erro ao gerar bilhetes');
   }
   return res.json();
+}
+
+/** Gera fichas remotas com o motor JEV. */
+export async function generateJevTickets(
+  scope: 'dia' | '2_3_dias' | 'longo',
+  limit = 4,
+  leagues?: string[]
+): Promise<{
+  generated: BetSlip[];
+  all: BetSlip[];
+  stock?: TicketStockStatus;
+  message?: string;
+}> {
+  const res = await fetch('/api/jev/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope, limit, leagues }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || 'Erro ao gerar fichas com o JEV');
+  }
+  return data;
 }
 
 export async function createCustomSlip(

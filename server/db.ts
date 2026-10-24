@@ -50,6 +50,7 @@ const SLIP_COLUMNS = [
   'id',
   'scope',
   'tier',
+  'engine',
   'status',
   'color',
   'legs_json',
@@ -81,6 +82,7 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
         id VARCHAR(64) NOT NULL,
         scope VARCHAR(32) NOT NULL,
         tier VARCHAR(32) NOT NULL,
+        engine VARCHAR(16) NOT NULL DEFAULT 'local',
         status VARCHAR(32) NOT NULL,
         color VARCHAR(32) NOT NULL,
         legs_json LONGTEXT NOT NULL,
@@ -123,6 +125,7 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
       id TEXT PRIMARY KEY,
       scope TEXT NOT NULL,
       tier TEXT NOT NULL,
+      engine TEXT NOT NULL DEFAULT 'local',
       status TEXT NOT NULL,
       color TEXT NOT NULL,
       legs_json TEXT NOT NULL,
@@ -252,6 +255,7 @@ class BilheteriaDatabase {
     }
 
     await this.createSchema();
+    await this.migrateSchema();
     await this.loadMeta();
     await this.loadUploads();
 
@@ -266,6 +270,28 @@ class BilheteriaDatabase {
     const driver = this.requireDriver();
     for (const statement of buildSchemaStatements(driver.dialect)) {
       await driver.exec(statement);
+    }
+  }
+
+  /**
+   * Migrações de colunas novas em bases já existentes. Cada ALTER é tentado
+   * individualmente: se a coluna já existir, o erro é ignorado.
+   */
+  private async migrateSchema(): Promise<void> {
+    const driver = this.requireDriver();
+    const statements =
+      driver.dialect === 'mysql'
+        ? [
+            "ALTER TABLE slips ADD COLUMN engine VARCHAR(16) NOT NULL DEFAULT 'local'",
+          ]
+        : ["ALTER TABLE slips ADD COLUMN engine TEXT NOT NULL DEFAULT 'local'"];
+    for (const sql of statements) {
+      try {
+        await driver.exec(sql);
+        console.log('[Bilheteria DB] Migração aplicada: slips.engine');
+      } catch {
+        /* coluna já existe */
+      }
     }
   }
 
@@ -339,6 +365,7 @@ class BilheteriaDatabase {
             id: String(row.id),
             scope: row.scope,
             tier: row.tier,
+            engine: (row.engine as BetSlip['engine']) || 'local',
             color: row.color,
             legs,
             combinedOdds: Number(row.combined_odds),
@@ -385,6 +412,7 @@ class BilheteriaDatabase {
       data.id,
       data.scope,
       data.tier,
+      data.engine ?? 'local',
       data.status,
       data.color,
       JSON.stringify(data.legs),

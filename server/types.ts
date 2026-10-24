@@ -125,6 +125,13 @@ export interface MatchItem {
     highRiskTip?: MatchTip;
     oddsHash: string;
     at: number;
+    /** Decisão do JEV persistida (reutilizada se as odds não mudarem). */
+    jevPick?: {
+      market: MarketType;
+      confidence: number;
+      reason: string;
+      at: number;
+    };
   };
   /**
    * Tip alternativa de odd alta, calculada pelo mesmo motor a partir dos
@@ -161,6 +168,8 @@ export interface MatchItem {
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo';
 export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
+/** Motor que produziu a ficha (principal local, JEV ou montagem manual). */
+export type SlipEngine = 'local' | 'manual' | 'jev';
 
 /** Estado da última tentativa de subir a ficha para a Premier Bet. */
 export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
@@ -222,6 +231,8 @@ export interface BetSlip {
   id: string;
   scope: SlipScope;
   tier: SlipTier;
+  /** Motor que gerou a ficha. Fichas antigas sem campo contam como 'local'. */
+  engine?: SlipEngine;
   color: string;
   legs: MatchItem[];
   combinedOdds: number;

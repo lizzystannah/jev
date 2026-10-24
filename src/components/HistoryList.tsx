@@ -71,6 +71,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   onUpload,
 }) => {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [visibleCount, setVisibleCount] = useState(50);
 
   const toggle = (id: string) => {
     setExpanded((prev) => {
@@ -90,10 +91,14 @@ export const HistoryList: React.FC<HistoryListProps> = ({
     );
   }
 
+  const visibleSlips = slips.slice(0, visibleCount);
+
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between text-[11px] text-[rgba(245,243,236,0.45)]">
-        <span>{slips.length} ficha(s) nesta vista</span>
+        <span>
+          A mostrar {visibleSlips.length} de {slips.length} ficha(s) nesta vista
+        </span>
         {expanded.size > 0 && (
           <button
             type="button"
@@ -106,7 +111,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
       </div>
 
       <ul className="flex flex-col gap-2">
-        {slips.map((slip) => {
+        {visibleSlips.map((slip) => {
           const meta = statusMeta(slip.status);
           const isOpen = expanded.has(slip.id);
           const color = tierColor[slip.tier] || '#E7B33E';
@@ -287,6 +292,16 @@ export const HistoryList: React.FC<HistoryListProps> = ({
           );
         })}
       </ul>
+
+      {slips.length > visibleCount && (
+        <button
+          type="button"
+          onClick={() => setVisibleCount((current) => current + 50)}
+          className="cursor-pointer w-full rounded border border-[rgba(245,243,236,0.2)] bg-[#0E2A1C] px-3 py-2 text-xs font-medium text-[#E7B33E] hover:bg-[#173C27] transition-colors"
+        >
+          Mostrar mais ({slips.length - visibleCount} restantes)
+        </button>
+      )}
     </div>
   );
 };

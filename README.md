@@ -161,6 +161,29 @@ As ligas elegÃ­veis incluem as principais (Champions, Europa, Premier League, 
 
 Todas as pernas usam apenas mercados com odds reais (`odds.realMarkets`). O motor local pode calcular probabilidades a partir do scout, mas nunca inventa um preÃ§o para preencher uma ficha.
 
+## Motores e abas (Principal, Manual, JEV)
+
+A interface tem trÃªs abas independentes, para comparar a eficiÃªncia de cada abordagem:
+
+- **Principal** â€” motor local (faixa de probabilidade). Gera as fichas segura/moderada/ousada/maluca por horizonte, com o histÃ³rico prÃ³prio.
+- **Manual** â€” escolhes jogos/tips jÃ¡ calculados, adicionas ao carrinho e crias a ficha (`POST /api/tickets/custom`, `engine='manual'`).
+- **JEV** â€” o LLM recebe apenas o essencial de cada jogo (tips candidatas com probabilidade do motor local + odds reais) e escolhe a tip. As fichas sÃ£o marcadas `engine='jev'` e tÃªm histÃ³rico separado; a comparaÃ§Ã£o Principal vs JEV aparece na prÃ³pria aba.
+
+ConfiguraÃ§Ã£o do JEV (API compatÃvel com OpenAI Chat Completions):
+
+```env
+JEV_API_KEY=            # vazio usa OPENROUTER_API_KEY
+JEV_API_URL=            # default OpenRouter (ou OpenAI)
+JEV_MODEL=              # default openrouter/free
+JEV_TIMEOUT_MS=60000
+```
+
+As decisÃµes do JEV ficam persistidas na calibraÃ§Ã£o do jogo e sÃ£o reutilizadas enquanto as odds nÃ£o mudarem (evita chamadas repetidas ao LLM apÃ³s um redeploy).
+
+## Cache (Redis opcional)
+
+`GET /api/matches` Ã© cacheado (25s) para a navegaÃ§Ã£o entre abas nÃ£o recalcular ~1600 jogos. O cache usa memÃ³ria do processo por omissÃ£o; com `REDIS_URL` definido usa Redis (o `docker-compose.yml` jÃ¡ inclui o serviÃ§o `redis`). Sem o pacote/serviÃ§o Redis, cai automaticamente para memÃ³ria.
+
 ## ConfiguraÃ§Ã£o (`.env`)
 
 Ver `.env.example`. Chaves relevantes:

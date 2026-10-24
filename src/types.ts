@@ -131,6 +131,16 @@ export interface MatchItem {
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo' | 'historico';
 export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
+/** Motor que criou a ficha. `local` é o motor principal. */
+export type BetEngine = 'local' | 'manual' | 'jev';
+
+/** Estado do motor JEV exposto por `GET /api/jev/status`. */
+export interface JevStatus {
+  configured: boolean;
+  model: string;
+  provider: string;
+  endpoint: string;
+}
 
 /** Estado da última tentativa de subir a ficha para a Premier Bet. */
 export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
@@ -190,6 +200,8 @@ export interface BetSlip {
   isAiGenerated?: boolean;
   /** Data-calendário de Angola (YYYY-MM-DD) em que a ficha foi criada. */
   dayKey?: string;
+  /** Motor que criou a ficha (`local` quando o backend não envia o campo). */
+  engine?: BetEngine;
   /** Preenchido pela API: última tentativa de subir para a Premier Bet. */
   upload?: SlipUpload | null;
 }

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BetSlip, MatchItem, MarketType, SlipScope, SlipTier } from './types.js';
+import { BetSlip, MatchItem, MarketType, SlipEngine, SlipScope, SlipTier } from './types.js';
 import {
   marketService,
   leaguePriorityRank,
@@ -11,7 +11,11 @@ import {
   isMainLeague,
   oddsSignature,
 } from './marketService.js';
-import { callLocalInferenceEngine, type LocalDecisionInput } from './aiscoreEngine.js';
+import {
+  callLocalInferenceEngine,
+  type LocalDecisionInput,
+} from './aiscoreEngine.js';
+import { jevChooseMarkets } from './jevEngine.js';
 import { aiscoreClient } from './aiscoreService.js';
 import { resolvePremierBetOdds } from './premierbetOdds.js';
 import { bilheteriaDb } from './db.js';
@@ -246,6 +250,12 @@ export interface GenerateOptions {
    * só com ele. Sem preço real no feed, tenta obter a odd na Premier Bet.
    */
   market?: MarketType;
+  /**
+   * Motor que decide as tips: 'local' (padrão, faixa de probabilidade) ou
+   * 'jev' (o LLM escolhe o mercado de cada jogo a partir das probabilidades
+   * já calculadas pelo motor local).
+   */
+  engine?: SlipEngine;
 }
 
 
@@ -310,7 +320,12 @@ export class TicketEngine {
     scope: SlipScope,
     tier: SlipTier,
     legs: MatchItem[],
-    options?: { customTitle?: string; rationale?: string; isAiGenerated?: boolean }
+    options?: {
+      customTitle?: string;
+      rationale?: string;
+      isAiGenerated?: boolean;
+      engine?: SlipEngine;
+    }
   ): BetSlip {
     const seenMatchIds = new Set<string>();
     const uniqueLegs = legs.filter((m) => {
@@ -334,6 +349,7 @@ export class TicketEngine {
       id: `${scopePrefix}-${tier.substring(0, 3).toUpperCase()}-${this.slipCounter}`,
       scope,
       tier,
+      engine: options?.engine ?? 'local',
       color: tierConfig.color,
       legs: uniqueLegs,
       combinedOdds,
@@ -534,7 +550,7 @@ export class TicketEngine {
     // Atualiza cada partida no pool com a probabilidade calibrada local
     const matchEvaluationsMap = new Map(localResponse.evaluations.map((e) => [e.matchId, e]));
 
-    const evaluatedMatches: MatchItem[] = tipPool.map((m) => {
+    let evaluatedMatches: MatchItem[] = tipPool.map((m) => {
       const ev = matchEvaluationsMap.get(m.id);
       if (!ev) return m;
 
@@ -573,6 +589,24 @@ export class TicketEngine {
 
       return m;
     });
+
+    // Motor JEV: o LLM recebe só o essencial (tips com prob do motor local +
+    // odds reais) e escolhe UM mercado por jogo. As probabilidades continuam
+    // a ser as do motor local; o JEV decide a tip.
+    if (options?.engine === 'jev') {
+      evaluatedMatches = await this.applyJevPicks(
+        scope,
+        evaluatedMatches,
+        horizonDays
+      );
+      if (evaluatedMatches.length === 0) {
+        return {
+          generated: [],
+          all: this.slips,
+          jevLatencyMs: localResponse.latencyMs,
+        };
+      }
+    }
 
     const selectionPoolBase = evaluatedMatches.filter(
       (m) =>
@@ -664,6 +698,7 @@ export class TicketEngine {
       return this.createSlip(scope, tier, legs, {
         customTitle: `Múltipla ${cfg.label} (${legs.length} jogos • ${combinedOdds.toFixed(2)}x)`,
         rationale,
+        engine: options?.engine ?? 'local',
       });
     };
 
@@ -807,6 +842,142 @@ export class TicketEngine {
       all: this.slips,
       jevLatencyMs: localResponse.latencyMs,
     };
+  }
+
+  /**
+   * Deixa o JEV escolher o mercado de cada jogo. O motor local continua a
+   * calcular todas as probabilidades; o JEV recebe apenas as tips candidatas
+   * (prob + odd real) e devolve o mercado escolhido. Picks persistidos na
+   * calibração são reutilizados enquanto as odds não mudarem.
+   */
+  private async applyJevPicks(
+    scope: SlipScope,
+    evaluated: MatchItem[],
+    horizonDays: number
+  ): Promise<MatchItem[]> {
+    const pool = evaluated.filter(
+      (m) =>
+        isMainLeague(m.league, m.competitionId) &&
+        m.tip &&
+        m.tip.odds > 1.01 &&
+        (m.tips || []).some((t) => t.odds != null && t.odds > 1.01)
+    );
+    if (pool.length === 0) return [];
+
+    type StoredPick = NonNullable<
+      NonNullable<MatchItem['calibration']>['jevPick']
+    >;
+    const picks = new Map<string, StoredPick>();
+    const need: MatchItem[] = [];
+    for (const m of pool) {
+      const saved = m.calibration?.jevPick;
+      if (saved && m.calibration?.oddsHash === oddsSignature(m.odds)) {
+        picks.set(m.id, saved);
+      } else {
+        need.push(m);
+      }
+    }
+
+    if (need.length > 0) {
+      const candidates = need
+        .slice(0, 60)
+        .map((m) => {
+          // Só odds com proveniência real entram para o JEV (nada sintético).
+          const real = new Set(m.odds.realMarkets || []);
+          const odds: Record<string, number> = {};
+          if (real.has('home')) odds.home = m.odds.home;
+          if (real.has('draw')) odds.draw = m.odds.draw;
+          if (real.has('away')) odds.away = m.odds.away;
+          if (real.has('over25')) odds.over25 = m.odds.over25;
+          if (real.has('under25')) odds.under25 = m.odds.under25;
+          if (real.has('btts_yes')) odds.btts_yes = m.odds.btts_yes;
+          if (real.has('btts_no')) odds.btts_no = m.odds.btts_no;
+          return {
+            id: m.id,
+            home: m.home,
+            away: m.away,
+            league: m.league,
+            kickoff: new Date(m.kickoffAt).toISOString(),
+            odds,
+            tips: (m.tips || [])
+              .filter((t) => t.odds != null && t.odds > 1.01)
+              .sort((a, b) => b.prob - a.prob)
+              .slice(0, 6)
+              .map((t) => ({
+                market: t.market,
+                label: t.label,
+                prob: t.prob,
+                odds: t.odds as number,
+              })),
+          };
+        })
+        .filter((c) => c.tips.length > 0);
+
+      const chosen = await jevChooseMarkets(candidates);
+      const at = Date.now();
+      for (const [id, pick] of chosen) {
+        picks.set(id, {
+          market: pick.market as MarketType,
+          confidence: pick.confidence,
+          reason: pick.reason,
+          at,
+        });
+      }
+      console.log(
+        `[JEV] escolheu a tip para ${chosen.size}/${candidates.length} jogo(s) do escopo "${scope}".`
+      );
+    }
+
+    if (picks.size === 0) return [];
+
+    const forced = pool.filter((m) => picks.has(m.id));
+    const localInput: LocalDecisionInput = {
+      scope,
+      horizonDays,
+      matches: forced.map((m) => ({
+        id: m.id,
+        league: m.league,
+        home: m.home,
+        away: m.away,
+        daysFromNow: m.daysFromNow,
+        odds: m.odds,
+        context: m.context,
+        scout: m.scout,
+        advanced: m.advanced,
+        tables: m.tables,
+        lineups: m.lineups,
+        forcedMarket: picks.get(m.id)!.market,
+      })),
+    };
+    const resp = await callLocalInferenceEngine(localInput);
+    const byId = new Map(resp.evaluations.map((e) => [e.matchId, e]));
+    const out: MatchItem[] = [];
+    for (const m of forced) {
+      const ev = byId.get(m.id);
+      const pick = picks.get(m.id);
+      if (!ev || !pick || ev.selectedOdds <= 1.01) continue;
+      m.tip = {
+        market: ev.recommendedMarket,
+        label: ev.marketLabel,
+        odds: ev.selectedOdds,
+        prob: ev.calibratedProb,
+      };
+      m.tips = ev.tips;
+      m.highRiskTip = ev.highRiskTip;
+      m.calibration = {
+        tips: ev.tips,
+        recommendedMarket: ev.recommendedMarket,
+        marketLabel: ev.marketLabel,
+        calibratedProb: ev.calibratedProb,
+        expectedValueEdge: ev.expectedValueEdge,
+        highRiskTip: ev.highRiskTip,
+        oddsHash: oddsSignature(m.odds),
+        at: Date.now(),
+        jevPick: pick,
+      };
+      out.push(m);
+    }
+    return out;
   }
 
   public validateSlips(): { updatedSlips: BetSlip[] } {

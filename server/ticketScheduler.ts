@@ -22,7 +22,7 @@ import {
 import { marketService } from './marketService.js';
 import { bilheteriaDb } from './db.js';
 import { DAY_TIMEZONE, getDayKey, msUntilNextMidnight } from './time.js';
-import type { BetSlip, MarketType, SlipScope, TicketStockStatus } from './types.js';
+import type { BetSlip, MarketType, SlipEngine, SlipScope, TicketStockStatus } from './types.js';
 
 const SCOPES: SlipScope[] = ['dia', '2_3_dias', 'longo'];
 const RETRY_THROTTLE_MS = 90 * 1000;
@@ -100,10 +100,15 @@ export class TicketScheduler {
   // ------------------------------------------------------------------ counts ---
 
   /** Pendentes que contam para a quota (dia: apenas as criadas hoje em Angola). */
-  public pendingCount(scope: SlipScope, referenceMs: number = Date.now()): number {
+  public pendingCount(
+    scope: SlipScope,
+    referenceMs: number = Date.now(),
+    engine: SlipEngine = 'local'
+  ): number {
     const today = getDayKey(referenceMs);
     return ticketEngine.getSlips().filter((slip) => {
       if (slip.status !== 'pendente' || slip.scope !== scope) return false;
+      if ((slip.engine ?? 'local') !== engine) return false;
       if (scope !== 'dia') return true;
       const key = slip.dayKey || getDayKey(slip.createdAt);
       return key === today;
@@ -249,7 +254,8 @@ export class TicketScheduler {
     scope: SlipScope,
     activeLeagues?: string[],
     limit = 4,
-    market?: MarketType
+    market?: MarketType,
+    engine: SlipEngine = 'local'
   ): Promise<{
     generated: BetSlip[];
     all: BetSlip[];
@@ -257,7 +263,7 @@ export class TicketScheduler {
     message: string;
   }> {
     return this.enqueue(async () => {
-      const pending = this.pendingCount(scope);
+      const pending = this.pendingCount(scope, Date.now(), engine);
       const max = SCOPE_MAX_PENDING[scope];
       const room = Math.max(0, max - pending);
 
@@ -275,6 +281,7 @@ export class TicketScheduler {
           ticketEngine.generateTicketsForScope(scope, activeLeagues, {
             limit: Math.min(Math.max(1, limit), room),
             market,
+            engine,
           })
         );
         return {
