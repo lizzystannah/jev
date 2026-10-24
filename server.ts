@@ -371,8 +371,17 @@ async function startServer() {
         'jev'
       );
       await cacheDel('matches:api:v2');
+      let message = result.message;
+      if (result.jevMeta) {
+        const meta = result.jevMeta;
+        message =
+          `${message} JEV: ${meta.newPicks} decisão(ões) nova(s), ` +
+          `${meta.reused} reutilizada(s), ${meta.apiCalls} chamada(s), ` +
+          `custo ${meta.costUsd.toFixed(6)} USD.`;
+      }
       res.json({
         ...result,
+        message,
         all: withUploads(result.all),
         generated: withUploads(result.generated),
       });

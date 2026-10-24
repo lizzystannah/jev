@@ -252,10 +252,18 @@ export interface GenerateOptions {
   market?: MarketType;
   /**
    * Motor que decide as tips: 'local' (padrão, faixa de probabilidade) ou
-   * 'jev' (o LLM escolhe o mercado de cada jogo a partir das probabilidades
-   * já calculadas pelo motor local).
+   * 'jev' (o modelo de decisão escolhe o mercado de cada jogo a partir das
+   * probabilidades já calculadas pelo motor local).
    */
   engine?: SlipEngine;
+}
+
+/** Telemetria da geração JEV (chamadas reais vs decisões reaproveitadas). */
+export interface JevGenerationMeta {
+  reused: number;
+  newPicks: number;
+  apiCalls: number;
+  costUsd: number;
 }
 
 
@@ -383,7 +391,12 @@ export class TicketEngine {
     scope: SlipScope,
     activeLeagues?: string[],
     options?: GenerateOptions
-  ): Promise<{ generated: BetSlip[]; all: BetSlip[]; jevLatencyMs: number }> {
+  ): Promise<{
+    generated: BetSlip[];
+    all: BetSlip[];
+    jevLatencyMs: number;
+    jevMeta?: JevGenerationMeta;
+  }> {
     const allMatches = await marketService.getMatches();
 
     // Filtro estrito do horizonte de longevidade e proteção absoluta contra jogos passados
@@ -550,6 +563,21 @@ export class TicketEngine {
     // Atualiza cada partida no pool com a probabilidade calibrada local
     const matchEvaluationsMap = new Map(localResponse.evaluations.map((e) => [e.matchId, e]));
 
+    // Decisões JEV persistidas (assinatura de odds ainda válida) têm de ser
+    // capturadas ANTES de a calibração local ser reescrita abaixo.
+    type StoredJevPick = NonNullable<
+      NonNullable<MatchItem['calibration']>['jevPick']
+    >;
+    const persistedJevPicks = new Map<string, StoredJevPick>();
+    if (options?.engine === 'jev' && process.env.JEV_REUSE_DECISIONS !== '0') {
+      for (const m of tipPool) {
+        const cal = m.calibration;
+        if (cal?.jevPick && cal.oddsHash === oddsSignature(m.odds)) {
+          persistedJevPicks.set(m.id, cal.jevPick);
+        }
+      }
+    }
+
     let evaluatedMatches: MatchItem[] = tipPool.map((m) => {
       const ev = matchEvaluationsMap.get(m.id);
       if (!ev) return m;
@@ -593,17 +621,22 @@ export class TicketEngine {
     // Motor JEV: o LLM recebe só o essencial (tips com prob do motor local +
     // odds reais) e escolhe UM mercado por jogo. As probabilidades continuam
     // a ser as do motor local; o JEV decide a tip.
+    let jevMeta: JevGenerationMeta | undefined;
     if (options?.engine === 'jev') {
-      evaluatedMatches = await this.applyJevPicks(
+      const jev = await this.applyJevPicks(
         scope,
         evaluatedMatches,
-        horizonDays
+        horizonDays,
+        persistedJevPicks
       );
+      evaluatedMatches = jev.matches;
+      jevMeta = jev.meta;
       if (evaluatedMatches.length === 0) {
         return {
           generated: [],
           all: this.slips,
           jevLatencyMs: localResponse.latencyMs,
+          jevMeta,
         };
       }
     }
@@ -841,6 +874,7 @@ export class TicketEngine {
       generated: topSlips,
       all: this.slips,
       jevLatencyMs: localResponse.latencyMs,
+      jevMeta,
     };
   }
 
@@ -853,8 +887,18 @@ export class TicketEngine {
   private async applyJevPicks(
     scope: SlipScope,
     evaluated: MatchItem[],
-    horizonDays: number
-  ): Promise<MatchItem[]> {
+    horizonDays: number,
+    persisted: Map<
+      string,
+      NonNullable<NonNullable<MatchItem['calibration']>['jevPick']>
+    > = new Map()
+  ): Promise<{ matches: MatchItem[]; meta: JevGenerationMeta }> {
+    const emptyMeta: JevGenerationMeta = {
+      reused: 0,
+      newPicks: 0,
+      apiCalls: 0,
+      costUsd: 0,
+    };
     const pool = evaluated.filter(
       (m) =>
         isMainLeague(m.league, m.competitionId) &&
@@ -862,7 +906,7 @@ export class TicketEngine {
         m.tip.odds > 1.01 &&
         (m.tips || []).some((t) => t.odds != null && t.odds > 1.01)
     );
-    if (pool.length === 0) return [];
+    if (pool.length === 0) return { matches: [], meta: emptyMeta };
 
     type StoredPick = NonNullable<
       NonNullable<MatchItem['calibration']>['jevPick']
@@ -870,13 +914,17 @@ export class TicketEngine {
     const picks = new Map<string, StoredPick>();
     const need: MatchItem[] = [];
     for (const m of pool) {
-      const saved = m.calibration?.jevPick;
-      if (saved && m.calibration?.oddsHash === oddsSignature(m.odds)) {
+      const saved = persisted.get(m.id);
+      if (saved) {
         picks.set(m.id, saved);
       } else {
         need.push(m);
       }
     }
+    const reused = picks.size;
+    let newPicks = 0;
+    let apiCalls = 0;
+    let costUsd = 0;
 
     if (need.length > 0) {
       const candidates = need
@@ -914,8 +962,11 @@ export class TicketEngine {
         .filter((c) => c.tips.length > 0);
 
       const chosen = await jevChooseMarkets(candidates);
+      newPicks = chosen.picks.size;
+      apiCalls = chosen.apiCalls;
+      costUsd = chosen.costUsd;
       const at = Date.now();
-      for (const [id, pick] of chosen) {
+      for (const [id, pick] of chosen.picks) {
         picks.set(id, {
           market: pick.market as MarketType,
           confidence: pick.confidence,
@@ -924,11 +975,13 @@ export class TicketEngine {
         });
       }
       console.log(
-        `[JEV] escolheu a tip para ${chosen.size}/${candidates.length} jogo(s) do escopo "${scope}".`
+        `[JEV] ${chosen.picks.size}/${candidates.length} decisão(ões) nova(s) ` +
+          `em ${chosen.apiCalls} chamada(s), custo ${chosen.costUsd.toFixed(6)} USD ` +
+          `(escopo "${scope}"; ${reused} reutilizada(s)).`
       );
     }
 
-    if (picks.size === 0) return [];
+    if (picks.size === 0) return { matches: [], meta: { reused, newPicks, apiCalls, costUsd } };
 
     const forced = pool.filter((m) => picks.has(m.id));
     const localInput: LocalDecisionInput = {
@@ -977,7 +1030,7 @@ export class TicketEngine {
       };
       out.push(m);
     }
-    return out;
+    return { matches: out, meta: { reused, newPicks, apiCalls, costUsd } };
   }
 
   public validateSlips(): { updatedSlips: BetSlip[] } {

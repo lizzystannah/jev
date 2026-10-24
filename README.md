@@ -177,11 +177,12 @@ JEV_MODEL=                # default typesafe/jev-1.14
 JEV_DECISIONS_URL=        # opcional; default https://openrouter.ai/api/alpha/decisions
 JEV_API_URL=              # alias (menos prioritÃƒÂ¡rio) para o endpoint
 JEV_TIMEOUT_MS=60000
+JEV_REUSE_DECISIONS=1      # 1 reutiliza decisoes guardadas; 0 forca novas chamadas
 ```
 
-O JEV recebe um `state` com os jogos e, por jogo, uma pergunta `choice` cujas opÃƒÂ§ÃƒÂµes sÃƒÂ£o as tips candidatas (probabilidade do motor local + odd real). Devolve o mercado escolhido e a confianÃƒÂ§a, sem texto livre. As decisÃƒÂµes ficam persistidas na calibraÃƒÂ§ÃƒÂ£o do jogo e sÃƒÂ£o reutilizadas enquanto as odds nÃƒÂ£o mudarem (evita chamadas repetidas apÃƒÂ³s um redeploy).
+O JEV recebe um `state` com os jogos e, por jogo, uma pergunta `choice` cujas opcoes sao as tips candidatas (probabilidade do motor local + odd real). Devolve o mercado escolhido e a confianca, sem texto livre. As decisoes ficam persistidas na calibracao do jogo e sao reutilizadas enquanto as odds nao mudarem.
 
-As decisÃƒÂµes do JEV ficam persistidas na calibraÃƒÂ§ÃƒÂ£o do jogo e sÃƒÂ£o reutilizadas enquanto as odds nÃƒÂ£o mudarem (evita chamadas repetidas ao LLM apÃƒÂ³s um redeploy).
+Cada geracao devolve no `message` (e nos logs `[JEV] ... custo X USD`) quantas decisoes foram novas, quantas foram reutilizadas e o custo da chamada.
 
 ## Cache (Redis opcional)
 

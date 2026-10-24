@@ -39,6 +39,13 @@ export interface JevPick {
   reason: string;
 }
 
+/** Resultado de uma ronda de decisões (para telemetria/custo). */
+export interface JevChoiceResult {
+  picks: Map<string, JevPick>;
+  costUsd: number;
+  apiCalls: number;
+}
+
 type JevProvider = 'jev' | 'openrouter';
 
 interface JevConfig {
@@ -245,7 +252,7 @@ function shortReason(pick: string, confidence: number): string {
 export async function jevChooseMarkets(
   candidates: JevCandidate[],
   opts?: { timeoutMs?: number }
-): Promise<Map<string, JevPick>> {
+): Promise<JevChoiceResult> {
   const config = resolveConfig();
   if (!config.apiKey) {
     throw new Error(
@@ -254,14 +261,18 @@ export async function jevChooseMarkets(
   }
 
   const usable = candidates.filter((c) => c.tips.length > 0);
-  if (usable.length === 0) return new Map();
+  if (usable.length === 0) {
+    return { picks: new Map(), costUsd: 0, apiCalls: 0 };
+  }
 
   const timeoutMs = opts?.timeoutMs ?? config.timeoutMs;
   const picks = new Map<string, JevPick>();
   let totalCost = 0;
+  let apiCalls = 0;
 
   for (let start = 0; start < usable.length; start += BATCH_SIZE) {
     const batch = usable.slice(start, start + BATCH_SIZE);
+    apiCalls += 1;
     const state = {
       tarefa:
         'Escolher a melhor tip (mercado) para cada jogo de futebol, comparando a probabilidade do motor local com a odd real.',
@@ -314,15 +325,10 @@ export async function jevChooseMarkets(
     });
   }
 
-  if (totalCost > 0) {
-    console.log(
-      `[JEV] ${picks.size}/${usable.length} escolha(s) — custo ${totalCost.toFixed(6)} USD.`
-    );
-  } else {
-    console.log(
-      `[JEV] ${picks.size}/${usable.length} escolha(s) via ${config.model} (${config.endpoint}).`
-    );
-  }
+  console.log(
+    `[JEV] ${picks.size}/${usable.length} escolha(s) em ${apiCalls} chamada(s) — ` +
+      `custo ${totalCost.toFixed(6)} USD (${config.model}).`
+  );
 
-  return picks;
+  return { picks, costUsd: totalCost, apiCalls };
 }

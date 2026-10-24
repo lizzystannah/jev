@@ -18,6 +18,7 @@ import {
   SCOPE_MAX_PENDING,
   SCOPE_QUOTAS,
   ticketEngine,
+  type JevGenerationMeta,
 } from './ticketEngine.js';
 import { marketService } from './marketService.js';
 import { bilheteriaDb } from './db.js';
@@ -261,6 +262,7 @@ export class TicketScheduler {
     all: BetSlip[];
     stock: TicketStockStatus;
     message: string;
+    jevMeta?: JevGenerationMeta;
   }> {
     return this.enqueue(async () => {
       const pending = this.pendingCount(scope, Date.now(), engine);
@@ -292,6 +294,7 @@ export class TicketScheduler {
             result.generated.length > 0
               ? `${result.generated.length} nova(s) ficha(s) de "${scope}" geradas.`
               : `Mercado insuficiente para gerar novas fichas de "${scope}".`,
+          jevMeta: result.jevMeta,
         };
       } catch (err: any) {
         return {
