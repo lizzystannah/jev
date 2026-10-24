@@ -15,11 +15,12 @@ Usa TODAS as variaveis retornadas pelo AiScore (match/history):
   - H2H: n_finished, over15/25/35, btts, clean_sheets_focal, focal_wdl,
     unbeaten_run_longest + span, lista focal completa
   - Meta: competition, kickoff, statusId (+ standings opcional: position/points)
-  - Odds de mercado: so para EV (prob*odd-1) e escolha do mercado — nunca como
-    unica fonte de probabilidade.
+   - Odds de mercado: apenas para REPORTAR EV e piso de odd (1.10) — nunca
+     criterio de escolha nem unica fonte de probabilidade.
 
-Saida por partida: probs por mercado (0..1), xG, mercado recomendado, prob
-calibrada 0..100, edge EV%, riskTier, confidence, explicacao variavel a variavel.
+Saida por partida: probs por mercado (0..1), xG, tip escolhida pela FAIXA de
+probabilidade (maior p em [0.55, 0.75] com preco real >= 1.10), prob calibrada
+0..100, EV informativo, riskTier, confidence, explicacao variavel a variavel.
 
 Uso:
   from motor_aiscore import evaluate_match
@@ -605,14 +606,16 @@ MARKET_LABELS_PT = {
 }
 
 
-def _sanitize_odd(v, fallback=1.85) -> float:
+def _sanitize_odd(v) -> float | None:
+    """Odd real ou None — sem fallback sintético: mercado sem preço real
+    não é candidato à tip."""
     try:
         f = float(v)
         if math.isfinite(f) and f > 1.01:
             return round(f, 2)
     except (TypeError, ValueError):
         pass
-    return fallback
+    return None
 
 
 def evaluate_match(scout: dict, odds: dict | None = None,
@@ -633,15 +636,23 @@ def evaluate_match(scout: dict, odds: dict | None = None,
     if isinstance(lin, dict) and lin.get("available") and lin.get("confirmed") != 1:
         confidence = _clamp(confidence - 0.05, 0.10, 0.95)
 
-    # escolhe mercado: maior EV entre probs >= piso; desempate por prob
-    cands = []
-    for m, p in probs.items():
-        odd = full_odds[m]
-        edge = p * odd - 1  # fracao (0.10 = +10%)
-        floor = 0.45 if m in ("double_chance_1x", "double_chance_x2", "over15", "under35") else 0.50
-        cands.append((edge if p >= floor else edge - 1.0, p, m, odd, edge))
-    cands.sort(reverse=True)
-    _, best_p, best_m, best_odd, best_edge = cands[0]
+    # Selecao da tip por FAIXA de probabilidade — todas as variaveis existem
+    # para produzir p; dentre mercados com preco real, escolhe o de MAIOR p
+    # dentro da faixa [0.55, 0.75] ("probabilidade media": nem quase-certo
+    # ~1.05, nem outao). Sem candidato na faixa, vence o de maior p.
+    # Piso de odd 1.10: nunca recomendar tip abaixo disso. EV apenas REPORTADO.
+    BAND_LO, BAND_HI, ODD_FLOOR = 0.55, 0.75, 1.10
+    cands = [(p, m, full_odds[m]) for m, p in probs.items()
+             if full_odds[m] is not None and p > 0.01]
+    if cands:
+        pool = [c for c in cands if c[2] >= ODD_FLOOR] or cands
+        in_band = [c for c in pool if BAND_LO <= c[0] <= BAND_HI]
+        best_p, best_m, best_odd = max(in_band or pool, key=lambda c: c[0])
+        best_edge = best_p * best_odd - 1
+    else:
+        # Sem preco real nenhum: tip por probabilidade pura, sem odd/EV
+        best_m, best_p = max(probs.items(), key=lambda kv: kv[1])
+        best_odd, best_edge = None, None
 
     calib = int(round(_clamp(best_p, 0.10, 0.95) * 100))
     tier = "segura" if calib >= 63 else ("moderada" if calib >= 48 else "ousada")
@@ -670,13 +681,14 @@ def evaluate_match(scout: dict, odds: dict | None = None,
     return {
         "matchId": scout.get("match_id"),
         "calibratedProb": calib,
-        "expectedValueEdge": round(best_edge * 100, 1),
+        "expectedValueEdge": round(best_edge * 100, 1) if best_edge is not None else None,
         "recommendedMarket": best_m,
         "marketLabel": MARKET_LABELS_PT.get(best_m, best_m),
         "selectedOdds": best_odd,
         "riskTier": tier,
         "confidence": round(confidence, 3),
-        "localScore": int(round(calib * 0.7 + max(0, best_edge * 100) * 1.2)),
+        # Pontuacao do jogo = probabilidade calibrada (o modelo); nada de EV aqui
+        "localScore": calib,
         "probs": {k: round(v, 4) for k, v in probs.items()},
         "odds_used": full_odds,
         "xg_home": xg["xg_home"], "xg_away": xg["xg_away"],

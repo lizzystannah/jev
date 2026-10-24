@@ -340,9 +340,12 @@ export class TicketEngine {
    * Pipeline de criação com o motor LOCAL AiScore (sem Jev, sem OpenRouter):
    * 1. Filtra os jogos para o horizonte da longevidade (dia: 0 dias; 2_3_dias: 1 a 3 dias; longo: 4+ dias)
    * 2. Enriquece com o scout COMPLETO do AiScore (H2H, forma, trends, janelas de golo, odds)
-   * 3. O motor local calcula xG (Poisson) + taxas empíricas + H2H + mando e devolve
-   *    probabilidades calibradas, mercado de valor e EV — determinístico
-   * 4. Aplica as regras de negócio de bilhetes combinados e seleciona os TOP bilhetes (até 5)
+   * 3. O motor local calcula xG (Poisson) + taxas empíricas + H2H + mando e
+   *    devolve, para CADA jogo, a melhor tip por faixa de probabilidade —
+   *    determinístico, sem EV na escolha
+   * 4. Todos os jogos avaliados ficam na pool; segura/moderada/ousada são
+   *    alvos de odd combinada TOTAL e se diferenciam pelo NÚMERO de jogos
+   *    acumulados (nunca por inventar odds ou trocar tip por jogo)
    */
   public async generateTicketsForScope(
     scope: SlipScope,
@@ -454,35 +457,24 @@ export class TicketEngine {
       return m;
     });
 
-    // Só ligas principais (incluindo Conference, J1, Süper Lig e Saudi Pro
-    // League) entram nas fichas. Sem fallback para ligas obscuras: se não
-    // houver tips suficientes, é melhor não forçar uma ficha.
-    const mainIds = new Set(mainEligible.map((m) => m.id));
-    const selectionPool = evaluatedMatches.filter((m) => mainIds.has(m.id));
+    // TODOS os jogos avaliados ficam à disposição das fichas — o motor correu
+    // por todo o horizonte, então não há filtro que esconda jogos por liga ou
+    // por probabilidade. Ligas principais continuam prioritárias apenas na
+    // ORDENAÇÃO (orderTopFirst + pickScore), nunca como exclusão.
+    const selectionPool = evaluatedMatches.filter(
+      (m) => m.tip && m.tip.odds > 1.01 && Number.isFinite(m.tip.prob)
+    );
 
     if (selectionPool.length === 0) {
       return { generated: [], all: this.slips, jevLatencyMs: localResponse.latencyMs };
     }
 
-    // Separação em Buckets de Probabilidade (Segura, Moderada, Ousada, Maluca)
-    const buckets: Record<SlipTier, MatchItem[]> = {
-      segura: [],
-      moderada: [],
-      ousada: [],
-      maluca: [],
-    };
-
-    selectionPool.forEach((m) => {
-      if (m.tip.prob >= TIERS_CONFIG.segura.min) {
-        buckets.segura.push(m);
-      } else if (m.tip.prob >= TIERS_CONFIG.moderada.min) {
-        buckets.moderada.push(m);
-      } else if (m.tip.prob >= TIERS_CONFIG.ousada.min) {
-        buckets.ousada.push(m);
-      } else {
-        buckets.maluca.push(m);
-      }
-    });
+    // Os tiers NÃO são divididos por probabilidade individual do jogo: cada
+    // jogo entra com a MESMA tip (a de maior p na faixa "média" do motor).
+    // Segura/Moderada/Ousada diferem só no ALVO de pontuação TOTAL da odd
+    // combinada, alcançado com o NÚMERO de jogos necessário — nunca inventando
+    // odds nem forçando tips de probabilidade diferente por jogo. Só a Maluca
+    // usa tips de odd alta por jogo (highRiskTip, sempre mercado real).
 
     // NÃO apagar fichas pendentes existentes: elas persistem até resolverem ou
     // expirarem. A geração apenas acrescenta novas oportunidades ao estoque.
@@ -514,7 +506,7 @@ export class TicketEngine {
       }
     ): BetSlip | null => {
       const cfg = TICKET_TARGETS[tier];
-      const primary = (overrides?.pool ?? buckets[tier]).filter((m) => m.tip.odds > 1.01);
+      const primary = (overrides?.pool ?? selectionPool).filter((m) => m.tip.odds > 1.01);
       if (primary.length < cfg.minLegs) return null;
 
       const sortFn = overrides?.sortFn ?? ((a, b) => pickScore(b) - pickScore(a));
@@ -543,15 +535,16 @@ export class TicketEngine {
           ? `Ficha Maluca: ${legs.length} tips de odd alta escolhidas entre as tips reais já calculadas, até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; nenhuma odd foi inventada para completar pontos.`
           : tier === 'ousada'
           ? `Ficha Ousada: ${legs.length} jogos escolhidos entre as tips reais por probabilidade, até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; os pontos vêm de acumular jogos, não de pernas artificiais.`
-          : `Ficha ${cfg.label}: ${legs.length} jogos escolhidos entre as tips de maior probabilidade do tier, até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; todas as odds são reais e nenhuma perna foi inventada para completar pontos.`;
+          : `Ficha ${cfg.label}: ${legs.length} jogos escolhidos por probabilidade até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; todas as odds são reais e nenhuma perna foi inventada para completar pontos.`;
       return this.createSlip(scope, tier, legs, {
         customTitle: `Múltipla ${cfg.label} (${legs.length} jogos • ${combinedOdds.toFixed(2)}x)`,
         rationale,
       });
     };
 
-    // Segura e Moderada usam o bucket de risco respetivo. A Ousada começa
-    // pelas tips de odds mais baixas para acumular mais jogos até 100x.
+    // Segura, Moderada e Ousada partem da MESMA pool de tips (probabilidade
+    // média por jogo). O alvo de total manda: segura 3x, moderada 15x e
+    // ousada 100x acendem-se com o número de jogos necessário.
     for (const tier of ['segura', 'moderada'] as SlipTier[]) {
       const slip = buildTargetTier(tier);
       if (slip) {
@@ -566,31 +559,28 @@ export class TicketEngine {
       m.highRiskTip ? { ...m, tip: m.highRiskTip } : m
     );
 
-    // A Ousada não deve ser "5 pernas a 3.50". Usa primeiro as tips com odds
-    // mais baixas (até 2.60) e acumula mais jogos até 100x; depois alarga para
-    // todas as tips e, em último recurso, para as tips alternativas <=4.0.
-    const ousadaPool = selectionPool.filter((m) => m.tip.odds <= 2.6);
-    const ousadaLastResort = highRiskPool.filter(
-      (m) => m.tip.odds >= 2.0 && m.tip.odds <= 4.0
-    );
+    // A Ousada não deve ser "5 pernas a 3.50": usa as tips de menor odd comum
+    // (ordem ascendente) e acumula o número de jogos necessário até 100x.
+    // Em último recurso, tips alternativas de odd moderada-alta (2.0-4.0)
+    // — sempre mercados reais, nunca preços inventados.
     const ousadaAsc = (a: MatchItem, b: MatchItem): number => a.tip.odds - b.tip.odds;
     const ousada =
       buildTargetTier('ousada', {
-        pool: ousadaPool.length >= TICKET_TARGETS.ousada.minLegs ? ousadaPool : selectionPool,
         sortFn: ousadaAsc,
         preferFresh: false,
         diversifyLeagues: false,
       }) ??
-      buildTargetTier('ousada', {
-        pool: selectionPool,
-        sortFn: ousadaAsc,
-        preferFresh: false,
-        diversifyLeagues: false,
-      }) ??
-      buildTargetTier('ousada', {
-        pool: ousadaLastResort,
-        sortFn: (a, b) => b.tip.prob - a.tip.prob,
-      });
+      (() => {
+        const lastResort = highRiskPool.filter(
+          (m) => m.tip.odds >= 2.0 && m.tip.odds <= 4.0
+        );
+        return lastResort.length >= TICKET_TARGETS.ousada.minLegs
+          ? buildTargetTier('ousada', {
+              pool: lastResort,
+              sortFn: (a, b) => b.tip.prob - a.tip.prob,
+            })
+          : null;
+      })();
     if (ousada) {
       candidateSlips.push(ousada);
       claim(ousada.legs);

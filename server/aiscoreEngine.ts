@@ -25,8 +25,15 @@
  *  H2H: n_finished, over15/25/35, btts, clean_sheets_focal, focal_wdl,
  *    unbeaten_run_longest + span, lista focal completa
  *  Meta: competition, kickoff, statusId (+ standings opcional)
- *  Odds de mercado: SÓ para EV (prob*odd-1) e escolha do mercado —
- *    nunca como única fonte de probabilidade.
+ *  Odds de mercado: apenas para REPORTAR EV e para o piso de odd 1.10 —
+ *    nunca como critério de escolha nem única fonte de probabilidade.
+ *
+ * Seleção da tip: por FAIXA de probabilidade — dentre os mercados com preço
+ * real (≥ 1.10), escolhe o de MAIOR p dentro da faixa [0.55, 0.75]
+ * ("probabilidade média": nem quase-certo de 1.05, nem outrão). A escolha da
+ * ficha (segura/moderada/ousada) NÃO acontece aqui: cada jogo sai com a sua
+ * melhor tip de probabilidade média e as fichas acumulam jogos até atingir o
+ * alvo de pontuação TOTAL (ver ticketEngine TICKET_TARGETS).
  *
  * Determinístico, síncrono, sem rede, sem chave, sem LLM.
  * Espelha motor_aiscore.py do workspace Scraping (port fiel).
@@ -567,10 +574,6 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   })();
   const P = probs || fallbackProbs;
 
-  const floorOf = (m: MarketType): number =>
-    m === 'double_chance_1x' || m === 'double_chance_x2'
-    || m === 'over15' || m === 'under35' ? 0.45 : 0.5;
-  let best: { m: MarketType; p: number; odd: number; edge: number; score: number } | null = null;
   const realMarkets = match.odds.realMarkets;
   const allMarkets = Object.keys(P) as MarketType[];
   // Sem realMarkets (dados antigos) avalia só 1X2; nunca usa um preço sem
@@ -578,15 +581,33 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const markets = realMarkets
     ? allMarkets.filter((m) => realMarkets.includes(m))
     : allMarkets.filter((m) => m === 'home' || m === 'draw' || m === 'away');
-  (markets.length > 0 ? markets : allMarkets).forEach((m) => {
-    const p = P[m] ?? 0;
-    const odd = sanitizeOdd((compOdds as any)[m]);
-    const edge = p * odd - 1;
-    const score = p >= floorOf(m) ? edge : edge - 1;
-    if (!best || score > best.score) best = { m, p, odd, edge, score };
-  });
 
-  const b = best!;
+  // Seleção da tip por FAIXA de probabilidade — Todas as variáveis (forma, H2H,
+  // mando, posição, escalação) existem para produzir p; a escolha pega o mercado
+  // de MAIOR p dentre os que caibam na faixa [0.55, 0.75] ("probabilidade média"
+  // — nem quase-certo ~1.05, nem outrão). Sem candidato na faixa, vence o de
+  // maior p. Piso de odd 1.10: nunca recomendar tip abaixo disso.
+  const BAND_LO = 0.55;
+  const BAND_HI = 0.75;
+  const ODD_FLOOR = 1.10;
+  const cands = markets
+    .map((m) => ({
+      m,
+      p: P[m] ?? 0,
+      odd: sanitizeOdd((compOdds as any)[m]),
+    }))
+    .filter((x) => x.p > 0.01);
+  const valid = cands.filter((x) => x.odd >= ODD_FLOOR);
+  const pool = valid.length > 0 ? valid : cands;
+  const byProb = [...pool].sort((a, b) => b.p - a.p);
+  const inBand = byProb.filter((x) => x.p >= BAND_LO && x.p <= BAND_HI);
+  const b = (inBand.length > 0
+    ? inBand[0]
+    : byProb[0]) as { m: MarketType; p: number; odd: number };
+
+  // EV continua a ser REPORTADO, mas não seleciona: é só p × odd − 1 do mercado
+  // escolhido, informação de precificação, nunca critério de escolha.
+  const edge = b.p * b.odd - 1;
 
   // Tip alternativa de odd alta para a Maluca. Usa o mesmo modelo e apenas
   // mercados com preço real; não é uma odd inventada, é outro mercado do jogo.
@@ -597,9 +618,14 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
       odd: sanitizeOdd((compOdds as any)[m]),
     }))
     .filter((x) => Number.isFinite(x.odd) && x.odd > 1.01 && x.p > 0.01);
-  const preferredHighRisk = highRiskPool.filter((x) => x.p >= 0.08);
-  const highRisk = (preferredHighRisk.length > 0 ? preferredHighRisk : highRiskPool)
-    .sort((a, b) => b.odd - a.odd)[0];
+  const preferredHighRisk = (() => {
+    const withBase = highRiskPool.filter((x) => x.p >= 0.25);
+    const nonTrivial = highRiskPool.filter((x) => x.p >= 0.08);
+    return withBase.length > 0 ? withBase
+      : nonTrivial.length > 0 ? nonTrivial
+      : highRiskPool;
+  })();
+  const highRisk = preferredHighRisk.sort((a, b) => b.odd - a.odd)[0];
   const highRiskLabel = highRisk ? MARKET_LABELS[highRisk.m] : undefined;
   const highRiskTip: MatchTip | undefined = highRisk
     ? {
@@ -613,7 +639,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     : undefined;
 
   const calib = Math.round(clamp(b.p, 0.1, 0.95) * 100);
-  const edgePct = Math.round(b.edge * 100 * 10) / 10;
+  const edgePct = Math.round(edge * 100 * 10) / 10;
   const riskTier: SlipTier =
     calib >= 63 ? 'segura' : calib >= 48 ? 'moderada' : calib >= 28 ? 'ousada' : 'maluca';
   const labelFn = MARKET_LABELS[b.m];
@@ -630,7 +656,9 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     riskTier,
     highRiskTip,
     confidence: Math.round(confidence * 1000) / 1000,
-    localScore: Math.round(calib * 0.7 + Math.max(0, edgePct) * 1.2),
+    // Pontuação do jogo = probabilidade calibrada. Puramente o modelo;
+    // nada de EV aqui — a odd entra só na fase de precificar/apostar.
+    localScore: calib,
   };
 }
 
