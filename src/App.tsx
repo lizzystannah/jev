@@ -484,8 +484,8 @@ export default function App() {
       scope === 'dia'
         ? 'jogos de hoje'
         : scope === '2_3_dias'
-        ? 'jogos dos próximos 2 a 3 dias'
-        : 'jogos de longo prazo (4+ dias)';
+        ? 'jogos de hoje até +3 dias'
+        : 'os melhores jogos de hoje até +8 dias (seleção rigorosa, 10 a 22 jogos)';
 
     if (tier === 'segura') {
       return `Fichas de ${spread} escolhidas entre as tips de maior probabilidade, até ao alvo de 3x. O número de jogos é o necessário para chegar ao alvo — sem odds inventadas.`;
@@ -624,7 +624,7 @@ export default function App() {
                     : 'bg-transparent border-[rgba(245,243,236,0.2)] text-[rgba(245,243,236,0.6)] hover:text-[#F5F3EC]'
                 }`}
               >
-                Longo prazo (4d+)
+                Longo prazo (10-22 jogos)
               </button>
               <button
                 type="button"

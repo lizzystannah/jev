@@ -5,7 +5,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { marketService, MARKET_LABELS } from './server/marketService.js';
+import { marketService, MARKET_LABELS, oddsSignature } from './server/marketService.js';
 import { ticketEngine } from './server/ticketEngine.js';
 import { ticketScheduler } from './server/ticketScheduler.js';
 import { bilheteriaDb } from './server/db.js';
@@ -130,40 +130,72 @@ async function startServer() {
       const matches = await marketService.getMatches(forceRefresh);
       let enriched = matches;
       try {
-        // Só avalia jogos com preço real ou com scout: sem odds e sem scout a
-        // "probabilidade" seria lida de placeholders (nunca apresentar isso).
-        const evalPool = matches.filter(
-          (m) => (m.odds.realMarkets?.length || 0) > 0 || Boolean(m.scout)
-        );
-        const local = await callLocalInferenceEngine({
-          scope: 'dia',
-          horizonDays: 8,
-          matches: evalPool.map((m) => ({
-            id: m.id,
-            league: m.league,
-            home: m.home,
-            away: m.away,
-            daysFromNow: m.daysFromNow,
-            odds: m.odds,
-            context: m.context,
-            scout: m.scout,
-            advanced: m.advanced,
-            tables: m.tables,
-            lineups: m.lineups,
-          })),
-        });
-        const byId = new Map(local.evaluations.map((e) => [e.matchId, e]));
-        enriched = matches.map((m) => {
-          const ev = byId.get(m.id);
-          if (!ev) return m;
-          return {
-            ...m,
-            tips: ev.tips,
-            tip: {
+        // Calibração persistida: reutiliza as tips se a assinatura de odds não
+        // mudou. Só recalcula o que é novo ou cujas odds mudaram (nem rede nem
+        // CPU a cada redeploy). Sem odds e sem scout não se inventa prob.
+        const needsCalibration = (m: MatchItem): boolean =>
+          (!m.calibration || m.calibration.oddsHash !== oddsSignature(m.odds)) &&
+          ((m.odds.realMarkets?.length || 0) > 0 || Boolean(m.scout));
+        const evalPool = matches.filter(needsCalibration);
+
+        if (evalPool.length > 0) {
+          const local = await callLocalInferenceEngine({
+            scope: 'dia',
+            horizonDays: 8,
+            matches: evalPool.map((m) => ({
+              id: m.id,
+              league: m.league,
+              home: m.home,
+              away: m.away,
+              daysFromNow: m.daysFromNow,
+              odds: m.odds,
+              context: m.context,
+              scout: m.scout,
+              advanced: m.advanced,
+              tables: m.tables,
+              lineups: m.lineups,
+            })),
+          });
+          const byId = new Map(local.evaluations.map((e) => [e.matchId, e]));
+          for (const m of matches) {
+            const ev = byId.get(m.id);
+            if (!ev) continue;
+            const chosen = ev.tips.find((t) => t.market === ev.recommendedMarket);
+            m.calibration = {
+              tips: ev.tips,
+              recommendedMarket: ev.recommendedMarket,
+              marketLabel: ev.marketLabel,
+              calibratedProb: ev.calibratedProb,
+              expectedValueEdge: ev.expectedValueEdge,
+              highRiskTip: ev.highRiskTip,
+              oddsHash: oddsSignature(m.odds),
+              at: Date.now(),
+            };
+            m.tips = ev.tips;
+            m.tip = {
               market: ev.recommendedMarket,
               label: ev.marketLabel,
-              odds: ev.selectedOdds,
+              odds: chosen?.odds ?? ev.selectedOdds,
               prob: ev.calibratedProb,
+            };
+          }
+          marketService.saveCacheSoon();
+        }
+
+        // Aplica a calibração persistida a todos os jogos que a tenham.
+        enriched = matches.map((m) => {
+          if (!m.calibration) return m;
+          const chosen = m.calibration.tips.find(
+            (t) => t.market === m.calibration!.recommendedMarket
+          );
+          return {
+            ...m,
+            tips: m.calibration.tips,
+            tip: {
+              market: m.calibration.recommendedMarket,
+              label: m.calibration.marketLabel,
+              odds: chosen?.odds ?? 0,
+              prob: m.calibration.calibratedProb,
             },
           };
         });

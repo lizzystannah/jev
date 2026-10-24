@@ -112,6 +112,21 @@ export interface MatchItem {
   /** Todas as tips calculadas para o jogo (com odds reais ou null). */
   tips?: TipOption[];
   /**
+   * Calibração persistida: probabilidades/tips calculadas para a assinatura
+   * de odds atual. Sobrevive a restart/redeploy (cache em disco/DB) e só é
+   * recalculada quando as odds mudam.
+   */
+  calibration?: {
+    tips: TipOption[];
+    recommendedMarket: MarketType;
+    marketLabel: string;
+    calibratedProb: number;
+    expectedValueEdge: number;
+    highRiskTip?: MatchTip;
+    oddsHash: string;
+    at: number;
+  };
+  /**
    * Tip alternativa de odd alta, calculada pelo mesmo motor a partir dos
    * mercados reais. É usada apenas na ficha Maluca; não substitui a tip
    * principal e nunca contém odds sintéticas.

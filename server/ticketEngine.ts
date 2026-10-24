@@ -9,6 +9,7 @@ import {
   leaguePriorityRank,
   isObscureLeague,
   isMainLeague,
+  oddsSignature,
 } from './marketService.js';
 import { callLocalInferenceEngine, type LocalDecisionInput } from './aiscoreEngine.js';
 import { aiscoreClient } from './aiscoreService.js';
@@ -184,6 +185,15 @@ export const LONGO_MAX_LEGS = Math.max(
   LONGO_MIN_LEGS,
   envInt('TICKETS_LONGO_MAX_LEGS', 22)
 );
+/**
+ * Longo prazo é uma seleção mais rigorosa: só tips com probabilidade >= 55%
+ * (default), aproveitando os melhores jogos de HOJE até +8 dias — não apenas
+ * os que acontecem daqui a 4+ dias.
+ */
+export const LONGO_MIN_PROB = Math.min(
+  95,
+  Math.max(0, envInt('TICKETS_LONGO_MIN_PROB', 55))
+);
 
 /** Config efetiva de pernas por tier e escopo (longo tem faixa própria). */
 function legsConfigFor(
@@ -343,7 +353,8 @@ export class TicketEngine {
 
   /**
    * Pipeline de criação com o motor LOCAL AiScore (sem Jev, sem OpenRouter):
-   * 1. Filtra os jogos para o horizonte da longevidade (dia: 0 dias; 2_3_dias: 1 a 3 dias; longo: 4+ dias)
+   * 1. Filtra os jogos por janela: dia=hoje; 2_3_dias=hoje..+3; longo=hoje..+8
+   *    (longo é mais rigoroso: só tips com prob >= TICKETS_LONGO_MIN_PROB)
    * 2. Enriquece com o scout COMPLETO do AiScore (H2H, forma, trends, janelas de golo, odds)
    * 3. O motor local calcula xG (Poisson) + taxas empíricas + H2H + mando e
    *    devolve, para CADA jogo, a melhor tip por faixa de probabilidade —
@@ -370,10 +381,12 @@ export class TicketEngine {
       if (scope === 'dia') {
         matchScopeMatches = m.daysFromNow === 0;
       } else if (scope === '2_3_dias') {
-        matchScopeMatches = m.daysFromNow >= 1 && m.daysFromNow <= 3;
+        // Inclui HOJE e os próximos 3 dias (não só 1..3).
+        matchScopeMatches = m.daysFromNow >= 0 && m.daysFromNow <= 3;
       } else {
-        // longo prazo: 4 dias ou mais
-        matchScopeMatches = m.daysFromNow >= 4;
+        // Longo prazo: os MELHORES jogos de hoje até +8 dias (janela ~1 semana),
+        // com probabilidade mínima mais alta. Não é só "daqui a 4+ dias".
+        matchScopeMatches = m.daysFromNow >= 0 && m.daysFromNow <= 8;
       }
 
       return matchLeague && matchScopeMatches && notResolved && isFutureMatch;
@@ -544,20 +557,35 @@ export class TicketEngine {
       };
       m.highRiskTip = ev.highRiskTip;
 
+      // Persiste a calibração (tips por mercado + assinatura de odds) para
+      // sobreviver a restart/redeploy sem recalcular.
+      m.calibration = {
+        tips: ev.tips,
+        recommendedMarket: ev.recommendedMarket,
+        marketLabel: ev.marketLabel,
+        calibratedProb: ev.calibratedProb,
+        expectedValueEdge: ev.expectedValueEdge,
+        highRiskTip: ev.highRiskTip,
+        oddsHash: oddsSignature(m.odds),
+        at: Date.now(),
+      };
+      m.tips = ev.tips;
+
       return m;
     });
 
-    // Whitelist de ligas para fichas: principais + Conference, J1 (Japão),
-    // Süper Lig (Turquia), SuperLiga sérvia (Estrela Vermelha), Saudi Pro
-    // League e Eredivisie. As principais continuam à frente na ordenação;
-    // ligas fora da lista (ex.: México/MLS) não entram nas fichas.
-    const selectionPool = evaluatedMatches.filter(
+    const selectionPoolBase = evaluatedMatches.filter(
       (m) =>
         isMainLeague(m.league, m.competitionId) &&
         m.tip &&
         m.tip.odds > 1.01 &&
         Number.isFinite(m.tip.prob)
     );
+    // Longo prazo: seleção mais criteriosa (probabilidade mínima mais alta).
+    const selectionPool =
+      scope === 'longo'
+        ? selectionPoolBase.filter((m) => m.tip.prob >= LONGO_MIN_PROB)
+        : selectionPoolBase;
 
     if (selectionPool.length === 0) {
       return { generated: [], all: this.slips, jevLatencyMs: localResponse.latencyMs };
@@ -771,6 +799,8 @@ export class TicketEngine {
       this.slips.push(slip);
     }
     bilheteriaDb.upsertMany(topSlips);
+    // Calibração/enriquecimento ficam no cache de jogos (sobrevive a redeploy).
+    if (evaluatedMatches.length > 0) marketService.saveCacheSoon();
 
     return {
       generated: topSlips,

@@ -138,6 +138,18 @@ export function leaguePriorityRank(league?: string | null, competitionId?: strin
   return rank;
 }
 
+/** Assinatura estável das odds/mercados reais (reutilização da calibração). */
+export function oddsSignature(odds: MatchOdds): string {
+  const rm = [...(odds.realMarkets || [])].sort().join(',');
+  const parts: Array<string | number | null | undefined> = [
+    odds.home, odds.draw, odds.away, odds.over25, odds.under25,
+    odds.btts_yes, odds.btts_no, odds.over15, odds.over35, odds.under35,
+    odds.double_chance_1x, odds.double_chance_x2, odds.double_chance_12,
+    odds.dnb_home, odds.dnb_away, rm,
+  ];
+  return parts.map((v) => (v == null ? '' : String(v))).join('|');
+}
+
 function impliedProb(odd: number): number {
   return (1 / odd) * 100;
 }
@@ -393,6 +405,7 @@ interface PersistedCache {
 export class MarketService {
   private matches: MatchItem[] = [];
   private lastFetchTime = 0;
+  private lastCacheSaveAt = 0;
   private activeFetchPromise: Promise<void> | null = null;
   private activeAiscorePromise: Promise<void> | null = null;
   private aiscoreLastSync = 0;
@@ -427,13 +440,24 @@ export class MarketService {
               (m.sourceProvider === 'the-odds-api' || m.sourceProvider === 'aiscore') &&
               m.kickoffAt > now - 2 * 60 * 60 * 1000
           );
-          if (validMatches.length > 0 && now - data.lastFetchTime < 2 * 60 * 60 * 1000) {
-            this.matches = validMatches;
-            this.lastFetchTime = data.lastFetchTime;
-            if (data.rateLimitInfo) {
-              this.providerStatus.rateLimitInfo = data.rateLimitInfo;
+          if (validMatches.length > 0) {
+            // Frescura pelo mtime do ficheiro: o lastFetchTime só é atualizado
+            // pelo caminho da The Odds API, mas o cache também guarda AiScore.
+            const ageMs = now - fs.statSync(CACHE_FILE_PATH).mtimeMs;
+            if (ageMs < 6 * 60 * 60 * 1000) {
+              this.matches = validMatches;
+              this.lastFetchTime = data.lastFetchTime;
+              this.lastCacheSaveAt = Date.now();
+              if (data.rateLimitInfo) {
+                this.providerStatus.rateLimitInfo = data.rateLimitInfo;
+              }
+              const calibrated = validMatches.filter((m) => m.calibration).length;
+              console.log(
+                `[MarketService] Cache restaurado: ${this.matches.length} jogos` +
+                  (calibrated > 0 ? ` (${calibrated} com calibração persistida)` : '') +
+                  '.'
+              );
             }
-            console.log(`[MarketService] Cache em disco restaurado: ${this.matches.length} partidas reais ao vivo.`);
           }
         }
       }
@@ -456,9 +480,16 @@ export class MarketService {
       };
       fs.mkdirSync(path.dirname(CACHE_FILE_PATH), { recursive: true });
       fs.writeFileSync(CACHE_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+      this.lastCacheSaveAt = Date.now();
     } catch (e: any) {
       console.warn('[MarketService] Erro ao gravar cache em disco:', e?.message);
     }
+  }
+
+  /** Grava o cache (jogos + calibração) com um intervalo mínimo entre writes. */
+  public saveCacheSoon(minGapMs = 5 * 60 * 1000): void {
+    if (Date.now() - this.lastCacheSaveAt < minGapMs) return;
+    this.saveDiskCache();
   }
 
   public getProviderStatus(): MarketProviderStatus {
