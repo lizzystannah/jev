@@ -174,6 +174,38 @@ export const TICKET_TARGETS: Record<
 };
 
 /**
+ * Fichas de LONGO PRAZO: mínimo de 10 e máximo de 22 jogos (configurável).
+ * O alvo de odd continua a mandar no momento de parar, mas nunca abaixo do
+ * mínimo — por isso as fichas longas acumulam mais jogos em vez de poucas
+ * pernas de odd alta. Segura/moderada/ousada variam o mínimo dentro da faixa.
+ */
+export const LONGO_MIN_LEGS = envInt('TICKETS_LONGO_MIN_LEGS', 10);
+export const LONGO_MAX_LEGS = Math.max(
+  LONGO_MIN_LEGS,
+  envInt('TICKETS_LONGO_MAX_LEGS', 22)
+);
+
+/** Config efetiva de pernas por tier e escopo (longo tem faixa própria). */
+function legsConfigFor(
+  scope: SlipScope,
+  tier: SlipTier
+): { targetOdds: number; maxLegs: number; minLegs: number; label: string } {
+  const base = TICKET_TARGETS[tier];
+  if (scope !== 'longo') return base;
+  const extra =
+    tier === 'ousada' ? 8 : tier === 'moderada' ? 4 : tier === 'maluca' ? 0 : 0;
+  const minLegs = Math.min(
+    LONGO_MAX_LEGS,
+    Math.max(base.minLegs, LONGO_MIN_LEGS + extra)
+  );
+  return {
+    ...base,
+    minLegs,
+    maxLegs: Math.max(minLegs, LONGO_MAX_LEGS),
+  };
+}
+
+/**
  * Estoque mínimo de fichas PENDENTES por horizonte.
  * O agendador repõe automaticamente sempre que uma ficha cai (ganha/perde/expira)
  * ou quando a mudança do dia cria a nova fornada de "Hoje".
@@ -567,7 +599,7 @@ export class TicketEngine {
         diversifyLeagues?: boolean;
       }
     ): BetSlip | null => {
-      const cfg = TICKET_TARGETS[tier];
+      const cfg = legsConfigFor(scope, tier);
       const primary = (overrides?.pool ?? selectionPool).filter((m) => m.tip.odds > 1.01);
       if (primary.length < cfg.minLegs) return null;
 
@@ -593,11 +625,14 @@ export class TicketEngine {
       const combinedOdds = legs.reduce((acc, l) => acc * l.tip.odds, 1);
       const avgOdds = Math.pow(combinedOdds, 1 / legs.length);
       const rationale =
-        tier === 'maluca'
+        (tier === 'maluca'
           ? `Ficha Maluca: ${legs.length} tips de odd alta escolhidas entre as tips reais já calculadas, até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; nenhuma odd foi inventada para completar pontos.`
           : tier === 'ousada'
           ? `Ficha Ousada: ${legs.length} jogos escolhidos entre as tips reais por probabilidade, até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; os pontos vêm de acumular jogos, não de pernas artificiais.`
-          : `Ficha ${cfg.label}: ${legs.length} jogos escolhidos por probabilidade até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; todas as odds são reais e nenhuma perna foi inventada para completar pontos.`;
+          : `Ficha ${cfg.label}: ${legs.length} jogos escolhidos por probabilidade até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; todas as odds são reais e nenhuma perna foi inventada para completar pontos.`)
+        + (scope === 'longo'
+          ? ` Longo prazo: ${legs.length} jogos (faixa ${LONGO_MIN_LEGS}-${LONGO_MAX_LEGS}).`
+          : '');
       return this.createSlip(scope, tier, legs, {
         customTitle: `Múltipla ${cfg.label} (${legs.length} jogos • ${combinedOdds.toFixed(2)}x)`,
         rationale,
