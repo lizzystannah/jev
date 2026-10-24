@@ -1087,6 +1087,31 @@ def _log_resolution(built: dict) -> None:
               f"{r.get('pb_outcome', '-')} @{r.get('pb_odd', '-')} :: {r['status']}")
 
 
+def _partial_note(built: dict, expected: int) -> str:
+    """Texto quando só parte das pernas foi localizada (ficha sobe com as boas)."""
+    missing = [r for r in (built.get("report") or []) if r.get("status") != "ok"]
+    detail = "; ".join(
+        f"{r.get('home')} v {r.get('away')}: {r.get('status')}"
+        for r in missing[:4]
+    )
+    if len(missing) > 4:
+        detail += "; …"
+    return (
+        f"Enviadas {built.get('n_legs', 0)} de {expected} pernas — os jogos não "
+        "localizados na Premier Bet foram retirados da ficha."
+        + (f" {detail}" if detail else "")
+    )
+
+
+def _placed_legs(built: dict) -> list[dict]:
+    """Pernas efetivamente enviadas (status ok), para o servidor sincronizar."""
+    return [
+        {"home": r.get("home"), "away": r.get("away"), "market": r.get("market")}
+        for r in (built.get("report") or [])
+        if r.get("status") == "ok"
+    ]
+
+
 def _partial_result_message(built: dict, expected: int) -> str:
     missing = [r for r in (built.get("report") or []) if r.get("status") != "ok"]
     detail = "; ".join(
@@ -1123,6 +1148,8 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="só preencher, não apostar")
     ap.add_argument("--headful", action="store_true", help="mostra o browser")
     ap.add_argument("--no-browser", action="store_true", help="só resolve (API)")
+    ap.add_argument("--strict", action="store_true",
+                    help="aborta se alguma perna não for localizada (default: sobe com as disponíveis)")
     ap.add_argument("--out", default="", help="grava resultado JSON")
     ap.add_argument("--shot", default="", help="screenshot de prova")
     args = ap.parse_args(argv)
@@ -1154,6 +1181,12 @@ def main(argv=None) -> int:
         if dry_run:
             place = False
         headful = _payload_bool(payload.get("headful", args.headful))
+        # Por omissão, uma perna não localizada NÃO impede a aposta: sobe-se
+        # com as pernas disponíveis. PREMIERBET_REQUIRE_ALL=1 repõe o modo
+        # estrito (aborta se faltar alguma).
+        strict = _payload_bool(
+            payload.get("require_all", os.environ.get("PREMIERBET_REQUIRE_ALL", ""))
+        )
         shot = payload.get("shot") or args.shot or None
 
         result = {
@@ -1169,7 +1202,8 @@ def main(argv=None) -> int:
             result["resolved"] = built
             _log_resolution(built)
             expected = len(slip.get("legs") or [])
-            if not built["selections"] or built["n_legs"] != expected:
+            partial = 0 < built["n_legs"] < expected
+            if not built["selections"] or (partial and strict):
                 result["message"] = _partial_result_message(built, expected)
                 result["detail"] = json.dumps(
                     built.get("report") or [], ensure_ascii=False
@@ -1177,6 +1211,11 @@ def main(argv=None) -> int:
                 print(f"[book] {result['message']}")
                 _write_result(args.out, result)
                 return 1
+            if partial:
+                result["partial"] = True
+                result["expected_legs"] = expected
+                result["placed_legs"] = _placed_legs(built)
+                print(f"[book] {_partial_note(built, expected)}")
             site = fill_and_place(
                 built["selections"], stake=stake, place=place, headful=headful,
                 shot_path=shot, login=login, password=password,
@@ -1186,6 +1225,10 @@ def main(argv=None) -> int:
             result["ok"] = bool(site.get("ok"))
             result["placed"] = bool(site.get("placed"))
             result["dry_run"] = bool(site.get("dry_run", not place))
+            if partial and site.get("ok"):
+                result["message"] = (
+                    f"{_partial_note(built, expected)} {site.get('message') or ''}"
+                ).strip()
             print(f"[book] {result['message']}")
             _write_result(args.out, result)
             return 0 if result["ok"] else 1
@@ -1205,14 +1248,20 @@ def main(argv=None) -> int:
 
     result: dict = {"ok": bool(built["selections"]), "resolved": built}
     expected = len(slip.get("legs") or [])
+    partial = 0 < built["n_legs"] < expected
     if not args.no_browser and built["selections"]:
-        if built["n_legs"] != expected:
+        if partial and args.strict:
             result["ok"] = False
             result["message"] = _partial_result_message(built, expected)
             result["detail"] = built.get("report") or []
             print(f"[book] {result['message']}")
             _write_result(args.out, result)
             return 1
+        if partial:
+            result["partial"] = True
+            result["expected_legs"] = expected
+            result["placed_legs"] = _placed_legs(built)
+            print(f"[book] {_partial_note(built, expected)}")
         place = bool(args.place) and not bool(args.dry_run)
         filled = fill_and_place(
             built["selections"], stake=args.stake, place=place,
@@ -1222,6 +1271,10 @@ def main(argv=None) -> int:
         result.update(filled)
         result["ok"] = bool(filled.get("ok"))
         result["placed"] = bool(filled.get("placed"))
+        if partial and filled.get("ok"):
+            result["message"] = (
+                f"{_partial_note(built, expected)} {filled.get('message') or ''}"
+            ).strip()
         print(f"[book] {filled.get('message')}")
     elif not built["selections"]:
         result["message"] = "Nenhuma perna da ficha foi localizada na Premier Bet."

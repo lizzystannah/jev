@@ -118,7 +118,20 @@ interface RawBridgeResult {
   unknown?: boolean;
   screenshot?: string | null;
   site?: RawBridgeResult;
-  resolved?: { n_legs?: number; total_odds?: number | null };
+  partial?: boolean;
+  expected_legs?: number;
+  placed_legs?: Array<{ home?: string; away?: string; market?: string }>;
+  resolved?: {
+    n_legs?: number;
+    total_odds?: number | null;
+    report?: Array<{
+      home?: string;
+      away?: string;
+      market?: string;
+      status?: string;
+      pb_odd?: number | string | null;
+    }>;
+  } | null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -392,6 +405,10 @@ async function runUpload(options: PremierBetUploadOptions): Promise<PremierBetUp
     unknown: Boolean(raw.unknown ?? site.unknown),
     screenshot: raw.screenshot || site.screenshot || (fs.existsSync(screenshotPath) ? screenshotPath : null),
     durationMs,
+    partial: Boolean(raw.partial),
+    expected_legs: raw.expected_legs,
+    placed_legs: raw.placed_legs,
+    resolved: raw.resolved ?? null,
   };
 }
 

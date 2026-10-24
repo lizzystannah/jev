@@ -186,6 +186,21 @@ export interface PremierBetUploadResult {
   screenshot?: string | null;
   durationMs?: number;
   upload?: SlipUpload;
+  /** Quando só parte das pernas foi localizada na Premier Bet. */
+  partial?: boolean;
+  expected_legs?: number;
+  placed_legs?: Array<{ home?: string; away?: string; market?: string }>;
+  resolved?: {
+    n_legs?: number;
+    total_odds?: number | null;
+    report?: Array<{
+      home?: string;
+      away?: string;
+      market?: string;
+      status?: string;
+      pb_odd?: number | string | null;
+    }>;
+  } | null;
 }
 
 export interface BetSlip {

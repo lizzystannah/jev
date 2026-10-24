@@ -534,6 +534,40 @@ async function startServer() {
       }
 
       const result = await uploadSlipToPremierBet({ slip, stake, dryRun });
+
+      // Ficha parcial: algumas pernas não foram localizadas na Premier Bet e
+      // a aposta seguiu com as disponíveis. Sincroniza a ficha local com o
+      // que foi realmente apostado (remove ausentes, recalcula odd/prob).
+      if (result.ok && result.partial) {
+        const norm = (s?: string) => (s || '').trim().toLowerCase();
+        const okKeys = new Set(
+          (result.resolved?.report || [])
+            .filter((r) => r.status === 'ok')
+            .map((r) => `${norm(r.home)}|${norm(r.away)}|${r.market}`)
+        );
+        const before = slip.legs.length;
+        const kept = slip.legs.filter((leg) =>
+          okKeys.has(`${norm(leg.home)}|${norm(leg.away)}|${leg.tip?.market}`)
+        );
+        if (kept.length > 0 && kept.length < before) {
+          slip.legs = kept;
+          slip.combinedOdds = Number(
+            kept.reduce((acc, l) => acc * (Number(l.tip?.odds) || 1), 1).toFixed(2)
+          );
+          slip.combinedProb = Number(
+            (
+              kept.reduce((acc, l) => acc * ((Number(l.tip?.prob) || 0) / 100), 1) *
+              100
+            ).toFixed(1)
+          );
+          slip.expiresAt = Math.min(...kept.map((l) => l.kickoffAt));
+          bilheteriaDb.upsertSlip(slip);
+          console.log(
+            `[PremierBet] Ficha ${slip.id}: ${before - kept.length} perna(s) não localizada(s) removida(s); ficha sincronizada com ${kept.length} jogo(s).`
+          );
+        }
+      }
+
       const uploadStatus: SlipUpload['status'] = result.ok
         ? result.dryRun
           ? 'dry_run'
