@@ -1,4 +1,4 @@
-export interface MatchOdds {
+﻿export interface MatchOdds {
   home: number;
   draw: number;
   away: number;
@@ -11,7 +11,7 @@ export interface MatchOdds {
   btts_no: number;
   /**
    * Mercados cujas odds vieram de uma casa/fornecedor real. Mercados fora
-   * desta lista são apenas estimativas e nunca entram em fichas.
+   * desta lista sÃ£o apenas estimativas e nunca entram em fichas.
    */
   realMarkets?: MarketType[];
   double_chance_1x?: number;
@@ -46,8 +46,8 @@ export interface MatchTip {
 }
 
 /**
- * Tip calculada para um mercado específico. `odds` é null quando o mercado
- * não tem preço real (nunca se inventa uma odd para preencher).
+ * Tip calculada para um mercado especÃ­fico. `odds` Ã© null quando o mercado
+ * nÃ£o tem preÃ§o real (nunca se inventa uma odd para preencher).
  */
 export interface TipOption {
   market: MarketType;
@@ -63,7 +63,7 @@ export interface MatchResult {
   outcomeOU: 'over25' | 'under25';
   outcomeBtts: 'btts_yes' | 'btts_no';
   tipWon: boolean;
-  /** true quando DNB empatou (push/reembolso — contado como acerto). */
+  /** true quando DNB empatou (push/reembolso â€” contado como acerto). */
   pushed?: boolean;
 }
 
@@ -112,8 +112,8 @@ export interface MatchItem {
   /** Todas as tips calculadas para o jogo (com odds reais ou null). */
   tips?: TipOption[];
   /**
-   * Calibração persistida: probabilidades/tips calculadas para a assinatura
-   * de odds atual. Sobrevive a restart/redeploy (cache em disco/DB) e só é
+   * CalibraÃ§Ã£o persistida: probabilidades/tips calculadas para a assinatura
+   * de odds atual. Sobrevive a restart/redeploy (cache em disco/DB) e sÃ³ Ã©
    * recalculada quando as odds mudam.
    */
   calibration?: {
@@ -125,7 +125,7 @@ export interface MatchItem {
     highRiskTip?: MatchTip;
     oddsHash: string;
     at: number;
-    /** Decisão do JEV persistida (reutilizada se as odds não mudarem). */
+    /** DecisÃ£o do JEV persistida (reutilizada se as odds nÃ£o mudarem). */
     jevPick?: {
       market: MarketType;
       confidence: number;
@@ -135,23 +135,23 @@ export interface MatchItem {
   };
   /**
    * Tip alternativa de odd alta, calculada pelo mesmo motor a partir dos
-   * mercados reais. É usada apenas na ficha Maluca; não substitui a tip
-   * principal e nunca contém odds sintéticas.
+   * mercados reais. Ã‰ usada apenas na ficha Maluca; nÃ£o substitui a tip
+   * principal e nunca contÃ©m odds sintÃ©ticas.
    */
   highRiskTip?: MatchTip;
   context: MatchContext | null;
   /**
    * Scout COMPLETO do AiScore (match/history decodificado): home_form,
    * away_form, h2h, h2h_summary, home_trend, away_trend, market_hints.
-   * É daqui que o motor local tira todas as variáveis — o `context`
-   * acima é só o resumo. Anexado por aiscoreService.enrichMatches.
+   * Ã‰ daqui que o motor local tira todas as variÃ¡veis â€” o `context`
+   * acima Ã© sÃ³ o resumo. Anexado por aiscoreService.enrichMatches.
    */
   scout?: any;
   /** Extras opcionais: { goal_distributions, home_trend_sc, away_trend_sc, h2h_stats }. */
   advanced?: any;
-  /** Classificação (bridge tables): { comp_id, season_id, tables[] }. */
+  /** ClassificaÃ§Ã£o (bridge tables): { comp_id, season_id, tables[] }. */
   tables?: any;
-  /** Escalações (bridge lineups): confirmed, formations, ratings, desfalques. */
+  /** EscalaÃ§Ãµes (bridge lineups): confirmed, formations, ratings, desfalques. */
   lineups?: any;
   jevInference?: {
     calibratedProb: number;
@@ -160,6 +160,8 @@ export interface MatchItem {
     riskTier: SlipTier;
     latencyMs: number;
     jevModelVersion: string;
+    /** Confiança da escolha do JEV (0-100), quando a tip veio do JEV. */
+    jevConfidence?: number;
   };
   status: 'pending' | 'live' | 'resolved';
   result: MatchResult | null;
@@ -171,7 +173,7 @@ export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
 /** Motor que produziu a ficha (principal local, JEV ou montagem manual). */
 export type SlipEngine = 'local' | 'manual' | 'jev';
 
-/** Estado da última tentativa de subir a ficha para a Premier Bet. */
+/** Estado da Ãºltima tentativa de subir a ficha para a Premier Bet. */
 export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
 
 export interface SlipUpload {
@@ -181,7 +183,7 @@ export interface SlipUpload {
   stake: number;
   betId?: string;
   message?: string;
-  /** Timestamp (ms) da última tentativa. */
+  /** Timestamp (ms) da Ãºltima tentativa. */
   at: number;
 }
 
@@ -210,7 +212,7 @@ export interface PremierBetUploadResult {
   screenshot?: string | null;
   durationMs?: number;
   upload?: SlipUpload;
-  /** Quando só parte das pernas foi localizada na Premier Bet. */
+  /** Quando sÃ³ parte das pernas foi localizada na Premier Bet. */
   partial?: boolean;
   expected_legs?: number;
   placed_legs?: Array<{ home?: string; away?: string; market?: string }>;
@@ -237,16 +239,16 @@ export interface BetSlip {
   legs: MatchItem[];
   combinedOdds: number;
   combinedProb: number;
-  expiresAt: number; // timestamp em ms do início do primeiro jogo do bilhete
+  expiresAt: number; // timestamp em ms do inÃ­cio do primeiro jogo do bilhete
   status: 'pendente' | 'ganhou' | 'perdeu' | 'expirado';
   createdAt: number;
   resolvedAt: number | null;
   customTitle?: string;
   rationale?: string;
   isAiGenerated?: boolean;
-  /** Data-calendário de Angola (YYYY-MM-DD) em que a ficha foi criada. */
+  /** Data-calendÃ¡rio de Angola (YYYY-MM-DD) em que a ficha foi criada. */
   dayKey?: string;
-  /** Preenchido pela API: última tentativa de subir para a Premier Bet. */
+  /** Preenchido pela API: Ãºltima tentativa de subir para a Premier Bet. */
   upload?: SlipUpload | null;
 }
 
@@ -310,3 +312,4 @@ export interface JevEngineStatus {
   strictlyEnforced: boolean;
   metrics?: JevMetrics;
 }
+

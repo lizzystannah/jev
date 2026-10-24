@@ -242,7 +242,16 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
                     {leg.jevInference ? (
                       <span className="text-[10.5px] px-1.5 py-0.5 rounded bg-[rgba(79,174,115,0.15)] text-[#4FAE73] font-medium flex items-center gap-1 border border-[#4FAE73]/30">
                         <Cpu className="w-2.5 h-2.5 text-[#E7B33E]" />
-                        <span>Jev: {leg.jevInference.calibratedProb}% prob ({leg.jevInference.expectedValueEdge >= 0 ? `+${leg.jevInference.expectedValueEdge}% EV` : `${leg.jevInference.expectedValueEdge}% EV`})</span>
+                        <span>
+                          Jev: {leg.jevInference.calibratedProb}% prob (
+                          {leg.jevInference.expectedValueEdge >= 0
+                            ? `+${leg.jevInference.expectedValueEdge}% EV`
+                            : `${leg.jevInference.expectedValueEdge}% EV`}
+                          {leg.jevInference.jevConfidence != null
+                            ? ` · confiança ${leg.jevInference.jevConfidence}%`
+                            : ''}
+                          )
+                        </span>
                       </span>
                     ) : (
                       <span className="text-[10.5px] px-1.5 py-0.5 rounded bg-[rgba(231,179,62,0.12)] text-[#E7B33E] font-medium flex items-center gap-1 border border-[#E7B33E]/20">

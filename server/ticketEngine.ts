@@ -1017,6 +1017,17 @@ export class TicketEngine {
       };
       m.tips = ev.tips;
       m.highRiskTip = ev.highRiskTip;
+      // A inferência exibida no cartão tem de ser a do mercado ESCOLHIDO pelo
+      // JEV (antes ficava a do pick local anterior: prob/EV de outro mercado).
+      m.jevInference = {
+        calibratedProb: ev.calibratedProb,
+        expectedValueEdge: ev.expectedValueEdge,
+        recommendedMarket: ev.recommendedMarket,
+        riskTier: ev.riskTier,
+        latencyMs: resp.latencyMs,
+        jevModelVersion: resp.modelVersion,
+        jevConfidence: pick.confidence,
+      };
       m.calibration = {
         tips: ev.tips,
         recommendedMarket: ev.recommendedMarket,

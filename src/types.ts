@@ -1,4 +1,4 @@
-export interface MatchOdds {
+﻿export interface MatchOdds {
   home: number;
   draw: number;
   away: number;
@@ -9,7 +9,7 @@ export interface MatchOdds {
   under35?: number;
   btts_yes: number;
   btts_no: number;
-  /** Mercados com odds reais; os restantes são apenas estimativas. */
+  /** Mercados com odds reais; os restantes sÃ£o apenas estimativas. */
   realMarkets?: MarketType[];
   double_chance_1x?: number;
   double_chance_x2?: number;
@@ -38,7 +38,7 @@ export type MarketType =
 export interface MatchTip {
   market: string;
   label: string;
-  /** `null` quando o mercado não tem odd real disponível. */
+  /** `null` quando o mercado nÃ£o tem odd real disponÃ­vel. */
   odds: number | null;
   prob: number;
 }
@@ -48,7 +48,7 @@ export interface TipMarket {
   label: string;
 }
 
-/** Seleção guardada no carrinho para montar uma ficha manual. */
+/** SeleÃ§Ã£o guardada no carrinho para montar uma ficha manual. */
 export interface CartLeg {
   matchId: string;
   market: string;
@@ -123,6 +123,8 @@ export interface MatchItem {
     riskTier: SlipTier;
     latencyMs: number;
     jevModelVersion: string;
+    /** Confiança da escolha do JEV (0-100), quando a tip veio do JEV. */
+    jevConfidence?: number;
   };
   status: 'pending' | 'live' | 'resolved';
   result: MatchResult | null;
@@ -131,7 +133,7 @@ export interface MatchItem {
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo' | 'historico';
 export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
-/** Motor que criou a ficha. `local` é o motor principal. */
+/** Motor que criou a ficha. `local` Ã© o motor principal. */
 export type BetEngine = 'local' | 'manual' | 'jev';
 
 /** Estado do motor JEV exposto por `GET /api/jev/status`. */
@@ -142,7 +144,7 @@ export interface JevStatus {
   endpoint: string;
 }
 
-/** Estado da última tentativa de subir a ficha para a Premier Bet. */
+/** Estado da Ãºltima tentativa de subir a ficha para a Premier Bet. */
 export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
 
 export interface SlipUpload {
@@ -152,7 +154,7 @@ export interface SlipUpload {
   stake: number;
   betId?: string;
   message?: string;
-  /** Timestamp (ms) da última tentativa. */
+  /** Timestamp (ms) da Ãºltima tentativa. */
   at: number;
 }
 
@@ -191,18 +193,18 @@ export interface BetSlip {
   legs: MatchItem[];
   combinedOdds: number;
   combinedProb: number;
-  expiresAt: number; // timestamp do 1º jogo a iniciar
+  expiresAt: number; // timestamp do 1Âº jogo a iniciar
   status: 'pendente' | 'ganhou' | 'perdeu' | 'expirado';
   createdAt: number;
   resolvedAt: number | null;
   customTitle?: string;
   rationale?: string;
   isAiGenerated?: boolean;
-  /** Data-calendário de Angola (YYYY-MM-DD) em que a ficha foi criada. */
+  /** Data-calendÃ¡rio de Angola (YYYY-MM-DD) em que a ficha foi criada. */
   dayKey?: string;
-  /** Motor que criou a ficha (`local` quando o backend não envia o campo). */
+  /** Motor que criou a ficha (`local` quando o backend nÃ£o envia o campo). */
   engine?: BetEngine;
-  /** Preenchido pela API: última tentativa de subir para a Premier Bet. */
+  /** Preenchido pela API: Ãºltima tentativa de subir para a Premier Bet. */
   upload?: SlipUpload | null;
 }
 
@@ -294,3 +296,4 @@ export interface AiMatchAnalysis {
   riskLevel: 'Baixo' | 'Moderado' | 'Alto';
   impliedProbValue: string;
 }
+
