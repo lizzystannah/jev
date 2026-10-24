@@ -1,4 +1,4 @@
-"""Motor probabilistico local — substitui o Jev (OpenRouter/TypeSafe).
+﻿"""Motor probabilistico local â€” substitui o Jev (OpenRouter/TypeSafe).
 
 Usa TODAS as variaveis retornadas pelo AiScore (match/history):
   - Por jogo (home/away/h2h lists): id, date/matchTime, home_id/home, away_id/away,
@@ -15,7 +15,7 @@ Usa TODAS as variaveis retornadas pelo AiScore (match/history):
   - H2H: n_finished, over15/25/35, btts, clean_sheets_focal, focal_wdl,
     unbeaten_run_longest + span, lista focal completa
   - Meta: competition, kickoff, statusId (+ standings opcional: position/points)
-   - Odds de mercado: apenas para REPORTAR EV e piso de odd (1.10) — nunca
+   - Odds de mercado: apenas para REPORTAR EV e piso de odd (1.10) â€” nunca
      criterio de escolha nem unica fonte de probabilidade.
 
 Saida por partida: probs por mercado (0..1), xG, tip escolhida pela FAIXA de
@@ -113,7 +113,7 @@ def _poisson_markets(lam_h: float, lam_a: float) -> dict:
 
 def _derive_from_matches(matches: list, venue_side: str) -> dict:
     """Deriva taxas da lista de jogos (scout_one nao traz over25/btts/
-    clean-sheets/GF-GA-de-mando agregados — aqui nada é inventado, é a
+    clean-sheets/GF-GA-de-mando agregados â€” aqui nada Ã© inventado, Ã© a
     mesma fonte: os ~10 jogos finalizados com ft/ht/gf/ga/side)."""
     fin = [r for r in (matches or []) if r and r.get("finished")
            and r.get("ft_home") is not None and r.get("ft_away") is not None]
@@ -143,7 +143,7 @@ def _team_block(form: dict, trend: dict | None, side_venue: str,
                 adv_last10: dict | None = None) -> dict:
     """Condensa form(last10)+trend+venue de UM lado.
 
-    Precedência: advanced team_stats last10 (mais rico) > agregados do form >
+    PrecedÃªncia: advanced team_stats last10 (mais rico) > agregados do form >
     derivado da lista de jogos. `side_venue`: 'home' p/ mandante em casa,
     'away' p/ visitante fora (vantagem de mando real).
     """
@@ -302,7 +302,7 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
     lineups: bridge {"available", "confirmed", home/away:
       {avg_rating, captain_in_xi, starters, unavailable[]}}.
     context: {"restDaysHome", "restDaysAway", "importance"}.
-    Parâmetros também aceites dentro de `advanced` (mesmas chaves).
+    ParÃ¢metros tambÃ©m aceites dentro de `advanced` (mesmas chaves).
     """
     hf = scout.get("home_form") or {}
     af = scout.get("away_form") or {}
@@ -362,7 +362,7 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
     xg_h *= (1 + shot_edge)
     xg_a *= (1 - shot_edge)
 
-    # mando de campo base +3% (ja parcialmente no venue; mantem resíduo pequeno)
+    # mando de campo base +3% (ja parcialmente no venue; mantem resÃ­duo pequeno)
     xg_h *= 1.03
 
     notes = []
@@ -428,8 +428,8 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
         uh, ua = len(lh["unavailable"]), len(la["unavailable"])
 
         def _pos_hit(unav_list):
-            """Peso por posição: F/M desfalcado tira golos próprios;
-            D/G desfalcado dá golos ao adversário."""
+            """Peso por posiÃ§Ã£o: F/M desfalcado tira golos prÃ³prios;
+            D/G desfalcado dÃ¡ golos ao adversÃ¡rio."""
             own, opp = 0.0, 0.0
             for u in unav_list or []:
                 pos = (u.get("position") or "").upper()
@@ -464,7 +464,7 @@ def estimate_xg(scout: dict, advanced: dict | None = None,
         if lin_note:
             notes.append("lineups " + lin_note)
 
-    # descanso: diferença de dias desde o último jogo (+-4% max)
+    # descanso: diferenÃ§a de dias desde o Ãºltimo jogo (+-4% max)
     if isinstance(context, dict):
         rh, ra = context.get("restDaysHome"), context.get("restDaysAway")
         if isinstance(rh, (int, float)) and isinstance(ra, (int, float)):
@@ -569,8 +569,8 @@ def market_probabilities(scout: dict, advanced: dict | None = None,
            "under25": 1 - p_o25, "under35": 1 - p_o35,
            "btts_yes": p_btts, "btts_no": 1 - p_btts}
     # DNB aprox: vitoria / (vitoria + empate)
-    out["dnb_home"] = _clamp(p_h / max(0.05, p_h + p_d), 0.05, 0.97)
-    out["dnb_away"] = _clamp(p_a / max(0.05, p_a + p_d), 0.05, 0.97)
+    out["dnb_home"] = _clamp(p_h / max(0.05, p_h + p_a), 0.05, 0.97)
+    out["dnb_away"] = _clamp(p_a / max(0.05, p_h + p_a), 0.05, 0.97)
 
     # jogo travado (cards/corners under altos + 1H pobre) reforca unders
     if under_game > 0.85:
@@ -607,8 +607,8 @@ MARKET_LABELS_PT = {
 
 
 def _sanitize_odd(v) -> float | None:
-    """Odd real ou None — sem fallback sintético: mercado sem preço real
-    não é candidato à tip."""
+    """Odd real ou None â€” sem fallback sintÃ©tico: mercado sem preÃ§o real
+    nÃ£o Ã© candidato Ã  tip."""
     try:
         f = float(v)
         if math.isfinite(f) and f > 1.01:
@@ -641,7 +641,7 @@ def evaluate_match(scout: dict, odds: dict | None = None,
     if isinstance(lin, dict) and lin.get("available") and lin.get("confirmed") != 1:
         confidence = _clamp(confidence - 0.05, 0.10, 0.95)
 
-    # Selecao da tip por FAIXA de probabilidade — todas as variaveis existem
+    # Selecao da tip por FAIXA de probabilidade â€” todas as variaveis existem
     # para produzir p; dentre mercados com preco real, escolhe o de MAIOR p
     # dentro da faixa [0.55, 0.75] ("probabilidade media": nem quase-certo
     # ~1.05, nem outao). Sem candidato na faixa, vence o de maior p.
@@ -650,7 +650,7 @@ def evaluate_match(scout: dict, odds: dict | None = None,
     cands = [(p, m, full_odds[m]) for m, p in probs.items()
              if full_odds[m] is not None and p > 0.01]
     if forced_market and forced_market in probs:
-        # Mercado forçado pelo utilizador (seletor de tip / ficha manual).
+        # Mercado forÃ§ado pelo utilizador (seletor de tip / ficha manual).
         best_m = forced_market
         best_p = probs[forced_market]
         best_odd = full_odds.get(forced_market)
@@ -750,3 +750,4 @@ if __name__ == "__main__":
                 pass
     ev = evaluate_match(scout, odds=None, advanced=adv)
     print(json.dumps(ev, ensure_ascii=False, indent=2))
+

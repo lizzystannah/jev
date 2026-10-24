@@ -1,15 +1,15 @@
-/**
+﻿/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Motor probabilístico LOCAL — substitui o Jev (OpenRouter/TypeSafe).
+ * Motor probabilÃ­stico LOCAL â€” substitui o Jev (OpenRouter/TypeSafe).
  *
- * Usa TODAS as variáveis retornadas pelo AiScore via match/history
+ * Usa TODAS as variÃ¡veis retornadas pelo AiScore via match/history
  * (entregues em `scout` + `advanced` no MatchItem):
  *
  *  Por jogo (home/away/h2h lists): id, date/matchTime, home_id/home,
  *    away_id/away, ft_home/ft_away (homeScores/awayScores packed sint32
- *    zigzag [FT,1H,2H,ET1,ET2,Pens] — FT = índice 0, nunca somar períodos),
+ *    zigzag [FT,1H,2H,ET1,ET2,Pens] â€” FT = Ã­ndice 0, nunca somar perÃ­odos),
  *    ht_home/ht_away, periods_home/away, statusId/matchStatus/finished,
  *    result W/D/L, gf/ga, side home/away, comp, roundNum
  *  Agregados last10/all: W/D/L, GF/GA, avg_gf/ga/total, over15/25/35,
@@ -25,24 +25,24 @@
  *  H2H: n_finished, over15/25/35, btts, clean_sheets_focal, focal_wdl,
  *    unbeaten_run_longest + span, lista focal completa
  *  Meta: competition, kickoff, statusId (+ standings opcional)
- *  Odds de mercado: apenas para REPORTAR EV e para o piso de odd 1.10 —
- *    nunca como critério de escolha nem única fonte de probabilidade.
+ *  Odds de mercado: apenas para REPORTAR EV e para o piso de odd 1.10 â€”
+ *    nunca como critÃ©rio de escolha nem Ãºnica fonte de probabilidade.
  *
- * Seleção da tip: por FAIXA de probabilidade — dentre os mercados com preço
- * real (≥ 1.10), escolhe o de MAIOR p dentro da faixa [0.55, 0.75]
- * ("probabilidade média": nem quase-certo de 1.05, nem outrão). A escolha da
- * ficha (segura/moderada/ousada) NÃO acontece aqui: cada jogo sai com a sua
- * melhor tip de probabilidade média e as fichas acumulam jogos até atingir o
- * alvo de pontuação TOTAL (ver ticketEngine TICKET_TARGETS).
+ * SeleÃ§Ã£o da tip: por FAIXA de probabilidade â€” dentre os mercados com preÃ§o
+ * real (â‰¥ 1.10), escolhe o de MAIOR p dentro da faixa [0.55, 0.75]
+ * ("probabilidade mÃ©dia": nem quase-certo de 1.05, nem outrÃ£o). A escolha da
+ * ficha (segura/moderada/ousada) NÃƒO acontece aqui: cada jogo sai com a sua
+ * melhor tip de probabilidade mÃ©dia e as fichas acumulam jogos atÃ© atingir o
+ * alvo de pontuaÃ§Ã£o TOTAL (ver ticketEngine TICKET_TARGETS).
  *
- * Determinístico, síncrono, sem rede, sem chave, sem LLM.
+ * DeterminÃ­stico, sÃ­ncrono, sem rede, sem chave, sem LLM.
  * Espelha motor_aiscore.py do workspace Scraping (port fiel).
  */
 
 import type { MarketType, MatchOdds, MatchTip, SlipScope, SlipTier, TipOption } from './types.js';
 import { deriveCompleteOdds, MARKET_LABELS } from './marketService.js';
 
-export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v2';
+export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v3';
 
 export interface LocalDecisionInput {
   scope: SlipScope;
@@ -74,7 +74,7 @@ export interface LocalEvaluatedMatch {
   riskTier: SlipTier;
   /** Tip alternativa de odd alta para a ficha Maluca (mercado real). */
   highRiskTip?: MatchTip;
-  /** Todas as tips calculadas para o jogo (todas as variáveis → p por mercado). */
+  /** Todas as tips calculadas para o jogo (todas as variÃ¡veis â†’ p por mercado). */
   tips: TipOption[];
   confidence: number;
   localScore: number;
@@ -166,7 +166,7 @@ interface TeamBlock {
 }
 
 function deriveFromMatches(matches: any, venueSide: 'home' | 'away') {
-  // O scout_one não traz over25/btts/clean-sheets/GF-GA-de-mando agregados —
+  // O scout_one nÃ£o traz over25/btts/clean-sheets/GF-GA-de-mando agregados â€”
   // deriva-se da mesma fonte: os ~10 jogos finalizados (ft/ht/gf/ga/side).
   const fin: any[] = Array.isArray(matches) ? matches.filter(
     (r) => r && r.finished && r.ft_home != null && r.ft_away != null) : [];
@@ -201,7 +201,7 @@ function aggRate(A: any, F: any, key: string): number | null {
 }
 
 function teamBlock(form: any, trend: any, venueSide: 'home' | 'away', advLast10?: any): TeamBlock {
-  // Precedência: advanced team_stats last10 (mais rico) > agregados do form >
+  // PrecedÃªncia: advanced team_stats last10 (mais rico) > agregados do form >
   // derivado da lista de jogos. venueSide: 'home' p/ mandante, 'away' p/ visitante.
   const F = form || {};
   const t = trend || {};
@@ -280,7 +280,7 @@ function lateBoost(advanced: any, homeId: string | null, awayId: string | null):
   return clamp((late / tot - 0.3) * 0.25, -0.03, 0.05);
 }
 
-// ----------------------------------------------------------------- núcleo ---
+// ----------------------------------------------------------------- nÃºcleo ---
 
 export interface EngineExtra {
   tables?: any;
@@ -311,7 +311,7 @@ function lineupSide(lineups: any, side: 'home' | 'away'): {
   };
 }
 
-/** Peso por posição: F/M tira golos próprios; D/G dá golos ao adversário. */
+/** Peso por posiÃ§Ã£o: F/M tira golos prÃ³prios; D/G dÃ¡ golos ao adversÃ¡rio. */
 function posHit(positions: string[]): [number, number] {
   let own = 0, opp = 0;
   for (const p of positions) {
@@ -369,9 +369,9 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
   const shotEdge = clamp(((H.shots || 0) - (A.shots || 0)) / 10, -0.08, 0.08);
   xgH *= 1 + shotEdge;
   xgA *= 1 - shotEdge;
-  xgH *= 1.03; // resíduo de mando
+  xgH *= 1.03; // resÃ­duo de mando
 
-  // vitórias em casa/fora: aproveitamento no mando vs geral (+-5% max)
+  // vitÃ³rias em casa/fora: aproveitamento no mando vs geral (+-5% max)
   const venueEdge = (b: TeamBlock): number => {
     if (!b.venueN || b.venueN < 2) return 0;
     const vwr = b.venueW / Math.max(1, b.venueN);
@@ -381,7 +381,7 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
   xgH *= 1 + venueEdge(H);
   xgA *= 1 + venueEdge(A);
 
-  // classificação: PPG + saldo-de-golos por jogo (vale p/ grupos e ligas)
+  // classificaÃ§Ã£o: PPG + saldo-de-golos por jogo (vale p/ grupos e ligas)
   const trows = tableRows(ex.tables);
   if (trows.length) {
     const byId: Record<string, any> = {};
@@ -401,7 +401,7 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
     }
   }
 
-  // escalações: nota dos titulares, capitão e desfalques
+  // escalaÃ§Ãµes: nota dos titulares, capitÃ£o e desfalques
   const lin = ex.lineups;
   if (lin && typeof lin === 'object' && lin.available) {
     const lh = lineupSide(lin, 'home');
@@ -419,7 +419,7 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
     if (ownA || oppH) xgA *= (1 - ownA) * (1 + oppH);
   }
 
-  // descanso: diferença de dias desde o último jogo (+-4% max)
+  // descanso: diferenÃ§a de dias desde o Ãºltimo jogo (+-4% max)
   const ctx = ex.context || {};
   if (typeof ctx.restDaysHome === 'number' && typeof ctx.restDaysAway === 'number') {
     const adj = clamp((ctx.restDaysHome - ctx.restDaysAway) * 0.008, -0.04, 0.04);
@@ -427,7 +427,7 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
     xgA *= 1 - adj;
   }
 
-  // ritmo de 1a parte: média de golos HT dos dois lados
+  // ritmo de 1a parte: mÃ©dia de golos HT dos dois lados
   let htAdj = 0;
   if (H.avg1h != null && A.avg1h != null) {
     htAdj = clamp((H.avg1h + A.avg1h - 1.1) * 0.05, -0.03, 0.03);
@@ -467,7 +467,7 @@ export function localProbabilities(scout: any, advanced: any, extra?: EngineExtr
   let h2hEdge = 0;
   const totH2 = H2.W + H2.D + H2.L;
   if (totH2 >= 2) h2hEdge = clamp(((H2.W + 0.5 * H2.D) / totH2 - 0.5) * 0.5, -0.1, 0.1);
-  // sequência invicta no confronto direto reforça o mandante focal
+  // sequÃªncia invicta no confronto direto reforÃ§a o mandante focal
   if (H2.unbeatenLongest >= 3 && totH2 >= 2) {
     h2hEdge = clamp(h2hEdge + Math.min(0.05, 0.015 * (H2.unbeatenLongest - 2)), -0.1, 0.1);
   }
@@ -482,12 +482,12 @@ export function localProbabilities(scout: any, advanced: any, extra?: EngineExtr
   let pU25 = 1 - pO25;
   let pU35 = 1 - pO35;
   if (underGame > 0.85) {
-    // jogo travado (cards/corners under altos): reforça unders
+    // jogo travado (cards/corners under altos): reforÃ§a unders
     pU35 = clamp(pU35 + 0.02, 0, 0.98);
     pU25 = clamp(pU25 + 0.015, 0, 0.97);
   }
 
-  // importância: clássico/decisão tende a jogo fechado
+  // importÃ¢ncia: clÃ¡ssico/decisÃ£o tende a jogo fechado
   const imp = ctx.importance;
   if (imp === 'derby' || imp === 'decisiva') {
     pO25 = clamp(pO25 - 0.02, 0.02, 0.97);
@@ -502,15 +502,16 @@ export function localProbabilities(scout: any, advanced: any, extra?: EngineExtr
     over15: pO15, over25: pO25, over35: pO35,
     under25: pU25, under35: pU35,
     btts_yes: pBtts, btts_no: 1 - pBtts,
-    dnb_home: clamp(pH / Math.max(0.05, pH + pD), 0.05, 0.97),
-    dnb_away: clamp(pA / Math.max(0.05, pA + pD), 0.05, 0.97),
+    // DNB: empate devolve a stake -> probabilidade condicionada a NAO empate.
+    dnb_home: clamp(pH / Math.max(0.05, pH + pA), 0.05, 0.97),
+    dnb_away: clamp(pA / Math.max(0.05, pH + pA), 0.05, 0.97),
   };
   return probs as Record<MarketType, number>;
 }
 
 function essentialsFromContext(ctx: any): any {
-  // Fallback quando o scout completo ainda não foi anexado: reconstrói um
-  // scout mínimo a partir do MatchContext reduzido (recentForm/gols/H2H).
+  // Fallback quando o scout completo ainda nÃ£o foi anexado: reconstrÃ³i um
+  // scout mÃ­nimo a partir do MatchContext reduzido (recentForm/gols/H2H).
   if (!ctx || typeof ctx !== 'object') return null;
   const mk = (tf: any, n = 5) => {
     const rf: string[] = Array.isArray(tf?.recentForm) ? tf.recentForm : [];
@@ -560,7 +561,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const probs = scout ? localProbabilities(scout, advanced, extra) : null;
 
   // Sem scout nem contexto: cai para a leitura de mercado (nunca ideal,
-  // mas mantém o pipeline a gerar em vez de falhar).
+  // mas mantÃ©m o pipeline a gerar em vez de falhar).
   const fallbackProbs = (() => {
     const pH = (1 / compOdds.home) * 100;
     const pD = (1 / compOdds.draw) * 100;
@@ -580,19 +581,19 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
 
   const realMarkets = match.odds.realMarkets;
   const allMarkets = Object.keys(P) as MarketType[];
-  // Sem realMarkets (dados antigos) só 1X2 tem preço; o resto é null em tips.
+  // Sem realMarkets (dados antigos) sÃ³ 1X2 tem preÃ§o; o resto Ã© null em tips.
 
-  // Seleção da tip por FAIXA de probabilidade — Todas as variáveis (forma, H2H,
-  // mando, posição, escalação) existem para produzir p; a escolha pega o mercado
-  // de MAIOR p dentre os que caibam na faixa [0.55, 0.75] ("probabilidade média"
-  // — nem quase-certo ~1.05, nem outrão). Sem candidato na faixa, vence o de
+  // SeleÃ§Ã£o da tip por FAIXA de probabilidade â€” Todas as variÃ¡veis (forma, H2H,
+  // mando, posiÃ§Ã£o, escalaÃ§Ã£o) existem para produzir p; a escolha pega o mercado
+  // de MAIOR p dentre os que caibam na faixa [0.55, 0.75] ("probabilidade mÃ©dia"
+  // â€” nem quase-certo ~1.05, nem outrÃ£o). Sem candidato na faixa, vence o de
   // maior p. Piso de odd 1.10: nunca recomendar tip abaixo disso.
   const BAND_LO = 0.55;
   const BAND_HI = 0.75;
   const ODD_FLOOR = 1.10;
   const forced = (match as any).forcedMarket as MarketType | undefined;
 
-  // Odd real do mercado; 0 = sem preço real (nunca fallback sintético).
+  // Odd real do mercado; 0 = sem preÃ§o real (nunca fallback sintÃ©tico).
   const realOddOf = (m: MarketType): number => {
     if (realMarkets && !realMarkets.includes(m)) return 0;
     if (!realMarkets && m !== 'home' && m !== 'draw' && m !== 'away') return 0;
@@ -600,7 +601,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   };
 
   // TODAS as tips do jogo (probabilidade por mercado). `odds` fica null quando
-  // não há preço real — a UI mostra a probabilidade e desativa a seleção.
+  // nÃ£o hÃ¡ preÃ§o real â€” a UI mostra a probabilidade e desativa a seleÃ§Ã£o.
   const allTips: TipOption[] = allMarkets
     .map((m) => {
       const labelFn = MARKET_LABELS[m];
@@ -620,7 +621,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
 
   let b: { m: MarketType; p: number; odd: number };
   if (forced && P[forced] !== undefined) {
-    // Mercado forçado pelo utilizador (seletor de tip / ficha manual).
+    // Mercado forÃ§ado pelo utilizador (seletor de tip / ficha manual).
     b = { m: forced, p: P[forced], odd: realOddOf(forced) };
   } else {
     const valid = cands.filter((x) => x.odd >= ODD_FLOOR);
@@ -630,12 +631,12 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     b = inBand[0] ?? byProb[0] ?? { m: 'home' as MarketType, p: 0, odd: 0 };
   }
 
-  // EV continua a ser REPORTADO, mas não seleciona: é só p × odd − 1 do mercado
-  // escolhido, informação de precificação, nunca critério de escolha.
+  // EV continua a ser REPORTADO, mas nÃ£o seleciona: Ã© sÃ³ p Ã— odd âˆ’ 1 do mercado
+  // escolhido, informaÃ§Ã£o de precificaÃ§Ã£o, nunca critÃ©rio de escolha.
   const edge = b.odd > 1.01 ? b.p * b.odd - 1 : 0;
 
   // Tip alternativa de odd alta para a Maluca. Usa o mesmo modelo e apenas
-  // mercados com preço real; não é uma odd inventada, é outro mercado do jogo.
+  // mercados com preÃ§o real; nÃ£o Ã© uma odd inventada, Ã© outro mercado do jogo.
   const highRiskPool = allMarkets
     .map((m) => ({
       m,
@@ -682,13 +683,13 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     highRiskTip,
     tips: allTips,
     confidence: Math.round(confidence * 1000) / 1000,
-    // Pontuação do jogo = probabilidade calibrada. Puramente o modelo;
-    // nada de EV aqui — a odd entra só na fase de precificar/apostar.
+    // PontuaÃ§Ã£o do jogo = probabilidade calibrada. Puramente o modelo;
+    // nada de EV aqui â€” a odd entra sÃ³ na fase de precificar/apostar.
     localScore: calib,
   };
 }
 
-// ---------------------------------------------------------------- métricas ---
+// ---------------------------------------------------------------- mÃ©tricas ---
 
 interface AccStats {
   total: number; probSum: number; edgeSum: number;
@@ -724,9 +725,9 @@ export function getLocalCumulativeMetrics() {
 }
 
 /**
- * Substituto direto de callJevInferenceEngine — mesma forma de resposta,
- * sem OpenRouter, sem chave, sem rede. Síncrono por dentro, async por fora
- * para não mexer na assinatura do ticketEngine.
+ * Substituto direto de callJevInferenceEngine â€” mesma forma de resposta,
+ * sem OpenRouter, sem chave, sem rede. SÃ­ncrono por dentro, async por fora
+ * para nÃ£o mexer na assinatura do ticketEngine.
  */
 export async function callLocalInferenceEngine(
   input: LocalDecisionInput
@@ -746,3 +747,4 @@ export async function callLocalInferenceEngine(
   return { modelVersion: AISCORE_ENGINE_VERSION, latencyMs,
     scope: input.scope, provider: 'local', evaluations };
 }
+

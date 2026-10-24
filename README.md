@@ -290,3 +290,9 @@ docker compose restart           # restart: as fichas mantÃƒÂªm-se
 - A cada `RESULTS_SWEEP_MINUTES` (default 15) corre uma varredura em massa: UMA chamada `matches?date=` traz `statusId` + placares de todos os jogos do dia. So se aplicam jogos terminados (`statusId 8` / `matchStatus 3`) com placar valido.
 - Inclui o dia anterior (jogos que terminam depois da meia-noite).
 - Antes de criar as fichas do dia (00:00), a varredura corre primeiro e as fichas sao validadas.
+
+### Montagem atualizada das fichas
+
+- Segura/Moderada/Ousada usam apenas tips com odd entre `TICKETS_MIN_LEG_ODD` (1.25) e `TICKETS_MAX_LEG_ODD` (2.20). A pontuacao total (3x/15x/100x) e alcancada **acumulando mais jogos**, nunca com uma perna de odd alta.
+- Maluca e a unica que usa tips de odd alta (`highRiskTip`), sempre mercado real e com probabilidade minima (alguma base).
+- No JEV, as fichas nao-Maluca so escolhem entre tips dentro dessa faixa; a Maluca mantem a tip alternativa de odd alta.
