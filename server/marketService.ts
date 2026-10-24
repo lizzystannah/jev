@@ -172,6 +172,41 @@ export const MARKET_LABELS: Record<MarketType, (ctx: { home: string; away: strin
   dnb_away: ({ away }) => `Empate Anula: ${away}`,
 };
 
+/**
+ * Resultado de um mercado para um placar final. Usado tanto no match como
+ * por perna de ficha (cada perna pode ter um tip diferente do match).
+ * DNB com empate = push (conta como acerto para não derrubar o bilhete).
+ */
+export function marketOutcomeFor(
+  market: MarketType,
+  homeScore: number,
+  awayScore: number
+): { won: boolean; pushed: boolean } {
+  const isHomeWin = homeScore > awayScore;
+  const isAwayWin = awayScore > homeScore;
+  const isDraw = homeScore === awayScore;
+  const total = homeScore + awayScore;
+  const actual: Record<MarketType, boolean> = {
+    home: isHomeWin,
+    draw: isDraw,
+    away: isAwayWin,
+    double_chance_1x: isHomeWin || isDraw,
+    double_chance_x2: isAwayWin || isDraw,
+    double_chance_12: isHomeWin || isAwayWin,
+    over15: total >= 2,
+    over25: total >= 3,
+    over35: total >= 4,
+    under25: total <= 2,
+    under35: total <= 3,
+    btts_yes: homeScore > 0 && awayScore > 0,
+    btts_no: homeScore === 0 || awayScore === 0,
+    dnb_home: isHomeWin,
+    dnb_away: isAwayWin,
+  };
+  const pushed = isDraw && (market === 'dnb_home' || market === 'dnb_away');
+  return { won: pushed ? true : !!actual[market], pushed };
+}
+
 export function deriveCompleteOdds(odds: MatchOdds): Record<MarketType, number> {
   const pHome = (1 / odds.home) * 100;
   const pDraw = (1 / odds.draw) * 100;
@@ -1205,32 +1240,15 @@ export class MarketService {
     const outcomeOU = totalGoals >= 3 ? 'over25' : 'under25';
     const outcomeBtts = homeScore > 0 && awayScore > 0 ? 'btts_yes' : 'btts_no';
 
-    const actual: Record<MarketType, boolean> = {
-      home: isHomeWin,
-      draw: isDraw,
-      away: isAwayWin,
-      double_chance_1x: isHomeWin || isDraw,
-      double_chance_x2: isAwayWin || isDraw,
-      double_chance_12: isHomeWin || isAwayWin,
-      over15: totalGoals >= 2,
-      over25: totalGoals >= 3,
-      over35: totalGoals >= 4,
-      under25: totalGoals <= 2,
-      under35: totalGoals <= 3,
-      btts_yes: homeScore > 0 && awayScore > 0,
-      btts_no: homeScore === 0 || awayScore === 0,
-      dnb_home: isHomeWin,
-      dnb_away: isAwayWin,
-    };
-
     // Empate no DNB = push (reembolso). Sem modelo de void no BetSlip, a perna
     // conta como acerto para não derrubar injustamente o bilhete inteiro.
-    let tipWon = !!actual[match.tip.market];
-    let pushed = false;
-    if (isDraw && (match.tip.market === 'dnb_home' || match.tip.market === 'dnb_away')) {
-      tipWon = true;
-      pushed = true;
-    }
+    const tipOutcome = marketOutcomeFor(
+      match.tip.market,
+      homeScore,
+      awayScore
+    );
+    const tipWon = tipOutcome.won;
+    const pushed = tipOutcome.pushed;
 
     match.status = 'resolved';
     match.result = {

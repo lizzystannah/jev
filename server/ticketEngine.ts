@@ -10,6 +10,7 @@ import {
   isObscureLeague,
   isMainLeague,
   oddsSignature,
+  marketOutcomeFor,
 } from './marketService.js';
 import {
   callLocalInferenceEngine,
@@ -303,6 +304,9 @@ export class TicketEngine {
     // Fichas existentes sobrevivem a restart/redeploy desde que a base de
     // dados esteja num volume (ver docker-compose.yml / MySQL).
     this.slips = await bilheteriaDb.loadSlips();
+    // Corrige resultados antigos calculados com o tip do match em vez do tip
+    // da perna (fichas resolveram "Acertou" com mercados diferentes).
+    this.repairLegResults();
 
     // Continua a numeração a partir da última ficha persistida (evita IDs repetidos).
     let maxSeq = 100;
@@ -1095,6 +1099,21 @@ export class TicketEngine {
         }
 
         const leg = slip.legs[i];
+        // O resultado da PERNA é do mercado da própria perna (pode ser
+        // diferente do tip do match, ex.: Maluca/JEV). Sem isto, uma perna
+        // "Vitória casa" podia ser marcada como acertada por o match ter
+        // ganho noutro mercado.
+        if (leg.result && leg.result.homeScore != null && leg.result.awayScore != null) {
+          const outcome = marketOutcomeFor(
+            leg.tip.market,
+            leg.result.homeScore,
+            leg.result.awayScore
+          );
+          if (leg.result.tipWon !== outcome.won || leg.result.pushed !== outcome.pushed) {
+            leg.result = { ...leg.result, tipWon: outcome.won, pushed: outcome.pushed };
+            dirty = true;
+          }
+        }
         if (leg.status !== 'resolved') {
           allResolved = false;
         } else if (leg.result && !leg.result.tipWon) {
@@ -1132,6 +1151,56 @@ export class TicketEngine {
     }
 
     return { updatedSlips: updated };
+  }
+
+  /**
+   * Recalcula tipWon/pushed de cada perna a partir do PLACAR e do mercado da
+   * PRÓPRIA perna (não do tip do match). Corrige fichas antigas que foram
+   * resolvidas com o mercado do match e voltaram a "Acertou".
+   */
+  private repairLegResults(): void {
+    const now = Date.now();
+    let fixed = 0;
+    for (const slip of this.slips) {
+      let changed = false;
+      let anyLost = false;
+      let allResolved = true;
+
+      for (const leg of slip.legs) {
+        const res = leg.result;
+        if (res && res.homeScore != null && res.awayScore != null) {
+          const outcome = marketOutcomeFor(leg.tip.market, res.homeScore, res.awayScore);
+          if (res.tipWon !== outcome.won || (res.pushed ?? false) !== outcome.pushed) {
+            leg.result = { ...res, tipWon: outcome.won, pushed: outcome.pushed };
+            changed = true;
+          }
+        }
+        if (leg.status !== 'resolved') allResolved = false;
+        else if (leg.result && !leg.result.tipWon) anyLost = true;
+      }
+
+      if (anyLost) {
+        if (slip.status !== 'perdeu') {
+          slip.status = 'perdeu';
+          slip.resolvedAt = slip.resolvedAt ?? now;
+          changed = true;
+        }
+      } else if (allResolved && slip.status !== 'expirado' && slip.status !== 'ganhou') {
+        slip.status = 'ganhou';
+        slip.resolvedAt = slip.resolvedAt ?? now;
+        changed = true;
+      }
+
+      if (changed) {
+        bilheteriaDb.upsertSlip(slip);
+        fixed += 1;
+      }
+    }
+    if (fixed > 0) {
+      console.log(
+        `[Bilheteria] ${fixed} ficha(s) corrigida(s): resultado recalculado por perna.`
+      );
+    }
   }
 
   public addCustomSlip(slip: BetSlip): BetSlip {
