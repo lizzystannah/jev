@@ -670,6 +670,10 @@ export class TicketEngine {
         : selectionPoolBase;
 
     if (selectionPool.length === 0) {
+      console.warn(
+        `[Fichas] ${scope}: ${filtered.length} jogo(s) na janela; nenhuma tip elegivel ` +
+          `(odds ${MIN_LEG_ODD}-${MAX_LEG_ODD}).`
+      );
       return { generated: [], all: this.slips, jevLatencyMs: localResponse.latencyMs };
     }
 
@@ -806,6 +810,12 @@ export class TicketEngine {
       claim(maluca.legs);
     }
 
+    if (candidateSlips.length === 0) {
+      console.warn(
+        `[Fichas] ${scope}: nenhum tier atingiu o alvo com ${selectionPool.length} tip(s) elegivel(is).`
+      );
+    }
+
     // REGRA DE NEGÃ“CIO: reter bilhetes COERENTES (probabilidades prÃ³ximas,
     // ligas diversificadas), nÃ£o apenas os de maior pontuaÃ§Ã£o/odd.
     const existingPending = this.slips.filter(
@@ -886,6 +896,11 @@ export class TicketEngine {
     bilheteriaDb.upsertMany(topSlips);
     // CalibraÃ§Ã£o/enriquecimento ficam no cache de jogos (sobrevive a redeploy).
     if (evaluatedMatches.length > 0) marketService.saveCacheSoon();
+    if (topSlips.length > 0) {
+      console.log(
+        `[Fichas] ${scope}: ${topSlips.length} ficha(s) gerada(s) de ${selectionPool.length} tip(s) (${filtered.length} jogo(s) na janela).`
+      );
+    }
 
     return {
       generated: topSlips,
@@ -1248,6 +1263,8 @@ export class TicketEngine {
 }
 
 export const ticketEngine = new TicketEngine();
+
+
 
 
 

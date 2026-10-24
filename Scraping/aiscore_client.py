@@ -1,4 +1,4 @@
-"""AiScore API client — protobuf schema-driven, curl_cffi (Cloudflare bypass).
+﻿"""AiScore API client â€” protobuf schema-driven, curl_cffi (Cloudflare bypass).
 
 Validated endpoints (2026-09-23):
   GET /v1/web/api/matches?lang=4&sport_id=1&date=YYYYMMDD&tz=-03:00
@@ -88,7 +88,7 @@ class AiscoreClient:
         return decode_response(self.raw(path, **params), msg_name)
 
     # ----- daily matches -----
-    def matches(self, date: str, sport_id: int = 1, lang: int = 4, tz: str = "-03:00"):
+    def matches(self, date: str, sport_id: int = 1, lang: int = 4, tz: str = "+01:00"):
         """date: YYYYMMDD. Returns Response data as generic/named Matches if available."""
         return self.raw(
             "matches", lang=lang, sport_id=sport_id, date=date, tz=tz
@@ -493,3 +493,4 @@ if __name__ == "__main__":
     api_pts = [(r["team_id"], r.get("points")) for r in table]
     html_pts = [(r["team_id"], r.get("points")) for r in html_rows]
     print("API==HTML points:", api_pts == html_pts)
+

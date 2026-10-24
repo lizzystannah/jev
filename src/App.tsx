@@ -622,6 +622,21 @@ export default function App() {
     },
   };
 
+  // Dia(s) considerados no escopo atual (Angola), visível na UI.
+  const scopeDayLabel = useMemo(() => {
+    const fmt = (offset: number) =>
+      new Intl.DateTimeFormat('pt-PT', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: timezone,
+      }).format(new Date(Date.now() + offset * 24 * 60 * 60 * 1000));
+    if (scope === 'dia') return `Jogos de ${fmt(0)} (hoje em ${timezone})`;
+    if (scope === '2_3_dias') return `Jogos de ${fmt(0)} a ${fmt(3)}`;
+    if (scope === 'longo') return `Jogos de ${fmt(0)} a ${fmt(8)}`;
+    return 'Histórico de fichas';
+  }, [scope, timezone]);
+
   // Tier note text matching longevity scope
   const tierNoteText = () => {
     const spread =
@@ -790,6 +805,10 @@ export default function App() {
                 HistÃ³rico ({historyTotal})
               </button>
             </div>
+
+            <p className="text-[11px] text-[rgba(245,243,236,0.5)] -mt-2 mb-4">
+              {scopeDayLabel}
+            </p>
 
             {/* HistÃ³rico: sub-abas por estado */}
             {scope === 'historico' && (
@@ -1094,3 +1113,4 @@ export default function App() {
     </div>
   );
 }
+
