@@ -439,8 +439,133 @@ _JS_DISMISS_CONSENT = """() => {
 }"""
 
 
+_JS_BET_BUTTON_STATE = """() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const els = Array.from(document.querySelectorAll('.betslip-bet-button')).filter(visible);
+  const isDisabled = (e) => Boolean(e.disabled) ||
+    (e.getAttribute && e.getAttribute('aria-disabled') === 'true') ||
+    /(^|\\s)(disabled|is-disabled)(\\s|$)/i.test(String(e.className || ''));
+  const enabledIdx = els.findIndex((e) => !isDisabled(e));
+  const idx = enabledIdx >= 0 ? enabledIdx : 0;
+  const el = els.length ? els[idx] : null;
+  const msgs = Array.from(document.querySelectorAll(
+    '[class*="betslip"] [class*="error"], [class*="betslip"] [class*="warning"],' +
+    '[class*="betslip"] [class*="alert"], [class*="betslip"] [class*="message"],' +
+    '[role=alert], .notification, .modal'
+  )).filter(visible)
+    .map(e => (e.innerText || '').replace(/\\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter(t => !/^iniciar\\s+sess/i.test(t));
+  let slip = null;
+  try { slip = JSON.parse(localStorage.getItem('sah_ao-betslip') || 'null'); } catch (e) {}
+  const bets = slip && Array.isArray(slip.bets) ? slip.bets : [];
+  return {
+    found: Boolean(el),
+    index: els.length ? idx : -1,
+    count: els.length,
+    text: el ? (el.textContent || '').replace(/\\s+/g, ' ').trim() : '',
+    disabled: el ? isDisabled(el) : true,
+    pointerEvents: el ? getComputedStyle(el).pointerEvents : 'none',
+    opacity: el ? Number(getComputedStyle(el).opacity || 0) : 0,
+    nSelections: slip && Array.isArray(slip.selections) ? slip.selections.length : 0,
+    winnings: bets.map(b => (b && b.possibleWinnings != null ? b.possibleWinnings : null)),
+    msgs: msgs.slice(0, 8),
+  };
+}"""
+
+_JS_ACCEPT_ODDS_SWITCH = """() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const re = /aceitar\\s+altera[cç][oõ]es\\s+(das\\s+)?odds/i;
+  const labels = Array.from(document.querySelectorAll('label, button, span, div'))
+    .filter(e => visible(e) && re.test((e.innerText || '').trim()));
+  if (!labels.length) return false;
+  const scope = labels[0];
+  const wrap = scope.closest('label, .switch, [class*="toggle"], [class*="switch"]') || scope.parentElement;
+  const input = wrap ? wrap.querySelector('input[type=checkbox], input[type=radio]') : null;
+  if (input) {
+    if (input.checked) return false;
+    input.click();
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  scope.click();
+  return true;
+}"""
+
+
 def _stake_fmt(stake: float) -> str:
     return f"{stake:.2f}"
+
+
+def _bet_button_state(page) -> dict:
+    try:
+        return page.evaluate(_JS_BET_BUTTON_STATE) or {}
+    except Exception:
+        return {}
+
+
+def _ensure_bet_button_ready(page, timeout_s: int = 25) -> dict:
+    """Espera o botão de apostar ficar clicável.
+
+    A Premier Bet desativa o botão enquanto recalcula odds ou enquanto existe
+    uma alteração de odds por aceitar. Aceitamos essa alteração (modal/toggle)
+    e esperamos; nunca clicamos em apostar mais de uma vez.
+    """
+    deadline = time.time() + timeout_s
+    accepted_modal = False
+    last = _bet_button_state(page)
+    while time.time() < deadline:
+        if not accepted_modal and re.search(
+            r"aceitar\s+altera", " ".join(last.get("msgs") or []), re.I
+        ):
+            if _click_modal_button(page, r"aceitar\s+altera[cç]", [r"^aceitar|aceitar\s+altera"]):
+                accepted_modal = True
+                page.wait_for_timeout(1200)
+                last = _bet_button_state(page)
+                continue
+        try:
+            if page.evaluate(_JS_ACCEPT_ODDS_SWITCH):
+                page.wait_for_timeout(1200)
+                last = _bet_button_state(page)
+                continue
+        except Exception:
+            pass
+
+        last = _bet_button_state(page)
+        if (
+            last.get("found")
+            and not last.get("disabled")
+            and last.get("pointerEvents") != "none"
+            and float(last.get("opacity") or 0) > 0.2
+            and last.get("nSelections", 0) > 0
+            and any(w is not None for w in (last.get("winnings") or []))
+        ):
+            return last
+        page.wait_for_timeout(600)
+    return last
+
+
+def _bet_button_message(state: dict) -> str:
+    msgs = [m for m in (state.get("msgs") or []) if m]
+    detail = " | ".join(msgs[:3])[:400]
+    base = (
+        "O botão de apostar está desativado na Premier Bet."
+        if state.get("found")
+        else "Botão de apostar não encontrado no boletim da Premier Bet."
+    )
+    if detail:
+        return f"{base} Motivo indicado pelo site: {detail}"
+    return (
+        f"{base} Verifique se as odds mudaram, se alguma seleção ficou "
+        "indisponível (jogo a começar) e o saldo da conta."
+    )
+
 
 
 def _dismiss_consent(page) -> None:
@@ -842,34 +967,57 @@ def fill_and_place(selections: list, stake: float, place: bool, headful: bool,
                 })
                 return result
 
-            button_text = (result.get("button_text") or "").lower()
-            if "iniciar sess" in button_text:
+            # Estado do botão: o site desativa-o enquanto recalcula as odds ou
+            # enquanto há alterações de odds por aceitar. Aceitamos/esperamos e,
+            # se continuar bloqueado, recarregamos o boletim UMA vez (nova
+            # cotação) antes de desistir.
+            state = _ensure_bet_button_ready(page, 25)
+            if "iniciar sess" in (state.get("text") or "").lower():
                 result["message"] = "Sessão não iniciada na Premier Bet; a aposta não foi colocada."
                 _screenshot(page, shot_path)
                 return result
+            if not (state.get("found") and not state.get("disabled")):
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(6000)
+                try:
+                    inp2 = page.locator(".betslip-stake input:visible").first
+                    inp2.fill(_stake_fmt(stake))
+                    inp2.press("Tab")
+                    page.wait_for_timeout(2000)
+                except Exception:
+                    pass
+                state = _ensure_bet_button_ready(page, 20)
 
-            # Clicar UMA única vez. Sem retries (risco de aposta duplicada).
-            try:
-                btn = page.locator(".betslip-bet-button:visible").first
-                btn.wait_for(state="visible", timeout=20000)
-            except Exception as exc:
-                result["message"] = f"Botão de apostar não visível na Premier Bet: {exc}"
+            result["button_text"] = state.get("text") or result.get("button_text")
+            if (
+                not state.get("found")
+                or state.get("disabled")
+                or state.get("pointerEvents") == "none"
+                or float(state.get("opacity") or 0) <= 0.2
+            ):
+                result["message"] = _bet_button_message(state)
+                result["detail"] = json.dumps(state, ensure_ascii=False)[:2000]
                 _screenshot(page, shot_path)
                 return result
 
-            try:
-                disabled = bool(btn.evaluate(
-                    "e => Boolean(e.disabled)"
-                    " || (e.getAttribute && e.getAttribute('aria-disabled') === 'true')"
-                    " || /(^|\\s)(disabled|is-disabled)(\\s|$)/i.test(e.className || '')"
-                ))
-            except Exception:
-                disabled = False
-            if disabled:
+            if int(state.get("nSelections") or 0) < n:
                 result["message"] = (
-                    "O botão de apostar está desativado na Premier Bet. "
-                    "Verifique o valor e o estado dos mercados."
+                    f"O boletim ficou com {state.get('nSelections')} de {n} seleções "
+                    "antes de apostar; a aposta NÃO foi colocada."
                 )
+                result["detail"] = json.dumps(state, ensure_ascii=False)[:2000]
+                _screenshot(page, shot_path)
+                return result
+
+            # Clicar UMA única vez no botão que está ATIVO (pode haver mais do
+            # que um .betslip-bet-button na página: sticky footer/modal).
+            try:
+                btn = page.locator(".betslip-bet-button:visible").nth(
+                    max(0, int(state.get("index") or 0))
+                )
+                btn.wait_for(state="visible", timeout=20000)
+            except Exception as exc:
+                result["message"] = f"Botão de apostar não visível na Premier Bet: {exc}"
                 _screenshot(page, shot_path)
                 return result
 
