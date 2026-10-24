@@ -264,6 +264,8 @@ export interface JevGenerationMeta {
   newPicks: number;
   apiCalls: number;
   costUsd: number;
+  /** Decisões antigas descartadas por o mercado já não estar entre as candidatas. */
+  stale: number;
 }
 
 
@@ -884,6 +886,22 @@ export class TicketEngine {
    * (prob + odd real) e devolve o mercado escolhido. Picks persistidos na
    * calibração são reutilizados enquanto as odds não mudarem.
    */
+  /** Tips oferecidas ao JEV: top 6 por probabilidade, só com odds reais. */
+  private jevCandidateTips(
+    match: MatchItem
+  ): Array<{ market: MarketType; label: string; prob: number; odds: number }> {
+    return (match.tips || [])
+      .filter((t) => t.odds != null && t.odds > 1.01)
+      .sort((a, b) => b.prob - a.prob)
+      .slice(0, 6)
+      .map((t) => ({
+        market: t.market,
+        label: t.label,
+        prob: t.prob,
+        odds: t.odds as number,
+      }));
+  }
+
   private async applyJevPicks(
     scope: SlipScope,
     evaluated: MatchItem[],
@@ -898,6 +916,7 @@ export class TicketEngine {
       newPicks: 0,
       apiCalls: 0,
       costUsd: 0,
+      stale: 0,
     };
     const pool = evaluated.filter(
       (m) =>
@@ -913,11 +932,19 @@ export class TicketEngine {
     >;
     const picks = new Map<string, StoredPick>();
     const need: MatchItem[] = [];
+    let stale = 0;
     for (const m of pool) {
       const saved = persisted.get(m.id);
-      if (saved) {
+      // Só reutiliza se o mercado continuar entre as candidatas ATUAIS (top 6
+      // com odds reais). Senão a decisão antiga pode escolher uma tip que já
+      // não seria oferecida hoje (ex.: mercado que saiu do top 6).
+      const offered = this.jevCandidateTips(m).some(
+        (t) => t.market === saved?.market
+      );
+      if (saved && offered) {
         picks.set(m.id, saved);
       } else {
+        if (saved) stale += 1;
         need.push(m);
       }
     }
@@ -947,16 +974,7 @@ export class TicketEngine {
             league: m.league,
             kickoff: new Date(m.kickoffAt).toISOString(),
             odds,
-            tips: (m.tips || [])
-              .filter((t) => t.odds != null && t.odds > 1.01)
-              .sort((a, b) => b.prob - a.prob)
-              .slice(0, 6)
-              .map((t) => ({
-                market: t.market,
-                label: t.label,
-                prob: t.prob,
-                odds: t.odds as number,
-              })),
+            tips: this.jevCandidateTips(m),
           };
         })
         .filter((c) => c.tips.length > 0);
@@ -977,11 +995,13 @@ export class TicketEngine {
       console.log(
         `[JEV] ${chosen.picks.size}/${candidates.length} decisão(ões) nova(s) ` +
           `em ${chosen.apiCalls} chamada(s), custo ${chosen.costUsd.toFixed(6)} USD ` +
-          `(escopo "${scope}"; ${reused} reutilizada(s)).`
+          `(escopo "${scope}"; ${reused} reutilizada(s), ${stale} antiga(s) descartada(s)).`
       );
     }
 
-    if (picks.size === 0) return { matches: [], meta: { reused, newPicks, apiCalls, costUsd } };
+    if (picks.size === 0) {
+      return { matches: [], meta: { reused, newPicks, apiCalls, costUsd, stale } };
+    }
 
     const forced = pool.filter((m) => picks.has(m.id));
     const localInput: LocalDecisionInput = {
@@ -1041,7 +1061,7 @@ export class TicketEngine {
       };
       out.push(m);
     }
-    return { matches: out, meta: { reused, newPicks, apiCalls, costUsd } };
+    return { matches: out, meta: { reused, newPicks, apiCalls, costUsd, stale } };
   }
 
   public validateSlips(): { updatedSlips: BetSlip[] } {

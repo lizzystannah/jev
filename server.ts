@@ -407,8 +407,8 @@ async function startServer() {
         const meta = result.jevMeta;
         message =
           `${message} JEV: ${meta.newPicks} decisão(ões) nova(s), ` +
-          `${meta.reused} reutilizada(s), ${meta.apiCalls} chamada(s), ` +
-          `custo ${meta.costUsd.toFixed(6)} USD.`;
+          `${meta.reused} reutilizada(s), ${meta.stale} antiga(s) descartada(s), ` +
+          `${meta.apiCalls} chamada(s), custo ${meta.costUsd.toFixed(6)} USD.`;
       }
       res.json({
         ...result,
