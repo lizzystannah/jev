@@ -67,6 +67,8 @@ RUN npm run build
 # Correr como não-root; o servidor escreve caches em /app.
 RUN useradd -m -u 10001 appuser \
   && chown -R appuser:appuser /app
+# /data é o ponto de montagem do volume que persiste as fichas (SQLite).
+RUN mkdir -p /data && chown appuser:appuser /data
 USER appuser
 
 EXPOSE 3000

@@ -53,6 +53,7 @@ _COMP_ID_PRIORITY: dict[str, int] = {
     "4ndqmliwou5kveg": 7,   # Turkish Super Lig
     "eg6763ig9s47ryv": 7,   # J1 League (Japan)
     "g63kv9imm6iz7ez": 7,   # Saudi Pro League
+    "5xvkjoi25sr7938": 7,   # Serbian Mozzart Bet Superliga (Estrela Vermelha)
     "yzrkn6i2rcjqle4": 8,   # Netherlands Eredivisie
     "n527r3imms17evx": 8,   # Belgian Pro League
     "2j374oixwu4qo6d": 8,   # Mexico Liga MX
@@ -108,6 +109,9 @@ _COMP_PRIORITY: list[tuple[int, str]] = [
     (7, "süper lig"),
     (7, "liga profesional saud"),
     (7, "saudi pro league"),
+    (7, "super liga s"),
+    (7, "serbian mozzart bet superliga"),
+    (7, "srbij"),
 ]
 
 # Exclusões por chave (falsos positivos verificados no feed).

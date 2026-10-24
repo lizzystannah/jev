@@ -1,6 +1,6 @@
 import React from 'react';
-import { MatchItem, SlipScope } from '../types.js';
-import { Sparkles, Play, CheckCircle2, XCircle, Clock, ShieldAlert, Cpu } from 'lucide-react';
+import { MatchItem, MatchTip, SlipScope } from '../types.js';
+import { Sparkles, Play, CheckCircle2, XCircle, Clock, Cpu, Plus, Check, ShoppingCart } from 'lucide-react';
 import { formatMatchSchedule } from '../utils/timezone.js';
 
 interface FixturesSidebarProps {
@@ -15,6 +15,10 @@ interface FixturesSidebarProps {
   onSimulateNext: () => void;
   isSimulating: boolean;
   timezone?: string;
+  onAddToCart: (match: MatchItem, tip: MatchTip) => void;
+  isInCart: (matchId: string, market: string) => boolean;
+  cartCount: number;
+  onOpenCart: () => void;
 }
 
 function formatCountdown(targetMs: number): string {
@@ -49,6 +53,10 @@ export const FixturesSidebar: React.FC<FixturesSidebarProps> = ({
   onSimulateNext,
   isSimulating,
   timezone = 'Africa/Luanda',
+  onAddToCart,
+  isInCart,
+  cartCount,
+  onOpenCart,
 }) => {
   const title =
     scope === 'dia'
@@ -77,9 +85,20 @@ export const FixturesSidebar: React.FC<FixturesSidebarProps> = ({
         <h2 className="font-display text-2xl font-semibold tracking-wide text-[#F5F3EC]">
           {title}
         </h2>
-        <span className="text-xs text-[rgba(245,243,236,0.4)]">
-          {uniqueMatches.length} confronto{uniqueMatches.length === 1 ? '' : 's'}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-[rgba(245,243,236,0.4)]">
+            {uniqueMatches.length} confronto{uniqueMatches.length === 1 ? '' : 's'}
+          </span>
+          <button
+            type="button"
+            onClick={onOpenCart}
+            className="cursor-pointer flex items-center gap-1.5 rounded-full border border-[#E7B33E]/50 bg-[#E7B33E]/10 px-2.5 py-1 text-[11px] font-semibold text-[#E7B33E] hover:bg-[#E7B33E]/20 transition-colors"
+            title="Abrir carrinho de seleções para ficha manual"
+          >
+            <ShoppingCart className="w-3.5 h-3.5" />
+            <span>Carrinho ({cartCount})</span>
+          </button>
+        </div>
       </div>
 
       {/* League Filter Pills */}
@@ -204,7 +223,10 @@ export const FixturesSidebar: React.FC<FixturesSidebarProps> = ({
                 {/* Tip & Jev Output */}
                 <div className="mt-2 pt-2 border-t border-dashed border-[rgba(245,243,236,0.12)] flex items-center justify-between text-xs">
                   <span className="text-[rgba(245,243,236,0.7)] truncate mr-2">
-                    {m.tip.label} · <strong className="text-[#F5F3EC]">odd {m.tip.odds.toFixed(2)}</strong>
+                    {m.tip.label} ·{' '}
+                    <strong className="text-[#F5F3EC]">
+                      odd {m.tip.odds != null ? m.tip.odds.toFixed(2) : '—'}
+                    </strong>
                   </span>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <span className="text-[#E7B33E] font-semibold font-display text-sm">
@@ -216,6 +238,68 @@ export const FixturesSidebar: React.FC<FixturesSidebarProps> = ({
                     </span>
                   </div>
                 </div>
+
+                {/* Tips disponíveis para ficha manual */}
+                {!isResolved && (
+                  <div className="mt-2 pt-2 border-t border-dashed border-[rgba(245,243,236,0.12)]">
+                    <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-[rgba(245,243,236,0.4)] mb-1.5">
+                      <span>Tips disponíveis</span>
+                      <span>{(m.tips && m.tips.length > 0 ? m.tips : [m.tip]).length}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(m.tips && m.tips.length > 0 ? m.tips : [m.tip]).map((tip) => {
+                        const inCart = isInCart(m.id, tip.market);
+                        const noOdd = tip.odds == null;
+                        return (
+                          <div
+                            key={tip.market}
+                            className={`flex items-center gap-1 rounded border px-1.5 py-1 text-[10.5px] ${
+                              inCart
+                                ? 'border-[#4FAE73]/60 bg-[rgba(79,174,115,0.14)]'
+                                : 'border-[rgba(245,243,236,0.14)] bg-[#081C13]/60'
+                            }`}
+                          >
+                            <span
+                              className="max-w-[110px] truncate text-[rgba(245,243,236,0.75)]"
+                              title={tip.label}
+                            >
+                              {tip.label}
+                            </span>
+                            <span className="font-semibold text-[#E7B33E]">{tip.prob}%</span>
+                            <span className="font-mono text-[rgba(245,243,236,0.5)]">
+                              {tip.odds != null ? tip.odds.toFixed(2) : '—'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onAddToCart(m, tip)}
+                              disabled={noOdd || inCart}
+                              title={
+                                noOdd
+                                  ? 'sem odd real'
+                                  : inCart
+                                  ? 'já adicionada ao carrinho'
+                                  : 'adicionar ao carrinho'
+                              }
+                              className={`cursor-pointer ml-0.5 flex h-4 w-4 items-center justify-center rounded ${
+                                inCart
+                                  ? 'text-[#4FAE73]'
+                                  : noOdd
+                                  ? 'text-[rgba(245,243,236,0.25)] cursor-not-allowed'
+                                  : 'text-[#E7B33E] hover:bg-[#E7B33E]/20'
+                              }`}
+                            >
+                              {inCart ? (
+                                <Check className="w-3 h-3" />
+                              ) : (
+                                <Plus className="w-3 h-3" />
+                              )}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* Status */}
                 <div className="mt-1.5 text-[11.5px] flex items-center gap-1.5">

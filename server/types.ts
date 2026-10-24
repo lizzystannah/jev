@@ -45,6 +45,17 @@ export interface MatchTip {
   prob: number;
 }
 
+/**
+ * Tip calculada para um mercado específico. `odds` é null quando o mercado
+ * não tem preço real (nunca se inventa uma odd para preencher).
+ */
+export interface TipOption {
+  market: MarketType;
+  label: string;
+  odds: number | null;
+  prob: number; // 0..100
+}
+
 export interface MatchResult {
   homeScore?: number;
   awayScore?: number;
@@ -98,6 +109,8 @@ export interface MatchItem {
   kickoffInSeconds: number;
   odds: MatchOdds;
   tip: MatchTip;
+  /** Todas as tips calculadas para o jogo (com odds reais ou null). */
+  tips?: TipOption[];
   /**
    * Tip alternativa de odd alta, calculada pelo mesmo motor a partir dos
    * mercados reais. É usada apenas na ficha Maluca; não substitui a tip

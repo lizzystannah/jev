@@ -1,0 +1,42 @@
+# Deploy do motor de bilhetes.
+#
+# Persistência das fichas:
+#   - Por defeito, as fichas são guardadas em SQLite dentro do volume nomeado
+#     "bilheteria_data" (montado em /data). Este volume é o que preserva as
+#     fichas entre restarts, redeploys e recriações do container.
+#   - "docker compose down" mantém o volume (as fichas sobrevivem).
+#   - "docker compose down -v" APAGA o volume e, com ele, TODAS as fichas.
+#   - Se configurares MYSQL_* no .env, a persistência passa a ser o MySQL e o
+#     volume deixa de ser usado para as fichas.
+
+services:
+  bilheteria:
+    build: .
+    container_name: bilheteria
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # SQLite persistido no volume nomeado (ignorado quando MYSQL_* está ativo).
+      BILHETERIA_DB_PATH: /data/bilheteria.db
+
+      # ----------------------------------------------------------------------
+      # OPCIONAL: MySQL como persistência (em vez do volume SQLite).
+      # Descomenta e preenche as variáveis no MESMO .env (env_file acima).
+      # Com MySQL ativo, o volume /data deixa de ser necessário para as fichas.
+      # ----------------------------------------------------------------------
+      # MYSQL_HOST: "host-do-mysql"
+      # MYSQL_PORT: "3306"
+      # MYSQL_USER: "bilheteria"
+      # MYSQL_PASSWORD: "segredo"
+      # MYSQL_DATABASE: "bilheteria"
+      # MYSQL_SSL: "1"
+
+    ports:
+      - "3000:3000"
+    volumes:
+      # O volume nomeado é o que preserva as fichas entre restarts/redeploys.
+      # Nunca uses "docker compose down -v" se quiseres manter as fichas.
+      - bilheteria_data:/data
+
+volumes:
+  bilheteria_data:

@@ -2,52 +2,52 @@
 <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
 </div>
 
-# Bilheteria — motor de bilhetes
+# Bilheteria â€” motor de bilhetes
 
 Backend sempre ativo que gera, persiste e resolve fichas (bilhetes) de apostas
 a partir de jogos reais (AiScore + odds de mercado).
 
-## Fichas automáticas e persistentes
+## Fichas automÃ¡ticas e persistentes
 
-- **Fichas do dia**: todos os dias às **00:00 de Angola** (`Africa/Luanda`), o
+- **Fichas do dia**: todos os dias Ã s **00:00 de Angola** (`Africa/Luanda`), o
   agendador cria automaticamente a fornada de fichas de "Hoje" (default: 4).
-- **Estoque por horizonte**: mantém um mínimo de fichas pendentes —
-  Hoje = 4, 2 a 3 dias = 4, Longo prazo = 4 (configurável em `.env`).
-  Sempre que uma ficha cai (ganha/perde/expira), o agendador **repõe** o estoque.
-- **Só odds reais**: jogos sem odds 1X2 do fornecedor não entram no mercado.
-  Não há preenchimento com odds fixas "inventadas"; mercados derivados
-  (dupla chance, DNB, etc.) ficam marcados e não são usados para montar fichas.
-- **Persistência na base de dados**: todas as fichas vivem **exclusivamente**
-  numa base de dados **MySQL** configurada por variáveis de ambiente
-  (`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`,
-  `MYSQL_DATABASE`). O container não precisa de volume e não guarda estado
-  das fichas localmente.
-- **Histórico** com abas: **Ganhas**, **Perdidas**, **Vencidas/Expiradas** e
-  **Em andamento**. Lista compacta (expandir por linha) com data de criação.
-- **Botão "Gerar"** disponível a partir de qualquer parte do site (cabeçalho,
-  hero e botão flutuante).
-- **Subir para a Premier Bet**: cada ficha pendente tem um botão **Subir** que
+- **Estoque por horizonte**: mantÃ©m um mÃ­nimo de fichas pendentes â€”
+  Hoje = 4, 2 a 3 dias = 4, Longo prazo = 4 (configurÃ¡vel em `.env`).
+  Sempre que uma ficha cai (ganha/perde/expira), o agendador **repÃµe** o estoque.
+- **SÃ³ odds reais**: jogos sem odds 1X2 do fornecedor nÃ£o entram no mercado.
+  NÃ£o hÃ¡ preenchimento com odds fixas "inventadas"; mercados derivados
+  (dupla chance, DNB, etc.) ficam marcados e nÃ£o sÃ£o usados para montar fichas.
+- **PersistÃªncia na base de dados**: as fichas vivem numa base de dados **MySQL**
+  configurada por variÃ¡veis de ambiente (`MYSQL_HOST`, `MYSQL_PORT`,
+  `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`) ou, quando nÃ£o hÃ¡ MySQL,
+  em **SQLite** no caminho `BILHETERIA_DB_PATH`. No Docker o default Ã©
+  `/data/bilheteria.db`, dentro do volume nomeado que preserva as fichas.
+- **HistÃ³rico** com abas: **Ganhas**, **Perdidas**, **Vencidas/Expiradas** e
+  **Em andamento**. Lista compacta (expandir por linha) com data de criaÃ§Ã£o.
+- **BotÃ£o "Gerar"** disponÃ­vel a partir de qualquer parte do site (cabeÃ§alho,
+  hero e botÃ£o flutuante).
+- **Subir para a Premier Bet**: cada ficha pendente tem um botÃ£o **Subir** que
   entra em `premierbet.co.ao`, localiza os jogos, preenche as tips, define o
-  valor da aposta e coloca a ficha no ar. O valor é pedido num modal (Kz).
+  valor da aposta e coloca a ficha no ar. O valor Ã© pedido num modal (Kz).
 
 O agendador corre **dentro do servidor**: funciona mesmo com o site fechado.
 
 ## Base de dados (MySQL)
 
-Toda a configuração vem da env:
+Toda a configuraÃ§Ã£o vem da env:
 
-| Variável | Exemplo | Obrigatória |
+| VariÃ¡vel | Exemplo | ObrigatÃ³ria |
 | --- | --- | --- |
 | `MYSQL_HOST` | `127.0.0.1` | sim |
-| `MYSQL_PORT` | `3306` | não (default `3306`) |
+| `MYSQL_PORT` | `3306` | nÃ£o (default `3306`) |
 | `MYSQL_USER` | `bilheteria` | sim |
-| `MYSQL_PASSWORD` | `segredo` | não (pode ser vazia) |
+| `MYSQL_PASSWORD` | `segredo` | nÃ£o (pode ser vazia) |
 | `MYSQL_DATABASE` | `bilheteria` | sim |
-| `MYSQL_SSL` | `1` | não (default desligado) |
+| `MYSQL_SSL` | `1` | nÃ£o (default desligado) |
 
-O schema (`slips` + `meta` + `slip_uploads`) é criado automaticamente no
+O schema (`slips` + `meta` + `slip_uploads`) Ã© criado automaticamente no
 arranque, na base de dados indicada em `MYSQL_DATABASE` (tem de existir). As
-escritas são serializadas (write-behind) e descarregadas no shutdown.
+escritas sÃ£o serializadas (write-behind) e descarregadas no shutdown.
 
 Se `MYSQL_HOST`, `MYSQL_USER` e `MYSQL_DATABASE` estiverem vazios, o servidor
 usa SQLite local em `.data/bilheteria.db` apenas para desenvolvimento. Se apenas
@@ -56,65 +56,65 @@ que falta.
 
 ## Subir fichas para a Premier Bet
 
-O botão **Subir** (em cada ficha pendente, no cartão ou no histórico) abre um
+O botÃ£o **Subir** (em cada ficha pendente, no cartÃ£o ou no histÃ³rico) abre um
 modal para definir o **valor da aposta em Kwanzas (AOA)** e, opcionalmente,
 testar o boletim sem apostar.
 
 Ao confirmar, o servidor:
 
 1. faz login em `https://www.premierbet.co.ao/` com as credenciais da env;
-2. localiza cada jogo da ficha na API da Premier Bet (nomes + data) e lê os
+2. localiza cada jogo da ficha na API da Premier Bet (nomes + data) e lÃª os
    mercados/odds atuais;
-3. injeta as seleções no boletim, define o valor e coloca a aposta;
+3. injeta as seleÃ§Ãµes no boletim, define o valor e coloca a aposta;
 4. guarda o resultado em `slip_uploads` (estado, valor, ID da aposta).
 
 O browser corre no servidor (Playwright/Chromium), por isso o site pode estar
-fechado no teu computador. A operação pode demorar 1–3 minutos.
+fechado no teu computador. A operaÃ§Ã£o pode demorar 1â€“3 minutos.
 
-### Credenciais e segurança
+### Credenciais e seguranÃ§a
 
-| Variável | Default | Descrição |
+| VariÃ¡vel | Default | DescriÃ§Ã£o |
 | --- | --- | --- |
 | `PREMIERBET_LOGIN` | *(vazio)* | Telefone (`244...`), utilizador ou email da conta |
 | `PREMIERBET_PASSWORD` | *(vazio)* | Palavra-passe da conta Premier Bet |
-| `PREMIERBET_DRY_RUN` | `0` | `1` força o modo de teste em todos os pedidos (não aposta) |
+| `PREMIERBET_DRY_RUN` | `0` | `1` forÃ§a o modo de teste em todos os pedidos (nÃ£o aposta) |
 | `PREMIERBET_DEFAULT_STAKE` | `1000` | Valor sugerido no modal (Kz) |
-| `PREMIERBET_MIN_STAKE` | `1` | Valor mínimo aceite pela API (Kz) |
-| `PREMIERBET_MAX_STAKE` | *(sem limite)* | Valor máximo aceite pela API (Kz) |
-| `PREMIERBET_TIMEOUT_MS` | `300000` | Tempo máximo da automação (5 min) |
+| `PREMIERBET_MIN_STAKE` | `1` | Valor mÃ­nimo aceite pela API (Kz) |
+| `PREMIERBET_MAX_STAKE` | *(sem limite)* | Valor mÃ¡ximo aceite pela API (Kz) |
+| `PREMIERBET_TIMEOUT_MS` | `300000` | Tempo mÃ¡ximo da automaÃ§Ã£o (5 min) |
 | `PREMIERBET_HEADFUL` | `0` | `1` mostra o browser (debug local) |
 | `PREMIERBET_NO_SANDBOX` | `0` | `1` adiciona `--no-sandbox` ao Chromium (contentores) |
 | `PREMIERBET_PYTHON` | `AISCORE_PYTHON` | Python com `playwright` + `curl_cffi` |
 
-As credenciais **nunca** são escritas em ficheiros nem em argumentos de linha de
+As credenciais **nunca** sÃ£o escritas em ficheiros nem em argumentos de linha de
 comando: seguem apenas no ambiente do processo Python.
 
-> **Aviso:** a aplicação não tem autenticação própria e o botão **Subir** coloca
-> **dinheiro real**. Não exponhas a porta do servidor à internet sem um proxy ou
-> uma rede privada com autenticação.
+> **Aviso:** a aplicaÃ§Ã£o nÃ£o tem autenticaÃ§Ã£o prÃ³pria e o botÃ£o **Subir** coloca
+> **dinheiro real**. NÃ£o exponhas a porta do servidor Ã  internet sem um proxy ou
+> uma rede privada com autenticaÃ§Ã£o.
 
-**Proteção contra apostas duplicadas:** uma ficha já colocada fica marcada como
-**No ar** e não pode ser reenviada sem confirmação explícita. Se a Premier Bet
-não confirmar a colocação, o estado fica **por confirmar** e o sistema não repete
-a aposta automaticamente — verifica primeiro as apostas abertas na conta. Se o
-servidor reiniciar a meio de uma submissão, o registo **em curso** é convertido
-em **por confirmar** no arranque seguinte (nunca é reenviado sozinho).
+**ProteÃ§Ã£o contra apostas duplicadas:** uma ficha jÃ¡ colocada fica marcada como
+**No ar** e nÃ£o pode ser reenviada sem confirmaÃ§Ã£o explÃ­cita. Se a Premier Bet
+nÃ£o confirmar a colocaÃ§Ã£o, o estado fica **por confirmar** e o sistema nÃ£o repete
+a aposta automaticamente â€” verifica primeiro as apostas abertas na conta. Se o
+servidor reiniciar a meio de uma submissÃ£o, o registo **em curso** Ã© convertido
+em **por confirmar** no arranque seguinte (nunca Ã© reenviado sozinho).
 
-### Instalação local do browser
+### InstalaÃ§Ã£o local do browser
 
 ```bash
 pip install playwright
 python -m playwright install chromium
 ```
 
-Em Docker a imagem já inclui Playwright + Chromium (a imagem fica maior).
+Em Docker a imagem jÃ¡ inclui Playwright + Chromium (a imagem fica maior).
 
 ## Requisitos
 
 - **Node.js 24+** (o fallback local usa `node:sqlite`).
-- **MySQL 5.7+ / 8.0+ / MariaDB 10.5+** (em produção).
+- **MySQL 5.7+ / 8.0+ / MariaDB 10.5+** (em produÃ§Ã£o).
 - Python com `curl_cffi` (bridge AiScore) e `playwright` + Chromium
-  (automação Premier Bet).
+  (automaÃ§Ã£o Premier Bet).
 
 ## Correr localmente
 
@@ -128,7 +128,7 @@ npm install
 #   MYSQL_DATABASE="bilheteria"
 npm run dev        # desenvolvimento
 # ou
-npm start          # servidor de produção local
+npm start          # servidor de produÃ§Ã£o local
 ```
 
 Para garantir que o servidor fica **sempre ativo** (reinicia se cair):
@@ -138,7 +138,7 @@ npm run start:always      # PowerShell (Windows)
 npm run start:always:bat  # Batch (Windows)
 ```
 
-Ou com um gestor de processos (produção):
+Ou com um gestor de processos (produÃ§Ã£o):
 
 ```bash
 npx pm2 start "npm start" --name bilheteria
@@ -148,35 +148,35 @@ npx pm2 start "npm start" --name bilheteria
 
 O motor gera quatro categorias por horizonte, com uma vaga reservada para cada uma:
 
-| Tier | Alvo | Construção |
+| Tier | Alvo | ConstruÃ§Ã£o |
 | --- | --- | --- |
-| **Segura** | 3x | Tips de probabilidade calibrada alta; o número de jogos é o necessário para chegar ao alvo |
+| **Segura** | 3x | Tips de probabilidade calibrada alta; o nÃºmero de jogos Ã© o necessÃ¡rio para chegar ao alvo |
 | **Moderada** | 15x | Tips de risco moderado; mais jogos e odds individuais controladas, sem pernas artificiais |
-| **Ousada** | 100x | Tips de odds controladas; o alvo é alcançado acumulando mais jogos, não inventando odds altas |
-| **Maluca** | 1000x | 4–8 jogos de odd alta, usando a tip alternativa de odd alta calculada pelo motor para cada jogo |
+| **Ousada** | 100x | Tips de odds controladas; o alvo Ã© alcanÃ§ado acumulando mais jogos, nÃ£o inventando odds altas |
+| **Maluca** | 1000x | 4â€“8 jogos de odd alta, usando a tip alternativa de odd alta calculada pelo motor para cada jogo |
 
-O motor calcula primeiro uma tip para **todos os jogos com odds reais** do horizonte e, para cada jogo, também uma tip alternativa de odd alta (outro mercado real do mesmo jogo). A ficha é apenas uma seleção dessas tips: ordena por probabilidade, acrescenta jogos até a odd combinada atingir o alvo e pára. Se não houver tips suficientes para o alvo, **não é criada uma ficha forçada** — nunca se inventa uma perna de odd alta para "completar pontos".
+O motor calcula primeiro uma tip para **todos os jogos com odds reais** do horizonte e, para cada jogo, tambÃ©m uma tip alternativa de odd alta (outro mercado real do mesmo jogo). A ficha Ã© apenas uma seleÃ§Ã£o dessas tips: ordena por probabilidade, acrescenta jogos atÃ© a odd combinada atingir o alvo e pÃ¡ra. Se nÃ£o houver tips suficientes para o alvo, **nÃ£o Ã© criada uma ficha forÃ§ada** â€” nunca se inventa uma perna de odd alta para "completar pontos".
 
-As ligas elegíveis incluem as principais (Champions, Europa, Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Primeira Liga, Brasileirão) e ainda **Conference League, J1 League (Japão), Süper Lig (Turquia) e Saudi Pro League**. Divisões inferiores, femininos e ligas juvenis ficam de fora.
+As ligas elegÃ­veis incluem as principais (Champions, Europa, Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Primeira Liga, BrasileirÃ£o) e ainda **Conference League, J1 League (JapÃ£o), SÃ¼per Lig (Turquia) e Saudi Pro League**. DivisÃµes inferiores, femininos e ligas juvenis ficam de fora.
 
-Todas as pernas usam apenas mercados com odds reais (`odds.realMarkets`). O motor local pode calcular probabilidades a partir do scout, mas nunca inventa um preço para preencher uma ficha.
+Todas as pernas usam apenas mercados com odds reais (`odds.realMarkets`). O motor local pode calcular probabilidades a partir do scout, mas nunca inventa um preÃ§o para preencher uma ficha.
 
-## Configuração (`.env`)
+## ConfiguraÃ§Ã£o (`.env`)
 
 Ver `.env.example`. Chaves relevantes:
 
-| Variável | Default | Descrição |
+| VariÃ¡vel | Default | DescriÃ§Ã£o |
 | --- | --- | --- |
-| `MYSQL_HOST` | *(vazio)* | Host do MySQL (obrigatório em produção) |
+| `MYSQL_HOST` | *(vazio)* | Host do MySQL (obrigatÃ³rio em produÃ§Ã£o) |
 | `MYSQL_PORT` | `3306` | Porta do MySQL |
 | `MYSQL_USER` | *(vazio)* | Utilizador do MySQL |
 | `MYSQL_PASSWORD` | *(vazio)* | Password do MySQL |
 | `MYSQL_DATABASE` | *(vazio)* | Nome da base de dados (deve existir) |
-| `MYSQL_SSL` | *(desligado)* | `1` liga SSL na ligação ao MySQL |
-| `BILHETERIA_DB_PATH` | `.data/bilheteria.db` | SQLite local (só fallback de dev) |
-| `TICKETS_QUOTA_DIA` | `4` | Estoque mínimo de fichas de Hoje (uma por tier) |
-| `TICKETS_QUOTA_MED` | `4` | Estoque mínimo de 2 a 3 dias (uma por tier) |
-| `TICKETS_QUOTA_LONGO` | `4` | Estoque mínimo de longo prazo (uma por tier) |
+| `MYSQL_SSL` | *(desligado)* | `1` liga SSL na ligaÃ§Ã£o ao MySQL |
+| `BILHETERIA_DB_PATH` | `.data/bilheteria.db` | SQLite local (sÃ³ fallback de dev) |
+| `TICKETS_QUOTA_DIA` | `4` | Estoque mÃ­nimo de fichas de Hoje (uma por tier) |
+| `TICKETS_QUOTA_MED` | `4` | Estoque mÃ­nimo de 2 a 3 dias (uma por tier) |
+| `TICKETS_QUOTA_LONGO` | `4` | Estoque mÃ­nimo de longo prazo (uma por tier) |
 | `TICKETS_TARGET_SEGURA` | `3` | Alvo de odd combinada da ficha Segura |
 | `TICKETS_TARGET_MODERADA` | `15` | Alvo de odd combinada da ficha Moderada |
 | `TICKETS_TARGET_OUSADA` | `100` | Alvo de odd combinada da ficha Ousada |
@@ -185,32 +185,34 @@ Ver `.env.example`. Chaves relevantes:
 | `TICKETS_MAX_LEGS_MODERADA` | `12` | Teto de jogos da Moderada |
 | `TICKETS_MAX_LEGS_OUSADA` | `15` | Teto de jogos da Ousada |
 | `TICKETS_MAX_LEGS_MALUCA` | `8` | Teto de jogos da Maluca |
-| `TICKETS_EXPIRY_GRACE_HOURS` | `6` | Tolerância após o último jogo antes de marcar como vencida |
+| `TICKETS_EXPIRY_GRACE_HOURS` | `6` | TolerÃ¢ncia apÃ³s o Ãºltimo jogo antes de marcar como vencida |
 | `PREMIERBET_LOGIN` | *(vazio)* | Login da conta Premier Bet |
 | `PREMIERBET_PASSWORD` | *(vazio)* | Password da conta Premier Bet |
-| `PREMIERBET_DRY_RUN` | `0` | `1` força modo de teste (não aposta) |
+| `PREMIERBET_DRY_RUN` | `0` | `1` forÃ§a modo de teste (nÃ£o aposta) |
 | `PREMIERBET_DEFAULT_STAKE` | `1000` | Valor sugerido no modal (Kz) |
 
 ## API
 
-| Método | Rota | Descrição |
+| MÃ©todo | Rota | DescriÃ§Ã£o |
 | --- | --- | --- |
 | GET | `/api/tickets` | Lista todas as fichas (persistidas, com estado Premier Bet) |
 | GET | `/api/tickets/stock` | Estoque/quotas e estado do agendador |
 | POST | `/api/tickets/generate` | Gera fichas extra (`{ scope, leagues, limit }`) |
 | POST | `/api/tickets/:id/upload` | Sobe a ficha para a Premier Bet (`{ stake, dryRun?, force? }`) |
-| GET | `/api/premierbet/status` | Configuração visível da Premier Bet (sem credenciais) |
-| POST | `/api/matches/reset` | Limpa tudo e repõe o estoque |
+| GET | `/api/premierbet/status` | ConfiguraÃ§Ã£o visÃ­vel da Premier Bet (sem credenciais) |
+| POST | `/api/matches/reset` | Limpa tudo e repÃµe o estoque |
 | GET | `/api/status` | Estado do servidor (inclui `tickets`) |
 
 ## Docker
 
-Node 24 é obrigatório. O container é **stateless**: a persistência fica no
-MySQL configurado por variáveis de ambiente (sem volume).
+Node 24 Ã© obrigatÃ³rio. O container lÃª a configuraÃ§Ã£o de `.env` (`env_file`) e
+pode persistir as fichas no MySQL configurado ou num volume SQLite.
 
 ```bash
 docker build -t bilheteria:latest .
 docker run --rm -p 3000:3000 \
+  -v bilheteria_data:/data \
+  -e BILHETERIA_DB_PATH="/data/bilheteria.db" \
   -e MYSQL_HOST="host-do-mysql" \
   -e MYSQL_PORT="3306" \
   -e MYSQL_USER="bilheteria" \
@@ -221,6 +223,35 @@ docker run --rm -p 3000:3000 \
   bilheteria:latest
 ```
 
-Também podes usar `--env-file .env` em vez de `-e` (nunca coloques segredos no
-`Dockerfile` nem no repositório). A imagem inclui Playwright + Chromium para a
-automação da Premier Bet; `PREMIERBET_NO_SANDBOX=1` já vem ativo no container.
+TambÃ©m podes usar `--env-file .env` em vez de `-e` (nunca coloques segredos no
+`Dockerfile` nem no repositÃ³rio). A imagem inclui Playwright + Chromium para a
+automaÃ§Ã£o da Premier Bet; `PREMIERBET_NO_SANDBOX=1` jÃ¡ vem ativo no container.
+
+## Deploy e persistÃªncia das fichas
+
+O `docker-compose.yml` na raiz sobe o container jÃ¡ com um volume nomeado
+(`bilheteria_data`) montado em `/data` e `BILHETERIA_DB_PATH=/data/bilheteria.db`.
+
+```bash
+docker compose up -d --build     # construir e subir
+docker compose logs -f           # acompanhar os logs
+docker compose restart           # restart: as fichas mantÃªm-se
+```
+
+- **Restart e redeploy mantÃªm as fichas**: o volume nomeado sobrevive a
+  `docker compose restart`, `up -d --build`, recriaÃ§Ã£o do container e
+  `docker compose down`.
+- **Mudar `.env`** (credenciais, quotas, MySQL, etc.) exige recriar o container:
+
+  ```bash
+  docker compose up -d --force-recreate
+  ```
+
+- **`docker compose down -v` APAGA tudo**: remove o volume e, com ele, todas as
+  fichas guardadas em SQLite. Usa sÃ³ quando quiseres comeÃ§ar do zero.
+- **MySQL**: se preencheres `MYSQL_*` no `.env`, a persistÃªncia passa a ser o
+  MySQL e o volume deixa de ser necessÃ¡rio para as fichas. O bloco opcional
+  estÃ¡ comentado no `docker-compose.yml`.
+- **Sem volume e sem MySQL**, o SQLite fica no sistema de ficheiros efÃ©mero do
+  container: as fichas vivem sÃ³ enquanto o container existir e perdem-se no
+  prÃ³ximo redeploy/recriaÃ§Ã£o.

@@ -24,8 +24,8 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
   { test: /bundesliga/i, exclude: /femen|feminin|women|mujer| ii\b| 2\b/i, label: 'Bundesliga' },
   { test: /ligue 1/i, exclude: /femen|feminin|women|mujer/i, label: 'Ligue 1' },
   {
-    test: /brasileir|liga portugal|liga primera de portugal|primeira liga|conference league|liga confer[eê]ncia|confer[eê]ncia europa|j1 league|j1 de jap[oó]n|s[uü]per lig|liga profesional saud[ií]|saudi pro league/i,
-    exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil|j[2-4]|english conference|confer[eê]ncia inglesa|conference (north|south)|confer[eê]ncia (norte|sur)|liga de f[uú]tbol japonesa|divisi[oó]n (1|2)|saudi (first|second) division/i,
+    test: /brasileir|liga portugal|liga primera de portugal|primeira liga|conference league|liga confer[eê]ncia|confer[eê]ncia europa|j1 league|j1 de jap[oó]n|s[uü]per lig|liga profesional saud[ií]|saudi pro league|super ?liga s[eé]rvia|serbian mozzart bet superliga|srbij/i,
+    exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil|j[2-4]|english conference|confer[eê]ncia inglesa|conference (north|south)|confer[eê]ncia (norte|sur)|liga de f[uú]tbol japonesa|divisi[oó]n (1|2)|saudi (first|second) division|prva liga/i,
     label: 'Outras top',
   },
 ];
@@ -50,13 +50,8 @@ export const MAIN_COMPETITION_IDS: Map<string, number> = new Map([
   ['4ndqmliwou5kveg', 7], // Turkish Super Lig
   ['eg6763ig9s47ryv', 7], // J1 League (Japan)
   ['g63kv9imm6iz7ez', 7], // Saudi Pro League
+  ['5xvkjoi25sr7938', 7], // Serbian Mozzart Bet Superliga (Estrela Vermelha)
   ['yzrkn6i2rcjqle4', 8], // Netherlands Eredivisie
-  ['n527r3imms17evx', 8], // Belgian Pro League
-  ['2j374oixwu4qo6d', 8], // Mexico Liga MX
-  ['w34kgmi82i1ko92', 8], // United States MLS
-  ['el6kegimxin75dp', 8], // Greek Super League
-  ['5wv78ximvcjkrjn', 8], // Ukrainian Premier League
-  ['4ndqmligru5kveg', 8], // Russian Premier League
 ]);
 
 /** IDs de divisões inferiores conhecidas (nunca entram em bilhetes). */
@@ -179,22 +174,31 @@ export function deriveCompleteOdds(odds: MatchOdds): Record<MarketType, number> 
   const pOver35 = pOver25 * 0.60;
   const pUnder35 = pUnder25 * 1.30;
 
+  // Preço real fornecido (ex.: odds da Premier Bet injetadas para um mercado
+  // que o feed não cobre) tem prioridade sobre o valor derivado.
+  const realOr = (provided: number | undefined, derived: number, lo: number, hi: number): number => {
+    if (Number.isFinite(provided) && (provided as number) > 1.01) {
+      return Number((provided as number).toFixed(2));
+    }
+    return Number(Math.max(lo, Math.min(hi, derived)).toFixed(2));
+  };
+
   return {
     home: odds.home,
     draw: odds.draw,
     away: odds.away,
-    double_chance_1x: Number(Math.max(1.05, Math.min(1.85, 1 / (p1X / 100) * 1.05)).toFixed(2)),
-    double_chance_x2: Number(Math.max(1.05, Math.min(1.85, 1 / (pX2 / 100) * 1.05)).toFixed(2)),
-    double_chance_12: Number(Math.max(1.05, Math.min(1.50, 1 / (p12 / 100) * 1.05)).toFixed(2)),
-    over15: Number(Math.max(1.10, Math.min(1.65, 1 / (Math.min(90, pOver15) / 100) * 1.05)).toFixed(2)),
+    double_chance_1x: realOr(odds.double_chance_1x, 1 / (p1X / 100) * 1.05, 1.05, 1.85),
+    double_chance_x2: realOr(odds.double_chance_x2, 1 / (pX2 / 100) * 1.05, 1.05, 1.85),
+    double_chance_12: realOr(odds.double_chance_12, 1 / (p12 / 100) * 1.05, 1.05, 1.50),
+    over15: realOr(odds.over15, 1 / (Math.min(90, pOver15) / 100) * 1.05, 1.10, 1.65),
     over25: odds.over25,
-    over35: Number(Math.max(1.60, Math.min(4.50, 1 / (Math.min(90, pOver35) / 100) * 1.05)).toFixed(2)),
+    over35: realOr(odds.over35, 1 / (Math.min(90, pOver35) / 100) * 1.05, 1.60, 4.50),
     under25: odds.under25,
-    under35: Number(Math.max(1.10, Math.min(1.65, 1 / (Math.min(90, pUnder35) / 100) * 1.05)).toFixed(2)),
+    under35: realOr(odds.under35, 1 / (Math.min(90, pUnder35) / 100) * 1.05, 1.10, 1.65),
     btts_yes: odds.btts_yes,
     btts_no: odds.btts_no,
-    dnb_home: Number(Math.max(1.15, Math.min(3.50, odds.home * 0.72)).toFixed(2)),
-    dnb_away: Number(Math.max(1.15, Math.min(3.50, odds.away * 0.72)).toFixed(2)),
+    dnb_home: realOr(odds.dnb_home, odds.home * 0.72, 1.15, 3.50),
+    dnb_away: realOr(odds.dnb_away, odds.away * 0.72, 1.15, 3.50),
   };
 }
 
@@ -375,7 +379,7 @@ export function getCalendarDayDiff(targetMs: number, timezone = 'Africa/Luanda')
   }
 }
 
-const CACHE_FILE_PATH = path.join(process.cwd(), '.odds_api_cache.json');
+  const CACHE_FILE_PATH = path.join(process.cwd(), '.data', 'odds_api_cache.json');
 
 interface PersistedCache {
   lastFetchTime: number;
@@ -392,6 +396,8 @@ export class MarketService {
   private activeFetchPromise: Promise<void> | null = null;
   private activeAiscorePromise: Promise<void> | null = null;
   private aiscoreLastSync = 0;
+  /** Callbacks chamados quando o backfill +1..+8 termina (o scheduler repõe quotas). */
+  private backfillCallbacks: Array<() => void> = [];
   private readonly AISCORE_TTL_MS = 15 * 60 * 1000;
   private providerStatus: MarketProviderStatus = {
     provider: 'the-odds-api',
@@ -442,6 +448,7 @@ export class MarketService {
         rateLimitInfo: this.providerStatus.rateLimitInfo,
         matches: realMatchesOnly,
       };
+      fs.mkdirSync(path.dirname(CACHE_FILE_PATH), { recursive: true });
       fs.writeFileSync(CACHE_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
     } catch (e: any) {
       console.warn('[MarketService] Erro ao gravar cache em disco:', e?.message);
@@ -494,6 +501,11 @@ export class MarketService {
     };
 
     return this.providerStatus;
+  }
+
+  /** Regista callback para quando os dias +1..+8 estiverem carregados. */
+  public onAiscoreBackfillDone(cb: () => void): void {
+    this.backfillCallbacks.push(cb);
   }
 
   public async getMatches(forceRefresh = false): Promise<MatchItem[]> {
@@ -566,21 +578,32 @@ export class MarketService {
 
         // Dia 0: aguardado, com odds reais 1X2 para os primeiros priorizados.
         // Como já não usamos odds sintéticas, precisamos de mais jogos reais.
-        // A prioridade do bridge inclui Conference, J1, Süper Lig e Saudi Pro
-        // League, para que estas ligas não sejam cortadas pelo odds_limit.
-        await this.syncAiscoreDay(0, { limit: 160, oddsLimit: 40 });
+        // A prioridade do bridge inclui Conference, J1, Süper Lig, Saudi Pro
+        // League, SuperLiga sérvia e Eredivisie, para que estas ligas não sejam
+        // cortadas pelo odds_limit.
+        await this.syncAiscoreDay(0, { limit: 200, oddsLimit: 60 });
         this.aiscoreLastSync = Date.now();
 
-        // Dias 1..7: background sequencial (respeita o throttle do bridge).
+        // Dias 1..8 (~1 semana+): background sequencial (respeita o throttle do
+        // bridge). O odds_limit era o principal motivo para faltarem jogos no
+        // horizonte longo — cada dia agora tenta preço real para 60 jogos.
         void (async () => {
-          for (let d = 1; d <= 7; d++) {
+          for (let d = 1; d <= 8; d++) {
             try {
-              await this.syncAiscoreDay(d, { limit: 80, oddsLimit: 20 });
+              await this.syncAiscoreDay(d, { limit: 160, oddsLimit: 40 });
             } catch (err: any) {
               console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
             }
           }
-          console.log('[MarketService] AiScore multi-dia (+1..+7) concluído.');
+          console.log('[MarketService] AiScore multi-dia (+1..+8) concluído.');
+          // Avisa o agendador para repor as quotas agora que há jogos futuros.
+          this.backfillCallbacks.forEach((cb) => {
+            try {
+              cb();
+            } catch (err: any) {
+              console.warn('[MarketService] callback de backfill falhou:', err?.message);
+            }
+          });
         })().catch(() => undefined);
       } catch (err: any) {
         console.warn('[MarketService] AiScore sync falhou:', err?.message);

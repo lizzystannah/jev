@@ -22,7 +22,7 @@ import {
 import { marketService } from './marketService.js';
 import { bilheteriaDb } from './db.js';
 import { DAY_TIMEZONE, getDayKey, msUntilNextMidnight } from './time.js';
-import type { BetSlip, SlipScope, TicketStockStatus } from './types.js';
+import type { BetSlip, MarketType, SlipScope, TicketStockStatus } from './types.js';
 
 const SCOPES: SlipScope[] = ['dia', '2_3_dias', 'longo'];
 const RETRY_THROTTLE_MS = 90 * 1000;
@@ -248,7 +248,8 @@ export class TicketScheduler {
   public generateMore(
     scope: SlipScope,
     activeLeagues?: string[],
-    limit = 4
+    limit = 4,
+    market?: MarketType
   ): Promise<{
     generated: BetSlip[];
     all: BetSlip[];
@@ -273,6 +274,7 @@ export class TicketScheduler {
         const result = await this.withGeneration(() =>
           ticketEngine.generateTicketsForScope(scope, activeLeagues, {
             limit: Math.min(Math.max(1, limit), room),
+            market,
           })
         );
         return {

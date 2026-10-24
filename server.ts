@@ -5,14 +5,20 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { marketService } from './server/marketService.js';
+import { marketService, MARKET_LABELS } from './server/marketService.js';
 import { ticketEngine } from './server/ticketEngine.js';
 import { ticketScheduler } from './server/ticketScheduler.js';
 import { bilheteriaDb } from './server/db.js';
 import { analyzeMatchTactics, generateSmartSlipWithAi } from './server/aiService.js';
 import { aiscoreClient, decodePackedSint32, parseMatchScores, scoutToMatchContext } from './server/aiscoreService.js';
-import { getLocalCumulativeMetrics, AISCORE_ENGINE_VERSION } from './server/aiscoreEngine.js';
-import type { BetSlip, SlipUpload } from './server/types.js';
+import {
+  getLocalCumulativeMetrics,
+  AISCORE_ENGINE_VERSION,
+  callLocalInferenceEngine,
+  evaluateOne,
+} from './server/aiscoreEngine.js';
+import { resolvePremierBetOdds } from './server/premierbetOdds.js';
+import type { BetSlip, MarketType, MatchItem, SlipScope, SlipTier, SlipUpload } from './server/types.js';
 import {
   PremierBetConfigError,
   premierBetStatus,
@@ -108,15 +114,73 @@ async function startServer() {
     });
   });
 
-  // Matches list (leitura segura do cache sem disparar fetch involuntário)
+  // Mercados suportados no seletor de tips (mesmos do motor).
+  const ALL_MARKETS: MarketType[] = [
+    'home', 'draw', 'away',
+    'double_chance_1x', 'double_chance_x2', 'double_chance_12',
+    'over15', 'over25', 'over35', 'under25', 'under35',
+    'btts_yes', 'btts_no', 'dnb_home', 'dnb_away',
+  ];
+
+  // Matches list com TODAS as tips calculadas (probabilidade por mercado).
+  // O motor é local e determinístico, por isso roda sobre a lista inteira.
   app.get('/api/matches', async (req: Request, res: Response) => {
     try {
       const forceRefresh = req.query.refresh === 'true';
       const matches = await marketService.getMatches(forceRefresh);
-      res.json(matches);
+      let enriched = matches;
+      try {
+        const local = await callLocalInferenceEngine({
+          scope: 'dia',
+          horizonDays: 8,
+          matches: matches.map((m) => ({
+            id: m.id,
+            league: m.league,
+            home: m.home,
+            away: m.away,
+            daysFromNow: m.daysFromNow,
+            odds: m.odds,
+            context: m.context,
+            scout: m.scout,
+            advanced: m.advanced,
+            tables: m.tables,
+            lineups: m.lineups,
+          })),
+        });
+        const byId = new Map(local.evaluations.map((e) => [e.matchId, e]));
+        enriched = matches.map((m) => {
+          const ev = byId.get(m.id);
+          if (!ev) return m;
+          return {
+            ...m,
+            tips: ev.tips,
+            tip: {
+              market: ev.recommendedMarket,
+              label: ev.marketLabel,
+              odds: ev.selectedOdds,
+              prob: ev.calibratedProb,
+            },
+          };
+        });
+      } catch (err: any) {
+        console.warn('[Tips] falha ao calcular tips da lista:', err?.message);
+      }
+      res.json(enriched);
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao carregar jogos' });
     }
+  });
+
+  // Lista de mercados para o seletor de tips.
+  app.get('/api/tips/markets', (_req: Request, res: Response) => {
+    res.json(
+      ALL_MARKETS.map((market) => ({
+        market,
+        label: MARKET_LABELS[market]
+          ? MARKET_LABELS[market]({ home: 'Casa', away: 'Fora' })
+          : market,
+      }))
+    );
   });
 
   // Sincronização explícita e protegida com The Odds API (disparada intencionalmente pelo usuário)
@@ -199,15 +263,19 @@ async function startServer() {
   // Generate slips for scope (botão manual em qualquer parte do site)
   app.post('/api/tickets/generate', async (req: Request, res: Response) => {
     try {
-      const { scope = 'dia', leagues, limit } = req.body || {};
+      const { scope = 'dia', leagues, limit, market } = req.body || {};
       const validScopes = ['dia', '2_3_dias', 'longo'];
       if (!validScopes.includes(scope)) {
         return res.status(400).json({ error: `Escopo inválido: ${scope}` });
       }
+      if (market !== undefined && market !== null && market !== '' && !ALL_MARKETS.includes(market)) {
+        return res.status(400).json({ error: `Tipo de tip inválido: ${market}` });
+      }
       const result = await ticketScheduler.generateMore(
         scope,
         Array.isArray(leagues) ? leagues : undefined,
-        Number(limit) > 0 ? Number(limit) : 4
+        Number(limit) > 0 ? Number(limit) : 4,
+        market || undefined
       );
       res.json({
         ...result,
@@ -216,6 +284,154 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Erro ao gerar bilhetes' });
+    }
+  });
+
+  // Ficha manual: legs explícitas escolhidas na lista de tips.
+  app.post('/api/tickets/custom', async (req: Request, res: Response) => {
+    try {
+      const { scope = 'dia', tier = 'moderada', legs } = req.body || {};
+      const validScopes = ['dia', '2_3_dias', 'longo'];
+      const validTiers = ['segura', 'moderada', 'ousada', 'maluca'];
+      if (!validScopes.includes(scope)) {
+        return res.status(400).json({ error: `Escopo inválido: ${scope}` });
+      }
+      if (!validTiers.includes(tier)) {
+        return res.status(400).json({ error: `Tier inválido: ${tier}` });
+      }
+      if (!Array.isArray(legs) || legs.length === 0) {
+        return res.status(400).json({ error: 'Escolha pelo menos um jogo/tip.' });
+      }
+      const selections = legs.map((l: any) => ({
+        matchId: String(l?.matchId || ''),
+        market: String(l?.market || '') as MarketType,
+      }));
+      const invalid = selections.find(
+        (s) => !s.matchId || !ALL_MARKETS.includes(s.market)
+      );
+      if (invalid) {
+        return res.status(400).json({ error: `Seleção inválida: ${invalid.market || '?'}` });
+      }
+      if (new Set(selections.map((s) => s.matchId)).size !== selections.length) {
+        return res.status(400).json({ error: 'O mesmo jogo não pode entrar duas vezes na ficha.' });
+      }
+      const now = Date.now();
+      const matches = await marketService.getMatches(false);
+      const byId = new Map(matches.map((m) => [m.id, m]));
+
+      // Odds reais em falta: consulta a Premier Bet (só API) para os mercados
+      // que o feed do AiScore não cobre (DC, over/under 1.5/3.5, DNB).
+      const needPb = selections
+        .map((sel, index) => ({ sel, index, match: byId.get(sel.matchId) }))
+        .filter(
+          (x) => x.match && !x.match.odds.realMarkets?.includes(x.sel.market)
+        );
+      const pbOddsByIndex = new Map<number, number>();
+      if (needPb.length > 0) {
+        try {
+          const pb = await resolvePremierBetOdds(
+            needPb.map((x) => ({
+              home: x.match!.home,
+              away: x.match!.away,
+              kickoffAt: x.match!.kickoffAt,
+              date: x.match!.dateStr,
+              markets: [x.sel.market],
+            }))
+          );
+          needPb.forEach((x, i) => {
+            const result =
+              pb.results[i] ??
+              pb.results.find(
+                (r) =>
+                  r.home.trim().toLowerCase() === x.match!.home.trim().toLowerCase() &&
+                  r.away.trim().toLowerCase() === x.match!.away.trim().toLowerCase()
+              );
+            const odd = result?.odds?.[x.sel.market];
+            if (typeof odd === 'number' && Number.isFinite(odd) && odd > 1.01) {
+              pbOddsByIndex.set(x.index, Number(odd.toFixed(2)));
+            }
+          });
+        } catch (err: any) {
+          console.warn('[PremierBet] falha a obter odds da ficha manual:', err?.message);
+        }
+      }
+
+      const built: MatchItem[] = [];
+      const errors: string[] = [];
+      selections.forEach((sel, index) => {
+        const match = byId.get(sel.matchId);
+        if (!match) {
+          errors.push(`jogo não encontrado (${sel.matchId})`);
+          return;
+        }
+        if (match.kickoffAt <= now) {
+          errors.push(`${match.home} v ${match.away}: jogo já começou`);
+          return;
+        }
+        let odds = match.odds;
+        if (!odds.realMarkets?.includes(sel.market)) {
+          const pbOdd = pbOddsByIndex.get(index);
+          if (pbOdd) {
+            odds = {
+              ...odds,
+              [sel.market]: pbOdd,
+              realMarkets: Array.from(new Set([...(odds.realMarkets || []), sel.market])),
+            } as MatchItem['odds'];
+          }
+        }
+        const ev = evaluateOne({
+          id: match.id,
+          league: match.league,
+          home: match.home,
+          away: match.away,
+          daysFromNow: match.daysFromNow,
+          odds,
+          context: match.context,
+          scout: match.scout,
+          advanced: match.advanced,
+          tables: match.tables,
+          lineups: match.lineups,
+          forcedMarket: sel.market,
+        });
+        if (!ev || ev.selectedOdds <= 1.01) {
+          errors.push(
+            `${match.home} v ${match.away}: sem odd real para "${MARKET_LABELS[sel.market]?.({ home: match.home, away: match.away }) || sel.market}"`
+          );
+          return;
+        }
+        built.push({
+          ...match,
+          odds,
+          tips: ev.tips,
+          tip: {
+            market: ev.recommendedMarket,
+            label: ev.marketLabel,
+            odds: ev.selectedOdds,
+            prob: ev.calibratedProb,
+          },
+          highRiskTip: ev.highRiskTip,
+        });
+      });
+
+      if (built.length !== selections.length) {
+        return res.status(409).json({
+          error: errors.join('; ') || 'Não foi possível precificar todas as seleções.',
+        });
+      }
+
+      const slip = ticketEngine.createSlip(scope as SlipScope, tier as SlipTier, built, {
+        customTitle: `Ficha manual (${built.length} jogos)`,
+        rationale:
+          'Ficha montada manualmente a partir das tips calculadas pelo motor; todas as odds são reais.',
+        isAiGenerated: false,
+      });
+      const added = ticketEngine.addCustomSlip(slip);
+      res.json({
+        slip: { ...added, upload: bilheteriaDb.getUpload(added.id) },
+        all: withUploads(ticketEngine.getSlips()),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Erro ao criar ficha manual' });
     }
   });
 
@@ -528,6 +744,12 @@ async function startServer() {
     // Agendador em background: fichas do dia à meia-noite (Angola), reposição de
     // estoque, expiração e sincronização de mercado — funciona sem browser aberto.
     ticketScheduler.start();
+
+    // Quando o backfill dos dias +1..+8 termina, repõe as quotas dos escopos
+    // futuros (2-3 dias / longo) sem esperar o próximo tick.
+    marketService.onAiscoreBackfillDone(() => {
+      void ticketScheduler.tick('aiscore-backfill');
+    });
   });
 
   const shutdown = async (signal: string) => {

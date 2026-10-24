@@ -36,10 +36,28 @@ export type MarketType =
   | 'dnb_away';
 
 export interface MatchTip {
-  market: MarketType;
+  market: string;
+  label: string;
+  /** `null` quando o mercado não tem odd real disponível. */
+  odds: number | null;
+  prob: number;
+}
+
+export interface TipMarket {
+  market: string;
+  label: string;
+}
+
+/** Seleção guardada no carrinho para montar uma ficha manual. */
+export interface CartLeg {
+  matchId: string;
+  market: string;
   label: string;
   odds: number;
   prob: number;
+  home: string;
+  away: string;
+  league: string;
 }
 
 export interface MatchResult {
@@ -93,6 +111,8 @@ export interface MatchItem {
   kickoffInSeconds: number;
   odds: MatchOdds;
   tip: MatchTip;
+  /** Todos os mercados calculados para o jogo (inclui os sem odd real). */
+  tips?: MatchTip[];
   /** Tip alternativa de odd alta, calculada pelo motor para a ficha Maluca. */
   highRiskTip?: MatchTip;
   context: MatchContext | null;

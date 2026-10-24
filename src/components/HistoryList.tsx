@@ -223,7 +223,8 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                               {leg.home} × {leg.away}
                             </div>
                             <div className="text-[11.5px] text-[#E7B33E] truncate">
-                              {leg.tip.label} · odd {leg.tip.odds.toFixed(2)} · {leg.tip.prob}%
+                              {leg.tip.label} · odd{' '}
+                              {leg.tip.odds != null ? leg.tip.odds.toFixed(2) : '—'} · {leg.tip.prob}%
                             </div>
                             <div className="text-[10.5px] mt-0.5">
                               {resolved ? (

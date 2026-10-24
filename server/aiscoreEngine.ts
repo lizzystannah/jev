@@ -39,10 +39,10 @@
  * Espelha motor_aiscore.py do workspace Scraping (port fiel).
  */
 
-import type { MarketType, MatchOdds, MatchTip, SlipScope, SlipTier } from './types.js';
+import type { MarketType, MatchOdds, MatchTip, SlipScope, SlipTier, TipOption } from './types.js';
 import { deriveCompleteOdds, MARKET_LABELS } from './marketService.js';
 
-export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v1';
+export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v2';
 
 export interface LocalDecisionInput {
   scope: SlipScope;
@@ -59,6 +59,8 @@ export interface LocalDecisionInput {
     advanced?: any;
     tables?: any;
     lineups?: any;
+    /** Quando definido, a tip recomendada passa a ser ESTE mercado. */
+    forcedMarket?: MarketType;
   }>;
 }
 
@@ -72,6 +74,8 @@ export interface LocalEvaluatedMatch {
   riskTier: SlipTier;
   /** Tip alternativa de odd alta para a ficha Maluca (mercado real). */
   highRiskTip?: MatchTip;
+  /** Todas as tips calculadas para o jogo (todas as variáveis → p por mercado). */
+  tips: TipOption[];
   confidence: number;
   localScore: number;
 }
@@ -576,11 +580,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
 
   const realMarkets = match.odds.realMarkets;
   const allMarkets = Object.keys(P) as MarketType[];
-  // Sem realMarkets (dados antigos) avalia só 1X2; nunca usa um preço sem
-  // proveniência real para recomendar um mercado.
-  const markets = realMarkets
-    ? allMarkets.filter((m) => realMarkets.includes(m))
-    : allMarkets.filter((m) => m === 'home' || m === 'draw' || m === 'away');
+  // Sem realMarkets (dados antigos) só 1X2 tem preço; o resto é null em tips.
 
   // Seleção da tip por FAIXA de probabilidade — Todas as variáveis (forma, H2H,
   // mando, posição, escalação) existem para produzir p; a escolha pega o mercado
@@ -590,32 +590,57 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const BAND_LO = 0.55;
   const BAND_HI = 0.75;
   const ODD_FLOOR = 1.10;
-  const cands = markets
-    .map((m) => ({
-      m,
-      p: P[m] ?? 0,
-      odd: sanitizeOdd((compOdds as any)[m]),
-    }))
+  const forced = (match as any).forcedMarket as MarketType | undefined;
+
+  // Odd real do mercado; 0 = sem preço real (nunca fallback sintético).
+  const realOddOf = (m: MarketType): number => {
+    if (realMarkets && !realMarkets.includes(m)) return 0;
+    if (!realMarkets && m !== 'home' && m !== 'draw' && m !== 'away') return 0;
+    return sanitizeOdd((compOdds as any)[m], 0);
+  };
+
+  // TODAS as tips do jogo (probabilidade por mercado). `odds` fica null quando
+  // não há preço real — a UI mostra a probabilidade e desativa a seleção.
+  const allTips: TipOption[] = allMarkets
+    .map((m) => {
+      const labelFn = MARKET_LABELS[m];
+      const odd = realOddOf(m);
+      return {
+        market: m,
+        label: labelFn ? labelFn({ home: match.home, away: match.away }) : m,
+        odds: odd > 1.01 ? odd : null,
+        prob: Math.round(clamp(P[m] ?? 0, 0.01, 0.99) * 100),
+      } as TipOption;
+    })
+    .filter((t) => t.prob > 0);
+
+  const cands = allMarkets
+    .map((m) => ({ m, p: P[m] ?? 0, odd: realOddOf(m) }))
     .filter((x) => x.p > 0.01);
-  const valid = cands.filter((x) => x.odd >= ODD_FLOOR);
-  const pool = valid.length > 0 ? valid : cands;
-  const byProb = [...pool].sort((a, b) => b.p - a.p);
-  const inBand = byProb.filter((x) => x.p >= BAND_LO && x.p <= BAND_HI);
-  const b = (inBand.length > 0
-    ? inBand[0]
-    : byProb[0]) as { m: MarketType; p: number; odd: number };
+
+  let b: { m: MarketType; p: number; odd: number };
+  if (forced && P[forced] !== undefined) {
+    // Mercado forçado pelo utilizador (seletor de tip / ficha manual).
+    b = { m: forced, p: P[forced], odd: realOddOf(forced) };
+  } else {
+    const valid = cands.filter((x) => x.odd >= ODD_FLOOR);
+    const pool = valid.length > 0 ? valid : cands;
+    const byProb = [...pool].sort((a, bb) => bb.p - a.p);
+    const inBand = byProb.filter((x) => x.p >= BAND_LO && x.p <= BAND_HI);
+    b = inBand[0] ?? byProb[0] ?? { m: 'home' as MarketType, p: 0, odd: 0 };
+  }
 
   // EV continua a ser REPORTADO, mas não seleciona: é só p × odd − 1 do mercado
   // escolhido, informação de precificação, nunca critério de escolha.
-  const edge = b.p * b.odd - 1;
+  const edge = b.odd > 1.01 ? b.p * b.odd - 1 : 0;
 
   // Tip alternativa de odd alta para a Maluca. Usa o mesmo modelo e apenas
   // mercados com preço real; não é uma odd inventada, é outro mercado do jogo.
-  const highRiskPool = markets
+  const highRiskPool = allMarkets
     .map((m) => ({
       m,
       p: P[m] ?? 0,
-      odd: sanitizeOdd((compOdds as any)[m]),
+      odd: realOddOf(m),
     }))
     .filter((x) => Number.isFinite(x.odd) && x.odd > 1.01 && x.p > 0.01);
   const preferredHighRisk = (() => {
@@ -655,6 +680,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     selectedOdds: b.odd,
     riskTier,
     highRiskTip,
+    tips: allTips,
     confidence: Math.round(confidence * 1000) / 1000,
     // Pontuação do jogo = probabilidade calibrada. Puramente o modelo;
     // nada de EV aqui — a odd entra só na fase de precificar/apostar.

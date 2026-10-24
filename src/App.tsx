@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   MatchItem,
+  MatchTip,
   BetSlip,
   BackendStatus,
   AiMatchAnalysis,
@@ -14,6 +15,8 @@ import {
   HistoryFilter,
   TicketStockStatus,
   PremierBetUploadResult,
+  TipMarket,
+  CartLeg,
 } from './types.js';
 import * as api from './api.js';
 import { Header } from './components/Header.tsx';
@@ -25,7 +28,8 @@ import { UploadSlipModal } from './components/UploadSlipModal.tsx';
 import { ApiConfigModal } from './components/ApiConfigModal.tsx';
 import { AiAnalysisModal } from './components/AiAnalysisModal.tsx';
 import { AiSmartSlipModal } from './components/AiSmartSlipModal.tsx';
-import { Zap, CheckCircle2, RotateCcw, Cpu, Loader2 } from 'lucide-react';
+import { CustomSlipDrawer } from './components/CustomSlipDrawer.tsx';
+import { Zap, CheckCircle2, RotateCcw, Cpu, Loader2, ShoppingCart } from 'lucide-react';
 import { getSavedTimezone, saveTimezone, getDayKeyInTz } from './utils/timezone.js';
 import { leagueRank } from './utils/leagues.js';
 
@@ -50,6 +54,13 @@ export default function App() {
   const [selectedMatchForAi, setSelectedMatchForAi] = useState<MatchItem | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AiMatchAnalysis | null>(null);
   const [uploadSlip, setUploadSlip] = useState<BetSlip | null>(null);
+
+  // Geração automática por tipo de tip + carrinho da ficha manual
+  const [tipMarkets, setTipMarkets] = useState<TipMarket[]>([]);
+  const [selectedMarket, setSelectedMarket] = useState('');
+  const [cart, setCart] = useState<CartLeg[]>([]);
+  const [isCartOpen, setIsCartOpen] = useState(false);
+  const [creatingCustom, setCreatingCustom] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -104,6 +115,16 @@ export default function App() {
     loadInitialData();
   }, [loadInitialData]);
 
+  // Tipos de tip disponíveis para a geração automática.
+  useEffect(() => {
+    api
+      .fetchTipMarkets()
+      .then(setTipMarkets)
+      .catch(() => {
+        /* o seletor fica só com a opção automática */
+      });
+  }, []);
+
   // Periodic refresh & live tick (every 4s sync with backend)
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -151,7 +172,12 @@ export default function App() {
   const handleGenerateScope = async (targetScope: 'dia' | '2_3_dias' | 'longo') => {
     try {
       setGenerating(true);
-      const result = await api.generateTickets(targetScope, Array.from(activeLeagues), 2);
+      const result = await api.generateTickets(
+        targetScope,
+        Array.from(activeLeagues),
+        2,
+        selectedMarket || undefined
+      );
       setSlips(result.all);
       if (result.stock) setStock(result.stock);
       setScope(targetScope);
@@ -176,6 +202,71 @@ export default function App() {
       showToast(err?.message || 'Erro ao gerar bilhetes');
     } finally {
       setGenerating(false);
+    }
+  };
+
+  // -------------------------------------------------- ficha manual / carrinho ---
+  const isInCart = (matchId: string, market: string) =>
+    cart.some((leg) => leg.matchId === matchId && leg.market === market);
+
+  const handleAddToCart = (match: MatchItem, tip: MatchTip) => {
+    const odds = tip.odds;
+    if (odds == null) return;
+
+    if (isInCart(match.id, tip.market)) return;
+
+    setCart((prev) => [
+      ...prev,
+      {
+        matchId: match.id,
+        market: tip.market,
+        label: tip.label,
+        odds,
+        prob: tip.prob,
+        home: match.home,
+        away: match.away,
+        league: match.league,
+      },
+    ]);
+  };
+
+  const handleRemoveFromCart = (matchId: string, market: string) => {
+    setCart((prev) => prev.filter((leg) => !(leg.matchId === matchId && leg.market === market)));
+  };
+
+  const handleCreateCustomSlip = async (
+    targetScope: 'dia' | '2_3_dias' | 'longo',
+    targetTier?: SlipTier
+  ): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      setCreatingCustom(true);
+      const result = await api.createCustomSlip(
+        targetScope,
+        cart.map((leg) => ({ matchId: leg.matchId, market: leg.market })),
+        targetTier
+      );
+
+      setSlips(result.all);
+      setScope(targetScope);
+      setTier(result.slip.tier);
+      setLastGeneratedTime(
+        new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })
+      );
+      setCart([]);
+      setIsCartOpen(false);
+
+      const scopeLabel =
+        targetScope === 'dia' ? 'Hoje' : targetScope === '2_3_dias' ? '2 a 3 Dias' : 'Longo Prazo';
+      showToast(
+        `Ficha manual de ${scopeLabel} criada com ${result.slip.legs.length} jogo(s).`
+      );
+      return { ok: true };
+    } catch (err: any) {
+      const message = err?.message || 'Erro ao criar a ficha manual';
+      showToast(message);
+      return { ok: false, error: message };
+    } finally {
+      setCreatingCustom(false);
     }
   };
 
@@ -449,6 +540,9 @@ export default function App() {
         onGenerateScope={handleGenerateScope}
         onOpenAiSlipModal={() => setIsAiSlipModalOpen(true)}
         generating={generating}
+        tipMarkets={tipMarkets}
+        selectedMarket={selectedMarket}
+        onMarketChange={setSelectedMarket}
       />
 
       {/* Main Layout */}
@@ -467,6 +561,10 @@ export default function App() {
             onSimulateNext={handleSimulateNext}
             isSimulating={isSimulating}
             timezone={timezone}
+            onAddToCart={handleAddToCart}
+            isInCart={isInCart}
+            cartCount={cart.length}
+            onOpenCart={() => setIsCartOpen(true)}
           />
 
           {/* Right Section: Slips Grid */}
@@ -701,6 +799,19 @@ export default function App() {
         </div>
       </main>
 
+      {/* Carrinho da ficha manual */}
+      {cart.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setIsCartOpen(true)}
+          className="fixed bottom-6 left-6 z-40 cursor-pointer flex items-center gap-2 px-4 py-3 rounded-full bg-[#173C27] hover:bg-[#20502F] border border-[#E7B33E]/40 text-[#F5F3EC] font-semibold text-sm shadow-2xl active:translate-y-[1px]"
+          title="Abrir carrinho de seleções para ficha manual"
+        >
+          <ShoppingCart className="w-4 h-4 text-[#E7B33E]" />
+          <span>Seleções ({cart.length})</span>
+        </button>
+      )}
+
       {/* Ação global: gerar ficha a partir de qualquer parte do site */}
       <button
         type="button"
@@ -738,6 +849,18 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Carrinho / ficha manual */}
+      <CustomSlipDrawer
+        isOpen={isCartOpen}
+        legs={cart}
+        defaultScope={scope === 'historico' ? 'dia' : scope}
+        creating={creatingCustom}
+        onClose={() => setIsCartOpen(false)}
+        onRemove={handleRemoveFromCart}
+        onClear={() => setCart([])}
+        onCreate={handleCreateCustomSlip}
+      />
 
       {/* Modals */}
       <ApiConfigModal

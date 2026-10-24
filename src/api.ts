@@ -7,6 +7,8 @@ import {
   PremierBetStatus,
   PremierBetUploadResult,
   SlipUpload,
+  TipMarket,
+  SlipTier,
 } from './types.js';
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
@@ -66,10 +68,17 @@ export async function uploadSlip(
   return data as PremierBetUploadResult;
 }
 
+export async function fetchTipMarkets(): Promise<TipMarket[]> {
+  const res = await fetch('/api/tips/markets');
+  if (!res.ok) throw new Error('Falha ao carregar os tipos de tip');
+  return res.json();
+}
+
 export async function generateTickets(
   scope: 'dia' | '2_3_dias' | 'longo',
   leagues?: string[],
-  limit = 4
+  limit = 4,
+  market?: string
 ): Promise<{
   generated: BetSlip[];
   all: BetSlip[];
@@ -79,13 +88,30 @@ export async function generateTickets(
   const res = await fetch('/api/tickets/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scope, leagues, limit }),
+    body: JSON.stringify({ scope, leagues, limit, market: market || undefined }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Erro ao gerar bilhetes');
   }
   return res.json();
+}
+
+export async function createCustomSlip(
+  scope: 'dia' | '2_3_dias' | 'longo',
+  legs: Array<{ matchId: string; market: string }>,
+  tier?: SlipTier
+): Promise<{ slip: BetSlip; all: BetSlip[] }> {
+  const res = await fetch('/api/tickets/custom', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope, legs, tier }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || 'Erro ao criar a ficha manual');
+  }
+  return data as { slip: BetSlip; all: BetSlip[] };
 }
 
 export async function resolveMatch(

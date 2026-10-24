@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BetSlip, MatchItem, SlipScope, SlipTier } from './types.js';
+import { BetSlip, MatchItem, MarketType, SlipScope, SlipTier } from './types.js';
 import {
   marketService,
   leaguePriorityRank,
@@ -12,6 +12,7 @@ import {
 } from './marketService.js';
 import { callLocalInferenceEngine, type LocalDecisionInput } from './aiscoreEngine.js';
 import { aiscoreClient } from './aiscoreService.js';
+import { resolvePremierBetOdds } from './premierbetOdds.js';
 import { bilheteriaDb } from './db.js';
 import { getDayKey } from './time.js';
 
@@ -197,6 +198,12 @@ export const EXPIRY_GRACE_HOURS = envInt('TICKETS_EXPIRY_GRACE_HOURS', 6);
 export interface GenerateOptions {
   /** Máximo de fichas novas a devolver nesta geração (default: 5). */
   limit?: number;
+  /**
+   * Tipo de tip forçado (ex.: 'over35', 'double_chance_1x'). Quando definido,
+   * o motor calcula ESSE mercado para todos os jogos do escopo e monta a ficha
+   * só com ele. Sem preço real no feed, tenta obter a odd na Premier Bet.
+   */
+  market?: MarketType;
 }
 
 
@@ -229,45 +236,11 @@ export class TicketEngine {
    */
   public async init(): Promise<void> {
     if (this.initialized) return;
+    // As fichas persistidas são a fonte de verdade: NÃO se apaga nenhuma no
+    // arranque (nem por odds antigas, nem por alvo de tier desatualizado).
+    // Fichas existentes sobrevivem a restart/redeploy desde que a base de
+    // dados esteja num volume (ver docker-compose.yml / MySQL).
     this.slips = await bilheteriaDb.loadSlips();
-
-    // Migração de segurança: fichas pendentes antigas foram construídas com
-    // odds de fallback (2.10/3.20/3.40) e nunca foram enviadas. Essas odds
-    // sintéticas não podem continuar a ser apresentadas como mercado real;
-    // descartamos apenas as que não têm registo de submissão. As que já foram
-    // enviadas para a Premier Bet ficam no histórico (há dinheiro envolvido).
-    const uploadedIds = new Set(bilheteriaDb.getUploads().map((u) => u.slipId));
-    const syntheticPending = this.slips.filter(
-      (slip) =>
-        slip.status === 'pendente' &&
-        !uploadedIds.has(slip.id) &&
-        slip.legs.some((leg) => !leg.odds?.realMarkets)
-    );
-    if (syntheticPending.length > 0) {
-      const ids = new Set(syntheticPending.map((slip) => slip.id));
-      this.slips = this.slips.filter((slip) => !ids.has(slip.id));
-      bilheteriaDb.deleteSlips([...ids]);
-      console.log(
-        `[Bilheteria] ${syntheticPending.length} ficha(s) pendente(s) com odds sintéticas removida(s); serão regeneradas com odds reais.`
-      );
-    }
-
-    // Migração de alvos: fichas pendentes antigas que ficaram abaixo do novo
-    // alvo do tier (ex.: Ousada 55x quando o alvo passou a 100x) e que nunca
-    // foram submetidas são removidas para o motor gerar uma seleção nova.
-    const staleTargetPending = this.slips.filter((slip) => {
-      if (slip.status !== 'pendente' || uploadedIds.has(slip.id)) return false;
-      const target = TICKET_TARGETS[slip.tier]?.targetOdds;
-      return Number.isFinite(target) && slip.combinedOdds < target - 0.01;
-    });
-    if (staleTargetPending.length > 0) {
-      const ids = new Set(staleTargetPending.map((slip) => slip.id));
-      this.slips = this.slips.filter((slip) => !ids.has(slip.id));
-      bilheteriaDb.deleteSlips([...ids]);
-      console.log(
-        `[Bilheteria] ${staleTargetPending.length} ficha(s) pendente(s) abaixo do novo alvo removida(s); serão regeneradas pelo motor.`
-      );
-    }
 
     // Continua a numeração a partir da última ficha persistida (evita IDs repetidos).
     let maxSeq = 100;
@@ -384,6 +357,72 @@ export class TicketEngine {
       return { generated: [], all: this.slips, jevLatencyMs: 0 };
     }
 
+    // Odds reais para os mercados que o feed do AiScore não cobre (dupla
+    // chance, over/under 1.5/3.5, DNB). Com tip forçada, só esse mercado;
+    // na geração automática enriquece um lote pequeno para diversificar as
+    // tips (mais 1X/X2/+1.5/+3.5 em vez de só "vitória").
+    const forcedMarket = options?.market;
+    const EXTRA_MARKETS: MarketType[] = [
+      'double_chance_1x', 'double_chance_x2', 'over15',
+      'over35', 'under35', 'dnb_home', 'dnb_away',
+    ];
+    const enrichMarkets = forcedMarket ? [forcedMarket] : EXTRA_MARKETS;
+    const enrichEnabled = forcedMarket || process.env.PREMIERBET_ENRICH !== '0';
+    if (enrichEnabled) {
+      const missing = (m: (typeof filtered)[number]): boolean => {
+        const rm = m.odds.realMarkets;
+        return enrichMarkets.some((mk) => !rm?.includes(mk));
+      };
+      const cap = forcedMarket ? 40 : 20;
+      const need = filtered
+        .filter(missing)
+        .sort((a, b) => pickScore(b) - pickScore(a))
+        .slice(0, cap);
+      if (need.length > 0) {
+        try {
+          const pb = await resolvePremierBetOdds(
+            need.map((m) => ({
+              home: m.home,
+              away: m.away,
+              kickoffAt: m.kickoffAt,
+              date: m.dateStr,
+              markets: enrichMarkets,
+            })),
+            forcedMarket ? 120_000 : 60_000
+          );
+          let filled = 0;
+          need.forEach((m, i) => {
+            const result =
+              pb.results[i] ??
+              pb.results.find(
+                (r) =>
+                  r.home.trim().toLowerCase() === m.home.trim().toLowerCase() &&
+                  r.away.trim().toLowerCase() === m.away.trim().toLowerCase()
+              );
+            if (!result) return;
+            const real = new Set(m.odds.realMarkets || []);
+            for (const mk of enrichMarkets) {
+              const odd = result.odds?.[mk];
+              if (typeof odd === 'number' && Number.isFinite(odd) && odd > 1.01) {
+                (m.odds as any)[mk] = Number(odd.toFixed(2));
+                real.add(mk);
+                filled += 1;
+              }
+            }
+            m.odds.realMarkets = Array.from(real);
+          });
+          if (filled > 0) {
+            console.log(
+              `[PremierBet] ${filled} odd(s) real(is) anexada(s) ao motor` +
+                (forcedMarket ? ` (mercado "${forcedMarket}").` : ' (mercados extra).')
+            );
+          }
+        } catch (err: any) {
+          console.warn('[PremierBet] falha a enriquecer odds reais:', err?.message);
+        }
+      }
+    }
+
     // Enriquece com o scout COMPLETO do AiScore (todas as variáveis) antes
     // do motor local — falha não bloqueia (o motor usa o contexto resumido).
     // Damos prioridade às ligas que podem entrar nas fichas; o resto recebe
@@ -421,6 +460,7 @@ export class TicketEngine {
         advanced: (m as any).advanced,
         tables: (m as any).tables,
         lineups: (m as any).lineups,
+        forcedMarket: options?.market,
       })),
     };
 
@@ -457,12 +497,16 @@ export class TicketEngine {
       return m;
     });
 
-    // TODOS os jogos avaliados ficam à disposição das fichas — o motor correu
-    // por todo o horizonte, então não há filtro que esconda jogos por liga ou
-    // por probabilidade. Ligas principais continuam prioritárias apenas na
-    // ORDENAÇÃO (orderTopFirst + pickScore), nunca como exclusão.
+    // Whitelist de ligas para fichas: principais + Conference, J1 (Japão),
+    // Süper Lig (Turquia), SuperLiga sérvia (Estrela Vermelha), Saudi Pro
+    // League e Eredivisie. As principais continuam à frente na ordenação;
+    // ligas fora da lista (ex.: México/MLS) não entram nas fichas.
     const selectionPool = evaluatedMatches.filter(
-      (m) => m.tip && m.tip.odds > 1.01 && Number.isFinite(m.tip.prob)
+      (m) =>
+        isMainLeague(m.league, m.competitionId) &&
+        m.tip &&
+        m.tip.odds > 1.01 &&
+        Number.isFinite(m.tip.prob)
     );
 
     if (selectionPool.length === 0) {

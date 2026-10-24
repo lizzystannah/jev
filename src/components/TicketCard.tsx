@@ -257,7 +257,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
                   <div className="text-[10px] uppercase tracking-wider text-[rgba(245,243,236,0.4)] font-body">
                     Odd
                   </div>
-                  {leg.tip.odds.toFixed(2)}
+                  {leg.tip.odds != null ? leg.tip.odds.toFixed(2) : '—'}
                 </div>
               </div>
             );

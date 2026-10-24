@@ -620,8 +620,13 @@ def _sanitize_odd(v) -> float | None:
 
 def evaluate_match(scout: dict, odds: dict | None = None,
                    advanced: dict | None = None,
-                   tables=None, lineups=None, context=None) -> dict:
-    """Avalia UMA partida. Retorna shape compativel com o antigo JevEvaluatedMatch."""
+                   tables=None, lineups=None, context=None,
+                   forced_market: str | None = None) -> dict:
+    """Avalia UMA partida. Retorna shape compativel com o antigo JevEvaluatedMatch.
+
+    forced_market: mercado escolhido pelo utilizador (ex.: 'over35'); a tip
+    passa a ser esse mercado, com a odd real se existir (senao None).
+    """
     mp = market_probabilities(scout, advanced, tables, lineups, context)
     probs: dict = mp["probs"]
     xg = mp["xg"]
@@ -644,7 +649,13 @@ def evaluate_match(scout: dict, odds: dict | None = None,
     BAND_LO, BAND_HI, ODD_FLOOR = 0.55, 0.75, 1.10
     cands = [(p, m, full_odds[m]) for m, p in probs.items()
              if full_odds[m] is not None and p > 0.01]
-    if cands:
+    if forced_market and forced_market in probs:
+        # Mercado forçado pelo utilizador (seletor de tip / ficha manual).
+        best_m = forced_market
+        best_p = probs[forced_market]
+        best_odd = full_odds.get(forced_market)
+        best_edge = (best_p * best_odd - 1) if best_odd else None
+    elif cands:
         pool = [c for c in cands if c[2] >= ODD_FLOOR] or cands
         in_band = [c for c in pool if BAND_LO <= c[0] <= BAND_HI]
         best_p, best_m, best_odd = max(in_band or pool, key=lambda c: c[0])
@@ -653,6 +664,11 @@ def evaluate_match(scout: dict, odds: dict | None = None,
         # Sem preco real nenhum: tip por probabilidade pura, sem odd/EV
         best_m, best_p = max(probs.items(), key=lambda kv: kv[1])
         best_odd, best_edge = None, None
+
+    # Todas as tips do jogo (probabilidade por mercado; odd real ou None).
+    tips = [{"market": m, "label": MARKET_LABELS_PT.get(m, m),
+             "odds": full_odds.get(m), "prob": int(round(_clamp(p, 0.01, 0.99) * 100))}
+            for m, p in probs.items()]
 
     calib = int(round(_clamp(best_p, 0.10, 0.95) * 100))
     tier = "segura" if calib >= 63 else ("moderada" if calib >= 48 else "ousada")
@@ -686,6 +702,7 @@ def evaluate_match(scout: dict, odds: dict | None = None,
         "marketLabel": MARKET_LABELS_PT.get(best_m, best_m),
         "selectedOdds": best_odd,
         "riskTier": tier,
+        "tips": tips,
         "confidence": round(confidence, 3),
         # Pontuacao do jogo = probabilidade calibrada (o modelo); nada de EV aqui
         "localScore": calib,
