@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+﻿import React, { useMemo, useState } from 'react';
 import { BetSlip, JevStatus, SlipScope } from '../types.js';
 import { EngineSlipsPanel } from './EngineSlipsPanel.js';
 import { SCOPE_OPTIONS, ScopeOption, engineOf } from '../utils/slips.js';
@@ -22,6 +22,7 @@ interface JevTabProps {
   allSlips: BetSlip[];
   timezone: string;
   onUpload: (slip: BetSlip) => void;
+  onDelete: (slip: BetSlip) => void;
 }
 
 interface EngineSummary {
@@ -44,7 +45,7 @@ const scopeLabels: Record<SlipScope, string> = {
   dia: 'Hoje',
   '2_3_dias': '2 a 3 Dias',
   longo: 'Longo Prazo',
-  historico: 'Histórico',
+  historico: 'HistÃ³rico',
 };
 
 const SummaryCard: React.FC<{ title: string; summary: EngineSummary; accent: string }> = ({
@@ -80,7 +81,7 @@ const SummaryCard: React.FC<{ title: string; summary: EngineSummary; accent: str
       <div className="mt-3 pt-2.5 border-t border-[rgba(245,243,236,0.1)] flex items-center justify-between text-[11px]">
         <span className="text-[rgba(245,243,236,0.5)]">Taxa de acerto</span>
         <span className="font-display text-base font-semibold" style={{ color: accent }}>
-          {rate == null ? '—' : `${rate.toFixed(1)}%`}
+          {rate == null ? 'â€”' : `${rate.toFixed(1)}%`}
         </span>
       </div>
     </div>
@@ -98,6 +99,7 @@ export const JevTab: React.FC<JevTabProps> = ({
   allSlips,
   timezone,
   onUpload,
+  onDelete,
 }) => {
   const [scope, setScope] = useState<ScopeOption>('dia');
   const [limit, setLimit] = useState(4);
@@ -162,7 +164,7 @@ export const JevTab: React.FC<JevTabProps> = ({
           <div className="mt-4 flex items-start gap-2 rounded border border-[rgba(231,179,62,0.35)] bg-[rgba(231,179,62,0.1)] px-3 py-2.5 text-xs text-[#E7B33E]">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <div>
-              <p className="font-semibold">Estado do JEV indisponível.</p>
+              <p className="font-semibold">Estado do JEV indisponÃ­vel.</p>
               <p className="mt-0.5 text-[rgba(245,243,236,0.7)]">
                 Confirma o backend e define <code className="font-mono">JEV_API_KEY</code> e{' '}
                 <code className="font-mono">JEV_MODEL</code> no ficheiro <code className="font-mono">.env</code>.
@@ -173,11 +175,11 @@ export const JevTab: React.FC<JevTabProps> = ({
           <div className="mt-4 flex items-start gap-2 rounded border border-[rgba(231,179,62,0.35)] bg-[rgba(231,179,62,0.1)] px-3 py-2.5 text-xs text-[#E7B33E]">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <div>
-              <p className="font-semibold">JEV não configurado.</p>
+              <p className="font-semibold">JEV nÃ£o configurado.</p>
               <p className="mt-0.5 text-[rgba(245,243,236,0.7)]">
                 Define <code className="font-mono">JEV_API_KEY</code> e{' '}
                 <code className="font-mono">JEV_MODEL</code> no ficheiro <code className="font-mono">.env</code>{' '}
-                e reinicia o servidor para ativar a geração.
+                e reinicia o servidor para ativar a geraÃ§Ã£o.
               </p>
               {jevStatus?.model && (
                 <p className="mt-1 text-[rgba(245,243,236,0.6)]">
@@ -193,10 +195,10 @@ export const JevTab: React.FC<JevTabProps> = ({
               Configurado
             </span>
             <span>
-              Modelo: <strong className="text-[#F5F3EC]">{jevStatus?.model || '—'}</strong>
+              Modelo: <strong className="text-[#F5F3EC]">{jevStatus?.model || 'â€”'}</strong>
             </span>
             <span>
-              Provider: <strong className="text-[#F5F3EC]">{jevStatus?.provider || '—'}</strong>
+              Provider: <strong className="text-[#F5F3EC]">{jevStatus?.provider || 'â€”'}</strong>
             </span>
             {jevStatus?.endpoint && (
               <span className="truncate max-w-full">
@@ -213,7 +215,7 @@ export const JevTab: React.FC<JevTabProps> = ({
             <span className="block text-[10px] font-semibold uppercase tracking-wider text-[rgba(245,243,236,0.5)] mb-1.5">
               Escopo
             </span>
-            <div className="flex flex-wrap gap-2" role="tablist" aria-label="Escopo da geração JEV">
+            <div className="flex flex-wrap gap-2" role="tablist" aria-label="Escopo da geraÃ§Ã£o JEV">
               {SCOPE_OPTIONS.map((option) => (
                 <button
                   key={option.id}
@@ -274,14 +276,14 @@ export const JevTab: React.FC<JevTabProps> = ({
           </button>
         </div>
         <p className="mt-3 text-[11px] text-[rgba(245,243,236,0.45)]">
-          A geração JEV cria fichas para o escopo {scopeLabels[scope].toLowerCase()} com um
-          máximo de {limit} fichas por pedido.
+          A geraÃ§Ã£o JEV cria fichas para o escopo {scopeLabels[scope].toLowerCase()} com um
+          mÃ¡ximo de {limit} fichas por pedido.
         </p>
       </div>
 
       <div className="mb-6">
         <h2 className="font-display text-xl font-semibold text-[#F5F3EC] mb-3">
-          Comparação de eficiência
+          ComparaÃ§Ã£o de eficiÃªncia
         </h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <SummaryCard title="Motor principal" summary={summary.principal} accent="#4FAE73" />
@@ -294,11 +296,13 @@ export const JevTab: React.FC<JevTabProps> = ({
         timezone={timezone}
         title="Fichas JEV"
         subtitle="Fichas geradas pelo motor JEV, agrupadas por escopo e tier."
-        emptyTitle="Ainda não há fichas JEV."
-        emptyHint="Configura o motor e usa o botão Gerar com JEV para criar as primeiras fichas."
-        historyTitle="Histórico JEV"
+        emptyTitle="Ainda nÃ£o hÃ¡ fichas JEV."
+        emptyHint="Configura o motor e usa o botÃ£o Gerar com JEV para criar as primeiras fichas."
+        historyTitle="HistÃ³rico JEV"
         onUpload={onUpload}
+        onDelete={onDelete}
       />
     </div>
   );
 };
+

@@ -1122,6 +1122,18 @@ export class TicketEngine {
   }
 
   /** Limpa todos os bilhetes (usado no reset — pernas antigas ficam órfãs). */
+  /**
+   * Remove uma ficha da memória e da base de dados (inclui o registo de
+   * submissão Premier Bet associado). Devolve false se não existir.
+   */
+  public deleteSlip(id: string): boolean {
+    const index = this.slips.findIndex((slip) => slip.id === id);
+    if (index === -1) return false;
+    this.slips.splice(index, 1);
+    bilheteriaDb.deleteSlips([id]);
+    return true;
+  }
+
   public clearSlips(): void {
     this.slips = [];
     bilheteriaDb.deleteAllSlips();

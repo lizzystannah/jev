@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { BetSlip } from '../types.js';
 import {
   Activity,
@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   Hourglass,
+  Trash2,
   UploadCloud,
   XCircle,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ interface HistoryListProps {
   emptyTitle: string;
   emptyHint: string;
   onUpload?: (slip: BetSlip) => void;
+  onDelete?: (slip: BetSlip) => void;
 }
 
 function formatKzShort(value: number): string {
@@ -69,6 +71,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   emptyTitle,
   emptyHint,
   onUpload,
+  onDelete,
 }) => {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [visibleCount, setVisibleCount] = useState(50);
@@ -167,7 +170,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                       )}
                       {slip.upload?.status === 'placed' && (
                         <span className="text-[#4FAE73] font-medium">
-                          No ar · {formatKzShort(slip.upload.stake)}
+                          No ar Â· {formatKzShort(slip.upload.stake)}
                         </span>
                       )}
                       {slip.upload?.status === 'unknown' && (
@@ -189,18 +192,31 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                   )}
                 </button>
 
-                {!isOpen && slip.status === 'pendente' && onUpload && (
-                  <div className="flex shrink-0 items-center pr-3 pl-1">
-                    <button
-                      type="button"
-                      onClick={() => onUpload(slip)}
-                      className="cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded bg-[#E7B33E] text-[#3A2A06] hover:bg-[#F0C869] transition-colors"
-                      title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
-                    >
-                      <UploadCloud className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Subir ficha</span>
-                      <span className="sm:hidden">Subir</span>
-                    </button>
+                {!isOpen && (onUpload || onDelete) && (
+                  <div className="flex shrink-0 items-center gap-2 pr-3 pl-1">
+                    {slip.status === 'pendente' && onUpload && (
+                      <button
+                        type="button"
+                        onClick={() => onUpload(slip)}
+                        className="cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded bg-[#E7B33E] text-[#3A2A06] hover:bg-[#F0C869] transition-colors"
+                        title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Subir ficha</span>
+                        <span className="sm:hidden">Subir</span>
+                      </button>
+                    )}
+                    {onDelete && (
+                      <button
+                        type="button"
+                        onClick={() => onDelete(slip)}
+                        className="cursor-pointer inline-flex items-center justify-center w-8 h-8 rounded border border-[#D1594B]/50 text-[#D1594B] hover:bg-[#D1594B] hover:text-[#F5F3EC] transition-colors"
+                        title="Excluir ficha (remove da memória e da base de dados)"
+                        aria-label={`Excluir ficha ${slip.id}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -221,25 +237,25 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                               <span className="text-[#F5F3EC]">
                                 {formatMatchSchedule(leg.kickoffAt, timezone, leg.daysFromNow)}
                               </span>
-                              <span className="text-[rgba(245,243,236,0.25)]">·</span>
+                              <span className="text-[rgba(245,243,236,0.25)]">Â·</span>
                               <span className="truncate">{leg.league}</span>
                             </div>
                             <div className="text-[12.5px] font-medium text-[#F5F3EC] truncate">
-                              {leg.home} × {leg.away}
+                              {leg.home} Ã— {leg.away}
                             </div>
                             <div className="text-[11.5px] text-[#E7B33E] truncate">
-                              {leg.tip.label} · odd{' '}
-                              {leg.tip.odds != null ? leg.tip.odds.toFixed(2) : '—'} · {leg.tip.prob}%
+                              {leg.tip.label} Â· odd{' '}
+                              {leg.tip.odds != null ? leg.tip.odds.toFixed(2) : 'â€”'} Â· {leg.tip.prob}%
                             </div>
                             <div className="text-[10.5px] mt-0.5">
                               {resolved ? (
                                 won ? (
                                   <span className="text-[#4FAE73] font-medium">
-                                    ✓ Acertou ({leg.result?.homeScore}-{leg.result?.awayScore})
+                                    âœ“ Acertou ({leg.result?.homeScore}-{leg.result?.awayScore})
                                   </span>
                                 ) : (
                                   <span className="text-[#D1594B] font-medium">
-                                    ✕ Falhou ({leg.result?.homeScore}-{leg.result?.awayScore})
+                                    âœ• Falhou ({leg.result?.homeScore}-{leg.result?.awayScore})
                                   </span>
                                 )
                               ) : (
@@ -256,34 +272,51 @@ export const HistoryList: React.FC<HistoryListProps> = ({
 
                   {slip.rationale && (
                     <div className="mt-2.5 p-2 rounded bg-[#0E2A1C]/70 border border-[rgba(245,243,236,0.08)] text-[11px] text-[rgba(245,243,236,0.65)] italic leading-tight">
-                      💡 {slip.rationale}
+                      ðŸ’¡ {slip.rationale}
                     </div>
                   )}
 
-                  {slip.status === 'pendente' && onUpload && (
+                  {(onDelete || (slip.status === 'pendente' && onUpload)) && (
                     <div className="mt-2.5 flex items-center justify-between gap-2">
                       <span className="text-[10.5px] text-[rgba(245,243,236,0.5)]">
-                        {slip.upload?.status === 'in_progress'
-                          ? 'Submissão em curso na Premier Bet...'
-                          : slip.upload?.status === 'placed'
-                            ? `No ar na Premier Bet · ${formatKzShort(slip.upload.stake)}`
-                            : slip.upload?.status === 'unknown'
-                              ? 'Colocação por confirmar na Premier Bet'
-                              : slip.upload?.status === 'dry_run'
-                                ? 'Última tentativa foi apenas um teste'
-                                : slip.upload?.status === 'failed'
-                                  ? 'A última tentativa falhou'
-                                  : 'Ainda não subida para a Premier Bet'}
+                        {slip.status !== 'pendente'
+                          ? ''
+                          : slip.upload?.status === 'in_progress'
+                            ? 'Submissão em curso na Premier Bet...'
+                            : slip.upload?.status === 'placed'
+                              ? `No ar na Premier Bet · ${formatKzShort(slip.upload.stake)}`
+                              : slip.upload?.status === 'unknown'
+                                ? 'Colocação por confirmar na Premier Bet'
+                                : slip.upload?.status === 'dry_run'
+                                  ? 'Última tentativa foi apenas um teste'
+                                  : slip.upload?.status === 'failed'
+                                    ? 'A última tentativa falhou'
+                                    : 'Ainda não subida para a Premier Bet'}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => onUpload(slip)}
-                        className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded border border-[#E7B33E]/60 text-[#E7B33E] hover:bg-[#E7B33E] hover:text-[#3A2A06] transition-colors"
-                        title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
-                      >
-                        <UploadCloud className="w-3.5 h-3.5" />
-                        {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir ficha'}
-                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {slip.status === 'pendente' && onUpload && (
+                          <button
+                            type="button"
+                            onClick={() => onUpload(slip)}
+                            className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded border border-[#E7B33E]/60 text-[#E7B33E] hover:bg-[#E7B33E] hover:text-[#3A2A06] transition-colors"
+                            title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
+                          >
+                            <UploadCloud className="w-3.5 h-3.5" />
+                            {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir ficha'}
+                          </button>
+                        )}
+                        {onDelete && (
+                          <button
+                            type="button"
+                            onClick={() => onDelete(slip)}
+                            className="cursor-pointer shrink-0 inline-flex items-center justify-center w-8 h-8 rounded border border-[#D1594B]/50 text-[#D1594B] hover:bg-[#D1594B] hover:text-[#F5F3EC] transition-colors"
+                            title="Excluir ficha (remove da memória e da base de dados)"
+                            aria-label={`Excluir ficha ${slip.id}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -305,3 +338,4 @@ export const HistoryList: React.FC<HistoryListProps> = ({
     </div>
   );
 };
+

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+﻿import React, { useMemo, useState } from 'react';
 import { BetSlip, HistoryFilter, SlipTier } from '../types.js';
 import { TicketCard } from './TicketCard.js';
 import { HistoryList } from './HistoryList.js';
@@ -14,6 +14,7 @@ interface EngineSlipsPanelProps {
   emptyHint: string;
   historyTitle: string;
   onUpload: (slip: BetSlip) => void;
+  onDelete: (slip: BetSlip) => void;
 }
 
 const emptyTierCounts = (): Record<SlipTier, number> => ({
@@ -39,19 +40,19 @@ const historyFilterLabel: Record<HistoryFilter, string> = {
 const historyEmpty: Record<HistoryFilter, { title: string; hint: string }> = {
   andamento: {
     title: 'Nenhuma ficha em andamento.',
-    hint: 'As fichas pendentes deste motor aparecem aqui até serem resolvidas.',
+    hint: 'As fichas pendentes deste motor aparecem aqui atÃ© serem resolvidas.',
   },
   ganhas: {
-    title: 'Ainda não há fichas ganhas.',
+    title: 'Ainda nÃ£o hÃ¡ fichas ganhas.',
     hint: 'Quando todas as pernas acertarem, a ficha passa para esta vista.',
   },
   perdidas: {
-    title: 'Ainda não há fichas perdidas.',
+    title: 'Ainda nÃ£o hÃ¡ fichas perdidas.',
     hint: 'Uma ficha cai para aqui quando a primeira perna falha.',
   },
   vencidas: {
-    title: 'Ainda não há fichas vencidas.',
-    hint: 'Fichas sem resolução dentro do prazo ficam aqui.',
+    title: 'Ainda nÃ£o hÃ¡ fichas vencidas.',
+    hint: 'Fichas sem resoluÃ§Ã£o dentro do prazo ficam aqui.',
   },
 };
 
@@ -64,6 +65,7 @@ export const EngineSlipsPanel: React.FC<EngineSlipsPanelProps> = ({
   emptyHint,
   historyTitle,
   onUpload,
+  onDelete,
 }) => {
   const [tierByScope, setTierByScope] = useState<Record<ScopeOption, SlipTier>>({
     dia: 'segura',
@@ -177,6 +179,7 @@ export const EngineSlipsPanel: React.FC<EngineSlipsPanelProps> = ({
                         slip={slip}
                         timezone={timezone}
                         onUpload={onUpload}
+                        onDelete={onDelete}
                       />
                     ))}
                   </div>
@@ -191,7 +194,7 @@ export const EngineSlipsPanel: React.FC<EngineSlipsPanelProps> = ({
         <h3 className="font-display text-xl font-semibold text-[#F5F3EC] mb-3">
           {historyTitle}
         </h3>
-        <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filtrar histórico do motor">
+        <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filtrar histÃ³rico do motor">
           {(['andamento', 'ganhas', 'perdidas', 'vencidas'] as HistoryFilter[]).map((filter) => {
             const active = historyFilter === filter;
             return (
@@ -219,8 +222,10 @@ export const EngineSlipsPanel: React.FC<EngineSlipsPanelProps> = ({
           emptyTitle={historyEmpty[historyFilter].title}
           emptyHint={historyEmpty[historyFilter].hint}
           onUpload={onUpload}
+          onDelete={onDelete}
         />
       </div>
     </section>
   );
 };
+

@@ -311,6 +311,37 @@ async function startServer() {
     res.json(ticketScheduler.getStatus());
   });
 
+  // Excluir ficha (memória + base de dados + registo de submissão).
+  app.delete('/api/tickets/:id', async (req: Request, res: Response) => {
+    const slip = ticketEngine.getSlips().find((s) => s.id === req.params.id);
+    if (!slip) {
+      return res.status(404).json({ error: 'Ficha não encontrada.' });
+    }
+    if (uploadsInFlight.has(slip.id)) {
+      return res.status(409).json({
+        error:
+          'Esta ficha está a ser subida para a Premier Bet. Aguarde o resultado antes de excluir.',
+      });
+    }
+    const deleted = ticketEngine.deleteSlip(slip.id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Ficha não encontrada.' });
+    }
+    // Garante que o DELETE chega à BD antes de responder (sem resquícios).
+    try {
+      await bilheteriaDb.flush();
+    } catch {
+      /* a escrita é write-behind; o erro fica no log da BD */
+    }
+    await cacheDel('matches:api:v2');
+    res.json({
+      deleted: true,
+      id: slip.id,
+      all: withUploads(ticketEngine.getSlips()),
+      stock: ticketScheduler.getStatus(),
+    });
+  });
+
   // Generate slips for scope (botão manual em qualquer parte do site)
   app.post('/api/tickets/generate', async (req: Request, res: Response) => {
     try {

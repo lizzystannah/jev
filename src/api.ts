@@ -31,6 +31,23 @@ export async function fetchTickets(): Promise<BetSlip[]> {
   return res.json();
 }
 
+/** Exclui uma ficha da memória e da base de dados. */
+export async function deleteTicket(id: string): Promise<{
+  deleted: boolean;
+  id: string;
+  all: BetSlip[];
+  stock: TicketStockStatus;
+}> {
+  const res = await fetch(`/api/tickets/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || 'Falha ao excluir a ficha');
+  }
+  return data;
+}
+
 /** Bilhetes de um motor específico (`local` = principal, `manual` ou `jev`). */
 export async function fetchTicketsByEngine(engine: BetEngine): Promise<BetSlip[]> {
   const res = await fetch(`/api/tickets?engine=${encodeURIComponent(engine)}`);

@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { BetSlip, MatchItem } from '../types.js';
-import { Copy, Check, Sparkles, Cpu, Clock, Calendar, CheckCircle2, XCircle, Activity, Hourglass, UploadCloud } from 'lucide-react';
+import { Copy, Check, Sparkles, Cpu, Clock, Calendar, CheckCircle2, XCircle, Activity, Hourglass, UploadCloud, Trash2 } from 'lucide-react';
 import { formatDateTimeInTz, formatMatchSchedule } from '../utils/timezone.js';
 
 interface TicketCardProps {
   slip: BetSlip;
   timezone?: string;
   onUpload?: (slip: BetSlip) => void;
+  onDelete?: (slip: BetSlip) => void;
 }
 
 function formatKzShort(value: number): string {
@@ -24,7 +25,7 @@ function formatCountdown(targetMs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa/Luanda', onUpload }) => {
+export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa/Luanda', onUpload, onDelete }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -354,19 +355,32 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
             )}
           </div>
 
-          {onUpload && (
-            <button
-              type="button"
-              onClick={() => onUpload(slip)}
-              className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded bg-[#E7B33E] text-[#3A2A06] hover:bg-[#F0C869] transition-colors"
-              title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
-            >
-              <UploadCloud className="w-3.5 h-3.5" />
-              <span>
-                {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir ficha'}
-              </span>
-            </button>
-          )}
+          <div className="shrink-0 flex items-center gap-2">
+            {onUpload && (
+              <button
+                type="button"
+                onClick={() => onUpload(slip)}
+                className="cursor-pointer shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded bg-[#E7B33E] text-[#3A2A06] hover:bg-[#F0C869] transition-colors"
+                title="Entrar na Premier Bet, preencher a ficha e colocar a aposta"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>
+                  {slip.upload?.status === 'placed' ? 'Subir novamente' : 'Subir ficha'}
+                </span>
+              </button>
+            )}
+            {onDelete && (
+              <button
+                type="button"
+                onClick={() => onDelete(slip)}
+                className="cursor-pointer shrink-0 inline-flex items-center justify-center w-8 h-8 rounded border border-[#D1594B]/50 text-[#D1594B] hover:bg-[#D1594B] hover:text-[#F5F3EC] transition-colors"
+                title="Excluir ficha (remove da memória e da base de dados)"
+                aria-label={`Excluir ficha ${slip.id}`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
       )}
     </article>

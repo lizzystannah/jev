@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+﻿import React, { useMemo, useState } from 'react';
 import { BetSlip, MatchItem, MatchTip } from '../types.js';
 import { FixturesSidebar } from './FixturesSidebar.js';
 import { EngineSlipsPanel } from './EngineSlipsPanel.js';
@@ -14,6 +14,7 @@ interface ManualTabProps {
   timezone: string;
   manualSlips: BetSlip[];
   onUpload: (slip: BetSlip) => void;
+  onDelete: (slip: BetSlip) => void;
   onAnalyzeMatch: (match: MatchItem) => void;
   onSimulateNext: () => void;
   isSimulating: boolean;
@@ -33,6 +34,7 @@ export const ManualTab: React.FC<ManualTabProps> = ({
   timezone,
   manualSlips,
   onUpload,
+  onDelete,
   onAnalyzeMatch,
   onSimulateNext,
   isSimulating,
@@ -61,7 +63,7 @@ export const ManualTab: React.FC<ManualTabProps> = ({
         </h1>
         <p className="mt-1.5 text-sm text-[rgba(245,243,236,0.6)] max-w-2xl">
           Escolhe o horizonte para explorar os jogos, adiciona as tips ao carrinho e define
-          o escopo e o tier na criação da ficha. O carrinho mantém as seleções entre escopos.
+          o escopo e o tier na criaÃ§Ã£o da ficha. O carrinho mantÃ©m as seleÃ§Ãµes entre escopos.
         </p>
       </div>
 
@@ -108,12 +110,14 @@ export const ManualTab: React.FC<ManualTabProps> = ({
           timezone={timezone}
           title="Fichas manuais"
           subtitle="Fichas criadas a partir das tips que escolheste, agrupadas por escopo e tier."
-          emptyTitle="Ainda não criaste fichas manuais."
+          emptyTitle="Ainda nÃ£o criaste fichas manuais."
           emptyHint="Adiciona tips ao carrinho na lista de jogos ao lado e cria a primeira ficha manual."
-          historyTitle="Histórico manual"
+          historyTitle="HistÃ³rico manual"
           onUpload={onUpload}
+          onDelete={onDelete}
         />
       </div>
     </div>
   );
 };
+
