@@ -421,9 +421,11 @@ export class MarketService {
         const data: PersistedCache = JSON.parse(raw);
         if (data && Array.isArray(data.matches)) {
           const now = Date.now();
-          // Só restaura partidas com kickoff futuro e que venham da API real
+          // Só restaura partidas futuras da API real (Odds API ou AiScore).
           const validMatches = data.matches.filter(
-            (m) => m.sourceProvider === 'the-odds-api' && m.kickoffAt > now - 2 * 60 * 60 * 1000
+            (m) =>
+              (m.sourceProvider === 'the-odds-api' || m.sourceProvider === 'aiscore') &&
+              m.kickoffAt > now - 2 * 60 * 60 * 1000
           );
           if (validMatches.length > 0 && now - data.lastFetchTime < 2 * 60 * 60 * 1000) {
             this.matches = validMatches;
@@ -442,7 +444,11 @@ export class MarketService {
 
   private saveDiskCache(): void {
     try {
-      const realMatchesOnly = this.matches.filter((m) => m.sourceProvider === 'the-odds-api');
+      // Guarda também o horizonte do AiScore: sem isto, cada restart começava
+      // com ~80 jogos e o longo prazo ficava vazio até o backfill terminar.
+      const realMatchesOnly = this.matches.filter(
+        (m) => m.sourceProvider === 'the-odds-api' || m.sourceProvider === 'aiscore'
+      );
       const data: PersistedCache = {
         lastFetchTime: this.lastFetchTime,
         rateLimitInfo: this.providerStatus.rateLimitInfo,
@@ -581,21 +587,24 @@ export class MarketService {
         // A prioridade do bridge inclui Conference, J1, Süper Lig, Saudi Pro
         // League, SuperLiga sérvia e Eredivisie, para que estas ligas não sejam
         // cortadas pelo odds_limit.
-        await this.syncAiscoreDay(0, { limit: 200, oddsLimit: 60 });
+        await this.syncAiscoreDay(0, { limit: 200, oddsLimit: 30 });
         this.aiscoreLastSync = Date.now();
+        this.saveDiskCache();
 
-        // Dias 1..8 (~1 semana+): background sequencial (respeita o throttle do
-        // bridge). O odds_limit era o principal motivo para faltarem jogos no
-        // horizonte longo — cada dia agora tenta preço real para 60 jogos.
+        // Dias 1..8 (~1 semana+): background sequencial. Sem odds do AiScore
+        // (nos dias futuros quase nunca existem): as odds reais entram depois
+        // na geração, via Premier Bet. Assim cada dia leva segundos e não
+        // estoura o timeout de 120s do bridge.
         void (async () => {
           for (let d = 1; d <= 8; d++) {
             try {
-              await this.syncAiscoreDay(d, { limit: 160, oddsLimit: 40 });
+              await this.syncAiscoreDay(d, { limit: 200, oddsLimit: 0 });
             } catch (err: any) {
               console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
             }
           }
           console.log('[MarketService] AiScore multi-dia (+1..+8) concluído.');
+          this.saveDiskCache();
           // Avisa o agendador para repor as quotas agora que há jogos futuros.
           this.backfillCallbacks.forEach((cb) => {
             try {
@@ -625,7 +634,7 @@ export class MarketService {
     const card = await aiscoreClient.getDayCard(ymd, {
       upcoming: true,
       limit: opts.limit,
-      withOdds: true,
+      withOdds: opts.oddsLimit > 0,
       oddsLimit: opts.oddsLimit,
     });
 
@@ -665,30 +674,46 @@ export class MarketService {
           if (existingKeys.has(dedupeKey)) continue;
           existingKeys.add(dedupeKey);
 
-          // Só entram jogos com odds 1X2 reais. Sem odds, o jogo fica de fora:
-          // nunca preencher com 2.10/3.20/3.40 "inventados" (isso produzia
-          // 1X a 1.62 e EV falso em todos os jogos).
+          // O jogo entra SEMPRE no horizonte (mesmo sem odd no feed). Os
+          // placeholders NUNCA são marcados como reais (`realMarkets` fica
+          // vazio) — as odds reais são anexadas depois, na geração, via
+          // Premier Bet. Antes, descartar jogos sem odds era o que deixava o
+          // horizonte longo sem mercado (os dias futuros quase não têm odds).
           const real = meta.odds;
-          if (!real) continue;
-          const validReal = [real.home, real.draw, real.away].every(
-            (v) => Number.isFinite(v) && v > 1.01 && v < 1000
+          const validReal = Boolean(
+            real &&
+              [real.home, real.draw, real.away].every(
+                (v) => Number.isFinite(v) && v > 1.01 && v < 1000
+              )
           );
-          if (!validReal) continue;
+          const overround = validReal
+            ? 1 / real!.home + 1 / real!.draw + 1 / real!.away
+            : 0;
+          const hasReal =
+            validReal && overround >= 0.9 && overround <= 1.3;
 
-          const overround = 1 / real.home + 1 / real.draw + 1 / real.away;
-          if (overround < 0.9 || overround > 1.3) continue;
-
-          const odds: MatchOdds = {
-            home: real.home,
-            draw: real.draw,
-            away: real.away,
-            // Placeholders: não são odds reais e ficam fora de realMarkets.
-            over25: 1.90,
-            under25: 1.90,
-            btts_yes: 1.85,
-            btts_no: 1.90,
-            realMarkets: ['home', 'draw', 'away'],
-          };
+          const odds: MatchOdds = hasReal
+            ? {
+                home: real!.home,
+                draw: real!.draw,
+                away: real!.away,
+                over25: 1.90,
+                under25: 1.90,
+                btts_yes: 1.85,
+                btts_no: 1.90,
+                realMarkets: ['home', 'draw', 'away'],
+              }
+            : {
+                // Placeholders neutros; realMarkets vazio = sem preço real.
+                home: 2.60,
+                draw: 3.30,
+                away: 2.90,
+                over25: 1.90,
+                under25: 1.90,
+                btts_yes: 1.85,
+                btts_no: 1.90,
+                realMarkets: [],
+              };
 
           const timeStr = matchDate.toLocaleTimeString('pt-PT', {
             hour: '2-digit',
@@ -713,7 +738,14 @@ export class MarketService {
 
           added.push({
             ...rawItem,
-            tip: scoreMatch(rawItem),
+            tip: hasReal
+              ? scoreMatch(rawItem)
+              : {
+                  market: 'home' as MarketType,
+                  label: 'Sem odds reais (a obter na Premier Bet)',
+                  odds: 0,
+                  prob: 0,
+                },
             status: 'pending',
             result: null,
             sourceProvider: 'aiscore',
@@ -871,7 +903,11 @@ export class MarketService {
 
     for (const sport of sports) {
       try {
-        const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${apiKey}&regions=${regions}&markets=${markets}&oddsFormat=decimal&dateFormat=iso`;
+        // Janela explícita de 8 dias: sem commenceTimeTo a The Odds API só
+        // devolve os próximos dias e o longo prazo ficava sem jogos.
+        const fromIso = new Date(now - 60 * 60 * 1000).toISOString();
+        const toIso = new Date(now + 8 * 24 * 60 * 60 * 1000).toISOString();
+        const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${apiKey}&regions=${regions}&markets=${markets}&oddsFormat=decimal&dateFormat=iso&commenceTimeFrom=${encodeURIComponent(fromIso)}&commenceTimeTo=${encodeURIComponent(toIso)}`;
         const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
 
         const remaining = resp.headers.get('x-requests-remaining');

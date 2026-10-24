@@ -130,10 +130,15 @@ async function startServer() {
       const matches = await marketService.getMatches(forceRefresh);
       let enriched = matches;
       try {
+        // Só avalia jogos com preço real ou com scout: sem odds e sem scout a
+        // "probabilidade" seria lida de placeholders (nunca apresentar isso).
+        const evalPool = matches.filter(
+          (m) => (m.odds.realMarkets?.length || 0) > 0 || Boolean(m.scout)
+        );
         const local = await callLocalInferenceEngine({
           scope: 'dia',
           horizonDays: 8,
-          matches: matches.map((m) => ({
+          matches: evalPool.map((m) => ({
             id: m.id,
             league: m.league,
             home: m.home,

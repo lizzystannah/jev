@@ -325,7 +325,9 @@ export function aiscoreDateKey(kickoffMs: number): string {
 
 /** YYYYMMDD for AiScore `matches?date=` (client tz=-03:00). */
 export function aiscoreYmd(offsetDays = 0, fromMs = Date.now()): string {
-  const d = new Date(fromMs + offsetDays * 24 * 60 * 60 * 1000 - 3 * 60 * 60 * 1000);
+  // O app opera em Africa/Luanda (UTC+1). Usar UTC-3 fazia o "dia 0" cair no
+  // dia anterior durante a madrugada (0 jogos e 0 odds), atrasando o horizonte.
+  const d = new Date(fromMs + offsetDays * 24 * 60 * 60 * 1000 + 60 * 60 * 1000);
   return d.toISOString().slice(0, 10).replace(/-/g, '');
 }
 

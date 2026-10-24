@@ -745,13 +745,24 @@ def main(argv: list[str] | None = None) -> int:
             if limit:
                 metas = metas[:limit]
             odds_limit = int(payload.get("odds_limit") or 15)
+            # Limite de TENTATIVAS (não só de sucessos). Dias futuros muitas
+            # vezes não têm odds nenhumas no AiScore: sem isto, o bridge
+            # tentava os 200 jogos um a um (~1.6s cada) e estourava o timeout
+            # de 120s, perdendo o dia inteiro.
+            odds_attempts = int(payload.get("odds_attempts") or odds_limit)
             with_odds = bool(payload.get("with_odds", True))
             if with_odds:
                 n_odds = 0
+                attempts = 0
                 for m in metas:
-                    if m.get("statusId") not in (None, 1) or n_odds >= odds_limit:
+                    if (
+                        m.get("statusId") not in (None, 1)
+                        or n_odds >= odds_limit
+                        or attempts >= odds_attempts
+                    ):
                         m["odds"] = None
                         continue
+                    attempts += 1
                     try:
                         m["odds"] = parse_match_odd(c.match_odd(str(m["match_id"])))
                     except Exception:

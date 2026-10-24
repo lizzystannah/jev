@@ -357,68 +357,86 @@ export class TicketEngine {
       return { generated: [], all: this.slips, jevLatencyMs: 0 };
     }
 
-    // Odds reais para os mercados que o feed do AiScore não cobre (dupla
-    // chance, over/under 1.5/3.5, DNB). Com tip forçada, só esse mercado;
-    // na geração automática enriquece um lote pequeno para diversificar as
-    // tips (mais 1X/X2/+1.5/+3.5 em vez de só "vitória").
+    // Odds reais para os mercados que o feed do AiScore não cobre. Isto inclui
+    // o 1X2 dos jogos futuros que vêm SEM odds do feed (eram descartados e
+    // deixavam o longo prazo sem mercado). Com tip forçada, só esse mercado.
     const forcedMarket = options?.market;
+    const BASE_MARKETS: MarketType[] = ['home', 'draw', 'away'];
     const EXTRA_MARKETS: MarketType[] = [
       'double_chance_1x', 'double_chance_x2', 'over15',
       'over35', 'under35', 'dnb_home', 'dnb_away',
     ];
-    const enrichMarkets = forcedMarket ? [forcedMarket] : EXTRA_MARKETS;
+    const enrichMarkets = forcedMarket
+      ? [forcedMarket]
+      : [...BASE_MARKETS, ...EXTRA_MARKETS];
     const enrichEnabled = forcedMarket || process.env.PREMIERBET_ENRICH !== '0';
     if (enrichEnabled) {
       const missing = (m: (typeof filtered)[number]): boolean => {
         const rm = m.odds.realMarkets;
         return enrichMarkets.some((mk) => !rm?.includes(mk));
       };
-      const cap = forcedMarket ? 40 : 20;
+      // Só ligas da whitelist entram nas fichas — não vale a pena consultar a
+      // Premier Bet por ligas que não podem ser usadas. Ordena por prioridade
+      // de liga e kickoff (o pickScore é 0 nos jogos ainda sem odds).
+      const cap = forcedMarket ? 50 : scope === 'longo' ? 80 : 40;
       const need = filtered
-        .filter(missing)
-        .sort((a, b) => pickScore(b) - pickScore(a))
+        .filter((m) => isMainLeague(m.league, m.competitionId) && missing(m))
+        .sort((a, b) => {
+          const ba = a.odds.realMarkets?.includes('home') ? 1 : 0;
+          const bb = b.odds.realMarkets?.includes('home') ? 1 : 0;
+          if (ba !== bb) return ba - bb; // primeiro os que estão SEM odds
+          const la = leaguePriorityRank(a.league, a.competitionId);
+          const lb = leaguePriorityRank(b.league, b.competitionId);
+          return la - lb || a.kickoffAt - b.kickoffAt;
+        })
         .slice(0, cap);
       if (need.length > 0) {
-        try {
-          const pb = await resolvePremierBetOdds(
-            need.map((m) => ({
-              home: m.home,
-              away: m.away,
-              kickoffAt: m.kickoffAt,
-              date: m.dateStr,
-              markets: enrichMarkets,
-            })),
-            forcedMarket ? 120_000 : 60_000
-          );
-          let filled = 0;
-          need.forEach((m, i) => {
-            const result =
-              pb.results[i] ??
-              pb.results.find(
-                (r) =>
-                  r.home.trim().toLowerCase() === m.home.trim().toLowerCase() &&
-                  r.away.trim().toLowerCase() === m.away.trim().toLowerCase()
-              );
-            if (!result) return;
-            const real = new Set(m.odds.realMarkets || []);
-            for (const mk of enrichMarkets) {
-              const odd = result.odds?.[mk];
-              if (typeof odd === 'number' && Number.isFinite(odd) && odd > 1.01) {
-                (m.odds as any)[mk] = Number(odd.toFixed(2));
-                real.add(mk);
-                filled += 1;
-              }
-            }
-            m.odds.realMarkets = Array.from(real);
-          });
-          if (filled > 0) {
-            console.log(
-              `[PremierBet] ${filled} odd(s) real(is) anexada(s) ao motor` +
-                (forcedMarket ? ` (mercado "${forcedMarket}").` : ' (mercados extra).')
+        // Em lotes de 25: cada lote é um processo Python com timeout próprio,
+        // para um dia lento não perder o enriquecimento inteiro.
+        const chunkSize = 25;
+        let filled = 0;
+        for (let start = 0; start < need.length; start += chunkSize) {
+          const chunk = need.slice(start, start + chunkSize);
+          try {
+            const pb = await resolvePremierBetOdds(
+              chunk.map((m) => ({
+                home: m.home,
+                away: m.away,
+                kickoffAt: m.kickoffAt,
+                date: m.dateStr,
+                markets: enrichMarkets,
+              })),
+              60_000
             );
+            chunk.forEach((m, i) => {
+              const result =
+                pb.results[i] ??
+                pb.results.find(
+                  (r) =>
+                    r.home.trim().toLowerCase() === m.home.trim().toLowerCase() &&
+                    r.away.trim().toLowerCase() === m.away.trim().toLowerCase()
+                );
+              if (!result) return;
+              const real = new Set(m.odds.realMarkets || []);
+              for (const mk of enrichMarkets) {
+                const odd = result.odds?.[mk];
+                if (typeof odd === 'number' && Number.isFinite(odd) && odd > 1.01) {
+                  (m.odds as any)[mk] = Number(odd.toFixed(2));
+                  real.add(mk);
+                  filled += 1;
+                }
+              }
+              m.odds.realMarkets = Array.from(real);
+            });
+          } catch (err: any) {
+            console.warn('[PremierBet] lote de enriquecimento falhou:', err?.message);
           }
-        } catch (err: any) {
-          console.warn('[PremierBet] falha a enriquecer odds reais:', err?.message);
+        }
+        if (filled > 0) {
+          console.log(
+            `[PremierBet] ${filled} odd(s) real(is) anexada(s) ao motor` +
+              (forcedMarket ? ` (mercado "${forcedMarket}").` : ' (1X2 + mercados extra).')
+          );
         }
       }
     }
