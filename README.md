@@ -296,3 +296,9 @@ docker compose restart           # restart: as fichas mantÃƒÂªm-se
 - Segura/Moderada/Ousada usam apenas tips com odd entre `TICKETS_MIN_LEG_ODD` (1.25) e `TICKETS_MAX_LEG_ODD` (2.20). A pontuacao total (3x/15x/100x) e alcancada **acumulando mais jogos**, nunca com uma perna de odd alta.
 - Maluca e a unica que usa tips de odd alta (`highRiskTip`), sempre mercado real e com probabilidade minima (alguma base).
 - No JEV, as fichas nao-Maluca so escolhem entre tips dentro dessa faixa; a Maluca mantem a tip alternativa de odd alta.
+
+### Anti-repeticao entre fichas
+
+- Um jogo pode entrar em no maximo `TICKETS_MAX_SLIPS_PER_MATCH` fichas pendentes (default 2).
+- Se uma ficha precisar de repetir um jogo, usa no maximo `TICKETS_MAX_REUSED_LEGS` jogos repetidos (default 2) e **sempre com mercado/tip diferente** do que ja foi usado nesse jogo.
+- Se nao houver jogos frescos suficientes dentro da faixa de odds, o motor **nao cria** a ficha em vez de correlacionar varias fichas nos mesmos jogos.

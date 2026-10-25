@@ -209,6 +209,17 @@ export const MAX_LEG_ODD = Math.max(1.01, envFloat('TICKETS_MAX_LEG_ODD', 2.2));
 /** Odd minima por perna nos tiers nao-Maluca (evita acumular 1.05/1.10). */
 export const MIN_LEG_ODD = Math.max(1.01, envFloat('TICKETS_MIN_LEG_ODD', 1.25));
 
+/**
+ * Anti-correlação entre fichas: um jogo pode aparecer em no máximo N fichas
+ * pendentes. Se tiver de repetir, usa OBRIGATORIAMENTE outro mercado (tip).
+ */
+export const MAX_SLIPS_PER_MATCH = Math.max(
+  1,
+  envInt('TICKETS_MAX_SLIPS_PER_MATCH', 2)
+);
+/** Máximo de pernas repetidas (com tip diferente) por ficha. */
+export const MAX_REUSED_LEGS = Math.max(0, envInt('TICKETS_MAX_REUSED_LEGS', 2));
+
 /** Config efetiva de pernas por tier e escopo (longo tem faixa prÃ³pria). */
 function legsConfigFor(
   scope: SlipScope,
@@ -692,8 +703,25 @@ export class TicketEngine {
     // Jogos jÃ¡ usados noutro bilhete: cada construÃ§Ã£o prefere pernas frescas
     // para os bilhetes nÃ£o saÃ­rem todos iguais.
     const usedIds = new Set<string>();
+    const matchSlipCount = new Map<string, number>();
+    const matchMarkets = new Map<string, Set<MarketType>>();
+    for (const slip of this.slips) {
+      if (slip.status !== 'pendente') continue;
+      for (const leg of slip.legs) {
+        matchSlipCount.set(leg.id, (matchSlipCount.get(leg.id) || 0) + 1);
+        const markets = matchMarkets.get(leg.id) ?? new Set<MarketType>();
+        markets.add(leg.tip.market);
+        matchMarkets.set(leg.id, markets);
+      }
+    }
     const claim = (legs: MatchItem[]): void => {
-      legs.forEach((l) => usedIds.add(l.id));
+      legs.forEach((l) => {
+        usedIds.add(l.id);
+        matchSlipCount.set(l.id, (matchSlipCount.get(l.id) || 0) + 1);
+        const markets = matchMarkets.get(l.id) ?? new Set<MarketType>();
+        markets.add(l.tip.market);
+        matchMarkets.set(l.id, markets);
+      });
     };
 
     /**
@@ -729,30 +757,82 @@ export class TicketEngine {
 
       // Prefere pernas frescas; se nÃ£o chegarem ao alvo, permite reutilizar
       // um jogo jÃ¡ usado noutra ficha (a tip continua a ser a mesma, real).
-      const fresh =
-        overrides?.preferFresh === false ? [] : primary.filter((m) => !usedIds.has(m.id));
+      const fresh = primary.filter((m) => (matchSlipCount.get(m.id) || 0) === 0);
       let legs = fresh.length >= cfg.minLegs ? tryPool(fresh) : null;
-      if (!legs) legs = tryPool(primary);
-      if (!legs && tier !== 'maluca') {
-        // Ainda dentro do teto de odd: se nao chegou ao alvo com as tips de
-        // maior probabilidade, tenta as de odd mais alta (<= MAX_LEG_ODD)
-        // para completar o total com menos jogos. Nunca sai da faixa.
-        const fallback = orderTopFirst(
-          primary,
-          (a, b) => b.tip.odds - a.tip.odds
-        );
+
+      if (!legs) {
+        // Repeticao controlada: no maximo MAX_REUSED_LEGS jogos ja usados e,
+        // em cada um, um mercado/tip DIFERENTE dos ja usados noutras fichas.
+        const repeats: MatchItem[] = [];
+        for (const m of primary) {
+          if (repeats.length >= MAX_REUSED_LEGS) break;
+          const count = matchSlipCount.get(m.id) || 0;
+          if (count === 0 || count >= MAX_SLIPS_PER_MATCH) continue;
+          const usedMarkets = matchMarkets.get(m.id) ?? new Set<MarketType>();
+          const alternatives = (m.tips || [])
+            .filter(
+              (t) =>
+                t.odds != null &&
+                t.odds > 1.01 &&
+                !usedMarkets.has(t.market) &&
+                (tier === 'maluca'
+                  ? t.odds >= 2.0
+                  : t.odds >= MIN_LEG_ODD && t.odds <= MAX_LEG_ODD)
+            )
+            .sort((a, b) =>
+              tier === 'maluca'
+                ? (b.odds as number) - (a.odds as number)
+                : b.prob - a.prob
+            );
+          const alt = alternatives[0];
+          if (!alt || alt.odds == null) continue;
+          repeats.push({
+            ...m,
+            tip: {
+              market: alt.market,
+              label: alt.label,
+              odds: alt.odds,
+              prob: alt.prob,
+            },
+          });
+        }
+        if (repeats.length > 0) {
+          const mixed = [
+            ...orderTopFirst(fresh, sortFn),
+            ...orderTopFirst(repeats, sortFn),
+          ];
+          legs = pickUntilTarget(
+            mixed,
+            cfg,
+            overrides?.diversifyLeagues !== false
+          );
+        }
+      }
+
+      if (!legs) {
+        // Ultimo recurso dentro da faixa: tips FRESCAS de odd mais alta, sem
+        // repetir jogos (evita correlacao entre fichas).
+        const higherOdd = orderTopFirst(fresh, (a, b) => b.tip.odds - a.tip.odds);
         legs = pickUntilTarget(
-          fallback,
+          higherOdd,
           cfg,
           overrides?.diversifyLeagues !== false
         );
       }
       if (!legs) return null;
+      const repeated = legs.filter((l) => (matchSlipCount.get(l.id) || 0) > 0).length;
+      if (repeated > 0) {
+        console.log(
+          `[Fichas] ${tier}: ${legs.length} pernas (${repeated} jogo(s) repetido(s) com tip diferente).`
+        );
+      }
 
       const duplicate = candidateSlips.some(
         (s) =>
           s.legs.length === legs.length &&
-          s.legs.every((l) => legs.some((x) => x.id === l.id))
+          s.legs.every((l) =>
+            legs.some((x) => x.id === l.id && x.tip.market === l.tip.market)
+          )
       );
       if (duplicate) return null;
 
@@ -1263,6 +1343,9 @@ export class TicketEngine {
 }
 
 export const ticketEngine = new TicketEngine();
+
+
+
 
 
 
