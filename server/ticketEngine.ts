@@ -973,9 +973,16 @@ export class TicketEngine {
     };
     // Com mercado forcado (manual), a pool e a propria selecao: todas as pernas
     // usam o mercado que o utilizador escolheu.
-    const seguraPool = options?.market ? selectionPool : nonMalucaPoolFor('segura');
-    const moderadaPool = options?.market ? selectionPool : nonMalucaPoolFor('moderada');
-    const ousadaPool = options?.market ? selectionPool : nonMalucaPoolFor('ousada');
+    // Com JEV, a decisão de mercado é dele: usa-se exatamente a tip escolhida
+    // em m.tip. Os tiers variam apenas no alvo/número de jogos. Sem isto, a
+    // montagem voltava a escolher o mercado por odd/probabilidade e anulava o JEV.
+    const useJevDecisions = options?.engine === 'jev' && !options?.market;
+    const seguraPool =
+      options?.market || useJevDecisions ? selectionPool : nonMalucaPoolFor('segura');
+    const moderadaPool =
+      options?.market || useJevDecisions ? selectionPool : nonMalucaPoolFor('moderada');
+    const ousadaPool =
+      options?.market || useJevDecisions ? selectionPool : nonMalucaPoolFor('ousada');
 
     // Maluca grounded: para cada jogo escolhe a tip real mais proxima do ponto
     // ideal (~2.5x), dentro de 1.75x-3.0x e com probabilidade minima. Prefere
@@ -1190,8 +1197,54 @@ export class TicketEngine {
       }));
   }
 
+  /** Resumo compacto do scout para o JEV validar a probabilidade local. */
+  private jevContextFor(match: MatchItem): Record<string, unknown> | undefined {
+    const scout: any = (match as any).scout;
+    const context: any = match.context;
+    if (!scout && !context) return undefined;
+
+    const form = (f: any) =>
+      f
+        ? {
+            n: f.n ?? null,
+            V: f.W ?? f.wins ?? null,
+            E: f.D ?? f.draws ?? null,
+            D: f.L ?? f.losses ?? null,
+            GF: f.GF ?? f.goalsFor ?? null,
+            GA: f.GA ?? f.goalsAgainst ?? null,
+            sequencia: f.form ?? null,
+            casa: f.home ?? null,
+            fora: f.away ?? null,
+          }
+        : undefined;
+
+    const trend = (t: any) =>
+      t
+        ? {
+            posse_media: t.avgPossession ?? null,
+            remates_media: t.avgShots ?? null,
+            invicto: t.unbeatenRun ?? null,
+            over25: t.overGoals ?? null,
+            btts: t.bothScore ?? null,
+          }
+        : undefined;
+
+    return {
+      forma_casa: form(scout?.home_form ?? context?.homeForm),
+      forma_fora: form(scout?.away_form ?? context?.awayForm),
+      h2h: scout?.h2h_summary ?? context?.h2h ?? null,
+      tendencias: {
+        casa: trend(scout?.home_trend),
+        fora: trend(scout?.away_trend),
+      },
+      mercado: scout?.market_hints ?? null,
+    };
+  }
+
+
   private async applyJevPicks(
     scope: SlipScope,
+
     evaluated: MatchItem[],
     horizonDays: number,
     persisted: Map<
@@ -1206,6 +1259,23 @@ export class TicketEngine {
       costUsd: 0,
       stale: 0,
     };
+    // Qualidade mínima das decisões JEV: EV não negativo e sem desalinhamento
+    // extremo entre a probabilidade local e a odd implícita do mercado.
+    const minEdge = Number(process.env.JEV_MIN_EV_PCT ?? '0') / 100;
+    const maxProbEdge = Number(process.env.JEV_MAX_PROB_EDGE ?? '20') / 100;
+    const safeMinEdge = Number.isFinite(minEdge) ? minEdge : 0;
+    const safeMaxProbEdge = Number.isFinite(maxProbEdge) && maxProbEdge > 0 ? maxProbEdge : 0.2;
+    const acceptable = (
+      tip: { prob: number; odds: number | null } | undefined | null
+    ): boolean => {
+      if (!tip || tip.odds == null || !Number.isFinite(tip.odds) || tip.odds <= 1.01) {
+        return false;
+      }
+      const edge = (tip.prob / 100) * tip.odds - 1;
+      const probEdge = tip.prob / 100 - 1 / tip.odds;
+      return edge >= safeMinEdge && probEdge <= safeMaxProbEdge;
+    };
+
     const pool = evaluated.filter(
       (m) =>
         isMainLeague(m.league, m.competitionId) &&
@@ -1230,11 +1300,20 @@ export class TicketEngine {
         (t) => t.market === saved?.market
       );
       if (saved && offered) {
-        picks.set(m.id, saved);
+        const savedTip = this.jevCandidateTips(m).find(
+          (t) => t.market === saved.market
+        );
+        if (acceptable(savedTip)) {
+          picks.set(m.id, saved);
+        } else {
+          stale += 1;
+          need.push(m);
+        }
       } else {
         if (saved) stale += 1;
         need.push(m);
       }
+
     }
     const reused = picks.size;
     let newPicks = 0;
@@ -1263,28 +1342,53 @@ export class TicketEngine {
             kickoff: new Date(m.kickoffAt).toISOString(),
             odds,
             tips: this.jevCandidateTips(m),
+            contexto: this.jevContextFor(m),
           };
+
         })
         .filter((c) => c.tips.length > 0);
 
       const chosen = await jevChooseMarkets(candidates);
-      newPicks = chosen.picks.size;
       apiCalls = chosen.apiCalls;
       costUsd = chosen.costUsd;
       const at = Date.now();
+      const needById = new Map(need.map((m) => [m.id, m]));
+      const rejected: string[] = [];
+      let accepted = 0;
       for (const [id, pick] of chosen.picks) {
+        const m = needById.get(id);
+        const tip =
+          (m?.tips || []).find((t) => t.market === pick.market) ??
+          (m?.tip?.market === pick.market ? m.tip : undefined);
+        if (!acceptable(tip)) {
+          const edge =
+            tip && tip.odds != null
+              ? ((tip.prob / 100) * tip.odds - 1) * 100
+              : null;
+          rejected.push(
+            `${id}:${pick.market}${edge == null ? '' : ` (EV ${edge.toFixed(1)}%)`}`
+          );
+          continue;
+        }
         picks.set(id, {
           market: pick.market as MarketType,
           confidence: pick.confidence,
           reason: pick.reason,
           at,
         });
+        accepted += 1;
       }
+      newPicks = accepted;
       console.log(
-        `[JEV] ${chosen.picks.size}/${candidates.length} decisÃ£o(Ãµes) nova(s) ` +
+        `[JEV] ${accepted}/${candidates.length} decisão(ões) aceite(s) ` +
           `em ${chosen.apiCalls} chamada(s), custo ${chosen.costUsd.toFixed(6)} USD ` +
-          `(escopo "${scope}"; ${reused} reutilizada(s), ${stale} antiga(s) descartada(s)).`
+          `(escopo "${scope}"; ${reused} reutilizada(s), ${stale} antiga(s) descartada(s)` +
+          (rejected.length > 0
+            ? `; ${rejected.length} rejeitada(s) por qualidade: ${rejected.join(', ')}`
+            : '') +
+          ').'
       );
+
     }
 
     if (picks.size === 0) {

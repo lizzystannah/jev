@@ -31,6 +31,8 @@ export interface JevCandidate {
   kickoff: string; // ISO ou "YYYY-MM-DD HH:mm"
   odds: Record<string, number>;
   tips: JevTipCandidate[]; // mercados com odds real, ordenados por prob desc
+  /** Resumo compacto do scout: forma, H2H, tendências e hints de mercado. */
+  contexto?: Record<string, unknown>;
 }
 
 export interface JevPick {
@@ -224,8 +226,13 @@ async function postDecisions(
 function criteriaFor(candidate: JevCandidate): Record<string, string> {
   const criteria: Record<string, string> = {};
   for (const tip of candidate.tips) {
-    const odd = tip.odds == null ? 'sem odd' : `odd real ${tip.odds}`;
-    criteria[tip.market] = `${tip.label} — probabilidade do motor local ${tip.prob}%, ${odd}.`;
+    const odd = tip.odds == null ? null : tip.odds;
+    const oddText = odd == null ? 'sem odd' : `odd real ${odd} (implícita ${(100 / odd).toFixed(1)}%)`;
+    const edge = odd == null ? null : (tip.prob / 100) * odd - 1;
+    const edgeText =
+      edge == null ? '' : `, EV ${edge >= 0 ? '+' : ''}${(edge * 100).toFixed(1)}%`;
+    criteria[tip.market] =
+      `${tip.label} — probabilidade do motor local ${tip.prob}%, ${oddText}${edgeText}.`;
   }
   criteria[SKIP_OPTION] =
     'Nenhum dos mercados acima tem valor suficiente; não escolher este jogo.';
@@ -275,7 +282,14 @@ export async function jevChooseMarkets(
     apiCalls += 1;
     const state = {
       tarefa:
-        'Escolher a melhor tip (mercado) para cada jogo de futebol, comparando a probabilidade do motor local com a odd real.',
+        'Escolher a melhor tip (mercado) para cada jogo de futebol, comparando a probabilidade do motor local com a odd real e validando com o contexto do jogo.',
+      regras: [
+        'Prefere mercados com EV positivo; não escolhas um mercado só porque a odd é alta.',
+        'Valida a probabilidade local com o contexto: forma recente, H2H, média de golos, taxas de over25/BTTS e tendências.',
+        'Evita under 3.5 em jogos com média de golos alta ou em que ambas as equipas marcam/sofrem com frequência.',
+        'Evita mercados cuja probabilidade local esteja muito acima da odd implícita sem suporte no contexto.',
+        'Não escolhas mercados sem base estatística. Se nenhum candidato tiver qualidade suficiente, usa "skip".',
+      ],
       matches: batch.map((c, index) => ({
         index,
         id: c.id,
@@ -283,6 +297,7 @@ export async function jevChooseMarkets(
         away: c.away,
         league: c.league,
         kickoff: c.kickoff,
+        contexto: c.contexto,
         candidatos: c.tips.map((t) => ({
           market: t.market,
           label: t.label,
@@ -298,9 +313,11 @@ export async function jevChooseMarkets(
         type: 'choice',
         instructions:
           `Jogo ${candidate.home} vs ${candidate.away} (${candidate.league}), ` +
-          `em state.matches[${index}]. Escolhe o mercado com melhor relação entre ` +
-          `a probabilidade do motor local e a odd real. Usa "${SKIP_OPTION}" só se ` +
-          'nenhum candidato tiver valor.',
+          `em state.matches[${index}]. Escolhe o mercado com melhor relação risco/valor, ` +
+          `usando também state.matches[${index}].contexto. Não escolhas um mercado apenas ` +
+          `por ter odd alta. Se a probabilidade local parecer exagerada face ao contexto e ` +
+          `à odd implícita, escolhe outro mercado ou "${SKIP_OPTION}". Usa "${SKIP_OPTION}" ` +
+          'só se nenhum candidato tiver valor.',
         criteria: criteriaFor(candidate),
       };
     });

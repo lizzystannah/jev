@@ -46,6 +46,8 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
   const isLost = slip.status === 'perdeu';
   const isExpired = slip.status === 'expirado';
   const isPending = slip.status === 'pendente';
+  const isJevSlip = (slip.engine ?? 'local') === 'jev';
+  const isManualSlip = slip.engine === 'manual';
 
   const scopeLabel =
     slip.scope === 'dia'
@@ -118,18 +120,29 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
             </span>
             <span
               className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(79,174,115,0.12)] text-[#4FAE73] font-medium flex items-center gap-0.5"
-              title={slip.isAiGenerated === false ? 'Odds e probabilidades implícitas do mercado' : 'Decisão calibrada via Jev System One'}
+              title={
+                isJevSlip
+                  ? 'Decisão calibrada via Jev System One'
+                  : isManualSlip
+                  ? 'Ficha montada manualmente'
+                  : 'Tips calculadas pelo motor local'
+              }
             >
-              {slip.isAiGenerated === false ? (
-                <>
-                  <Sparkles className="w-2.5 h-2.5" /> Mercado
-                </>
-              ) : (
+              {isJevSlip ? (
                 <>
                   <Cpu className="w-2.5 h-2.5" /> Jev AI
                 </>
+              ) : isManualSlip ? (
+                <>
+                  <Sparkles className="w-2.5 h-2.5" /> Manual
+                </>
+              ) : (
+                <>
+                  <Cpu className="w-2.5 h-2.5" /> Motor
+                </>
               )}
             </span>
+
             {slip.customTitle && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(231,179,62,0.15)] text-[#E7B33E] font-medium flex items-center gap-0.5">
                 <Sparkles className="w-2.5 h-2.5" /> Estratégico
@@ -240,7 +253,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
                       </span>
                     )}
 
-                    {leg.jevInference ? (
+                    {isJevSlip && leg.jevInference ? (
                       <span className="text-[10.5px] px-1.5 py-0.5 rounded bg-[rgba(79,174,115,0.15)] text-[#4FAE73] font-medium flex items-center gap-1 border border-[#4FAE73]/30">
                         <Cpu className="w-2.5 h-2.5 text-[#E7B33E]" />
                         <span>
@@ -254,12 +267,12 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
                           )
                         </span>
                       </span>
-                    ) : (
+                    ) : !isJevSlip ? (
                       <span className="text-[10.5px] px-1.5 py-0.5 rounded bg-[rgba(231,179,62,0.12)] text-[#E7B33E] font-medium flex items-center gap-1 border border-[#E7B33E]/20">
                         <Cpu className="w-2.5 h-2.5" />
-                        <span>{slip.isAiGenerated === false ? 'Prob. mercado' : 'Jev'}: {leg.tip.prob}% prob</span>
+                        <span>{isManualSlip ? 'Prob. mercado' : 'Prob. motor'}: {leg.tip.prob}% prob</span>
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
@@ -295,7 +308,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
 
         <div className="text-right">
           <div className="text-[10.5px] text-[rgba(245,243,236,0.4)]">
-            Probabilidade Jev
+            {isJevSlip ? 'Probabilidade Jev' : 'Probabilidade'}
           </div>
           <div
             className="font-display text-2xl font-bold leading-none mt-0.5"
