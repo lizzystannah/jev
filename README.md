@@ -153,9 +153,9 @@ O motor gera quatro categorias por horizonte, com uma vaga reservada para cada u
 | **Segura** | 3x | Tips de probabilidade calibrada alta; o nÃƒÂºmero de jogos ÃƒÂ© o necessÃƒÂ¡rio para chegar ao alvo |
 | **Moderada** | 15x | Tips de risco moderado; mais jogos e odds individuais controladas, sem pernas artificiais |
 | **Ousada** | 100x | Tips de odds controladas; o alvo ÃƒÂ© alcanÃƒÂ§ado acumulando mais jogos, nÃƒÂ£o inventando odds altas |
-| **Maluca** | 1000x | 4Ã¢â‚¬â€œ8 jogos de odd alta, usando a tip alternativa de odd alta calculada pelo motor para cada jogo |
+| **Maluca** | 250x | 4 a 8 jogos, odds entre 1.75x e 3.0x e probabilidade minima de 25%, escolhidas por probabilidade/forma |
 
-O motor calcula primeiro uma tip para **todos os jogos com odds reais** do horizonte e, para cada jogo, tambÃƒÂ©m uma tip alternativa de odd alta (outro mercado real do mesmo jogo). A ficha ÃƒÂ© apenas uma seleÃƒÂ§ÃƒÂ£o dessas tips: ordena por probabilidade, acrescenta jogos atÃƒÂ© a odd combinada atingir o alvo e pÃƒÂ¡ra. Se nÃƒÂ£o houver tips suficientes para o alvo, **nÃƒÂ£o ÃƒÂ© criada uma ficha forÃƒÂ§ada** Ã¢â‚¬â€ nunca se inventa uma perna de odd alta para "completar pontos".
+O motor calcula primeiro uma tip para **todos os jogos com odds reais** do horizonte e, para cada jogo, tambÃƒÂ©m uma tip alternativa de mercado real com odd entre 1.75x e 3.0x e probabilidade minima de 25%. A ficha ÃƒÂ© apenas uma seleÃƒÂ§ÃƒÂ£o dessas tips: ordena por probabilidade, acrescenta jogos atÃƒÂ© a odd combinada atingir o alvo e pÃƒÂ¡ra. Se nÃƒÂ£o houver tips suficientes para o alvo, **nÃƒÂ£o ÃƒÂ© criada uma ficha forÃƒÂ§ada** Ã¢â‚¬â€ nunca se inventa uma perna de odd alta para "completar pontos".
 
 As ligas elegÃƒÂ­veis incluem as principais (Champions, Europa, Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Primeira Liga, BrasileirÃƒÂ£o) e ainda **Conference League, J1 League (JapÃƒÂ£o), SÃƒÂ¼per Lig (Turquia) e Saudi Pro League**. DivisÃƒÂµes inferiores, femininos e ligas juvenis ficam de fora.
 
@@ -207,11 +207,15 @@ Ver `.env.example`. Chaves relevantes:
 | `TICKETS_TARGET_SEGURA` | `3` | Alvo de odd combinada da ficha Segura |
 | `TICKETS_TARGET_MODERADA` | `15` | Alvo de odd combinada da ficha Moderada |
 | `TICKETS_TARGET_OUSADA` | `100` | Alvo de odd combinada da ficha Ousada |
-| `TICKETS_TARGET_MALUCA` | `1000` | Alvo de odd combinada da ficha Maluca |
+| `TICKETS_TARGET_MALUCA` | `250` | Alvo de odd combinada da ficha Maluca |
 | `TICKETS_MAX_LEGS_SEGURA` | `8` | Teto de jogos da Segura |
 | `TICKETS_MAX_LEGS_MODERADA` | `12` | Teto de jogos da Moderada |
 | `TICKETS_MAX_LEGS_OUSADA` | `15` | Teto de jogos da Ousada |
-| `TICKETS_MAX_LEGS_MALUCA` | `8` | Teto de jogos da Maluca |
+| `TICKETS_MAX_LEGS_MALUCA` | `8` | Teto de jogos da Maluca (minimo 4) |
+| `TICKETS_NON_MALUCA_MIN_PROB` | `40` | Probabilidade minima (%) por perna nas fichas Segura/Moderada/Ousada |
+| `TICKETS_MALUCA_MIN_LEG_ODD` | `1.75` | Odd minima por perna da Maluca |
+| `TICKETS_MALUCA_MAX_LEG_ODD` | `3.0` | Odd maxima por perna da Maluca |
+| `TICKETS_MALUCA_MIN_PROB` | `25` | Probabilidade minima (%) por perna da Maluca |
 | `TICKETS_EXPIRY_GRACE_HOURS` | `6` | TolerÃƒÂ¢ncia apÃƒÂ³s o ÃƒÂºltimo jogo antes de marcar como vencida |
 | `PREMIERBET_LOGIN` | *(vazio)* | Login da conta Premier Bet |
 | `PREMIERBET_PASSWORD` | *(vazio)* | Password da conta Premier Bet |
@@ -293,12 +297,12 @@ docker compose restart           # restart: as fichas mantÃƒÂªm-se
 
 ### Montagem atualizada das fichas
 
-- Segura/Moderada/Ousada usam apenas tips com odd entre `TICKETS_MIN_LEG_ODD` (1.25) e `TICKETS_MAX_LEG_ODD` (2.20). A pontuacao total (3x/15x/100x) e alcancada **acumulando mais jogos**, nunca com uma perna de odd alta.
-- Maluca e a unica que usa tips de odd alta (`highRiskTip`), sempre mercado real e com probabilidade minima (alguma base).
-- No JEV, as fichas nao-Maluca so escolhem entre tips dentro dessa faixa; a Maluca mantem a tip alternativa de odd alta.
+- Segura/Moderada/Ousada usam tips reais com odd entre `TICKETS_MIN_LEG_ODD` (1.25) e `TICKETS_MAX_LEG_ODD` (2.20) e probabilidade minima de `TICKETS_NON_MALUCA_MIN_PROB` (40%). Cada tier escolhe o perfil de odd que lhe compete (Segura = maior probabilidade; Moderada = equilibrio; Ousada = maior odd da faixa), sem descartar jogos cuja tip recomendada caiu para 1.10-1.20. A pontuacao total (3x/15x/100x) e alcancada **acumulando mais jogos**, nunca com uma perna de odd alta.
+- Maluca escolhe pernas reais com odd entre 1.75x e 3.0x e probabilidade minima de 25% (`highRiskTip` quando disponivel), alvo de 250x em 4 a 8 jogos; sem odds extremas.
+- No JEV, as fichas nao-Maluca so escolhem entre tips dentro dessa faixa; a Maluca mantem a tip alternativa dentro da faixa 1.75x-3.0x.
 
 ### Anti-repeticao entre fichas
 
 - Um jogo pode entrar em no maximo `TICKETS_MAX_SLIPS_PER_MATCH` fichas pendentes (default 2).
-- Se uma ficha precisar de repetir um jogo, usa no maximo `TICKETS_MAX_REUSED_LEGS` jogos repetidos (default 2) e **sempre com mercado/tip diferente** do que ja foi usado nesse jogo.
+- Se uma ficha precisar de repetir um jogo, usa no maximo `TICKETS_MAX_REUSED_LEGS` jogos repetidos (default 8) e **sempre com mercado/tip diferente** do que ja foi usado nesse jogo.
 - Se nao houver jogos frescos suficientes dentro da faixa de odds, o motor **nao cria** a ficha em vez de correlacionar varias fichas nos mesmos jogos.

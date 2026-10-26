@@ -111,7 +111,8 @@ export async function generateTickets(
   scope: 'dia' | '2_3_dias' | 'longo',
   leagues?: string[],
   limit = 4,
-  market?: string
+  market?: string,
+  engine: 'local' | 'manual' = 'local'
 ): Promise<{
   generated: BetSlip[];
   all: BetSlip[];
@@ -121,7 +122,7 @@ export async function generateTickets(
   const res = await fetch('/api/tickets/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scope, leagues, limit, market: market || undefined }),
+    body: JSON.stringify({ scope, leagues, limit, market: market || undefined, engine }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

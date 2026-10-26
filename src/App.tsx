@@ -216,8 +216,7 @@ export default function App() {
       const result = await api.generateTickets(
         targetScope,
         Array.from(activeLeagues),
-        2,
-        selectedMarket || undefined
+        2
       );
       setSlips(result.all);
       if (result.stock) setStock(result.stock);
@@ -241,6 +240,42 @@ export default function App() {
       }
     } catch (err: any) {
       showToast(err?.message || 'Erro ao gerar bilhetes');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // ---------------------------------------- geraÃ§Ã£o manual por tipo de tip ---
+  const handleGenerateManualByMarket = async (targetScope: ScopeOption, market: string) => {
+    try {
+      setGenerating(true);
+      const result = await api.generateTickets(
+        targetScope,
+        Array.from(activeLeagues),
+        2,
+        market || undefined,
+        'manual'
+      );
+      setSlips(result.all);
+      if (result.stock) setStock(result.stock);
+      setLastGeneratedTime(
+        new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })
+      );
+
+      if (result.generated.length > 0) {
+        showToast(
+          `${result.generated.length} nova(s) ficha(s) manual(is) de ${scopeLabel(
+            targetScope
+          )} geradas e guardadas.`
+        );
+      } else {
+        showToast(
+          result.message ||
+            `Sem fichas novas para ${scopeLabel(targetScope)} neste momento.`
+        );
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Erro ao gerar ficha manual');
     } finally {
       setGenerating(false);
     }
@@ -658,7 +693,7 @@ export default function App() {
       return `Fichas de ${spread} com alvo de 100x: mais jogos e odds individuais do tier ousado, sem empilhar pernas inventadas para chegar aos pontos.`;
     }
 
-    return `Ficha Maluca: 4 a 8 ${spread}, com tips de odd alta e alvo de 1000x. A seleÃ§Ã£o usa apenas as tips reais jÃ¡ calculadas â€” risco mÃ¡ximo.`;
+    return `Ficha Maluca: 4 a 8 ${spread}, com odds individuais 1.75x-3.0x, probabilidade mínima 25% e alvo 250x. As tips são escolhidas por probabilidade/forma, sem odds extremas 6x/8x.`;
   };
 
   return (
@@ -707,9 +742,6 @@ export default function App() {
             onGenerateScope={handleGenerateScope}
             onOpenAiSlipModal={() => setIsAiSlipModalOpen(true)}
             generating={generating}
-            tipMarkets={tipMarkets}
-            selectedMarket={selectedMarket}
-            onMarketChange={setSelectedMarket}
           />
 
           {/* Main Layout */}
@@ -994,6 +1026,11 @@ export default function App() {
           isInCart={isInCart}
           cartCount={cart.length}
           onOpenCart={() => setIsCartOpen(true)}
+          tipMarkets={tipMarkets}
+          selectedMarket={selectedMarket}
+          onMarketChange={setSelectedMarket}
+          onGenerateByMarket={handleGenerateManualByMarket}
+          generating={generating}
         />
       )}
 

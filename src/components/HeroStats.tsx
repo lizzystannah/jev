@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MatchItem, BetSlip, BackendStatus, SlipScope, TicketStockStatus, TipMarket } from '../types.js';
+import { MatchItem, BetSlip, BackendStatus, SlipScope, TicketStockStatus } from '../types.js';
 import { Sparkles, Calendar, Zap, Clock, Cpu, TrendingUp, CheckCircle2, XCircle, BarChart3, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface HeroStatsProps {
@@ -12,9 +12,6 @@ interface HeroStatsProps {
   onGenerateScope: (scope: 'dia' | '2_3_dias' | 'longo') => void;
   onOpenAiSlipModal: () => void;
   generating: boolean;
-  tipMarkets: TipMarket[];
-  selectedMarket: string;
-  onMarketChange: (market: string) => void;
 }
 
 export const HeroStats: React.FC<HeroStatsProps> = ({
@@ -27,16 +24,17 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
   onGenerateScope,
   onOpenAiSlipModal,
   generating,
-  tipMarkets,
-  selectedMarket,
-  onMarketChange,
 }) => {
   const [showDetailedStats, setShowDetailedStats] = useState(false);
 
-  const avgOdds =
-    matches.length > 0
-      ? matches.reduce((acc, m) => acc + (m.tip?.odds || 1.8), 0) / matches.length
-      : 0;
+  const todayMatches = matches.filter((m) => m.daysFromNow === 0);
+  const todayCount = todayMatches.length;
+  const todayWithOdds = todayMatches.filter(
+    (m) => (m.odds?.realMarkets?.length ?? 0) > 0
+  ).length;
+  const todayUpcoming = todayMatches.filter(
+    (m) => m.status !== 'resolved' && m.kickoffAt > Date.now()
+  ).length;
 
   // Estatísticas Reais de Bilhetes
   const resolvedSlips = slips.filter((s) => s.status !== 'pendente');
@@ -110,29 +108,6 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
 
           {/* Action Buttons for all 3 Longevity Scopes */}
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex flex-col gap-1 mr-1">
-              <label
-                htmlFor="tip-market"
-                className="text-[10px] font-semibold uppercase tracking-wider text-[rgba(245,243,236,0.5)]"
-              >
-                Tipo de tip
-              </label>
-              <select
-                id="tip-market"
-                value={selectedMarket}
-                onChange={(e) => onMarketChange(e.target.value)}
-                className="cursor-pointer min-w-[175px] rounded border border-[rgba(245,243,236,0.2)] bg-[#0E2A1C] px-2.5 py-2 text-xs text-[#F5F3EC] focus:border-[#E7B33E] focus:outline-none"
-                title="Mercado usado na geração automática de fichas"
-              >
-                <option value="">Automático (recomendada)</option>
-                {tipMarkets.map((market) => (
-                  <option key={market.market} value={market.market}>
-                    {market.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
             <button
               type="button"
               onClick={() => onGenerateScope('dia')}
@@ -225,12 +200,15 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
             </div>
           </div>
 
-          <div className="bg-[#0E2A1C] p-4 sm:p-4.5">
+          <div
+            className="bg-[#0E2A1C] p-4 sm:p-4.5"
+            title={`${todayCount} jogo(s) de hoje no feed · ${todayWithOdds} com odds reais · ${todayUpcoming} ainda por iniciar`}
+          >
             <div className="font-display text-3xl sm:text-4xl text-[#F5F3EC] leading-none">
-              {avgOdds.toFixed(2)}
+              {todayCount}
             </div>
             <div className="mt-1.5 text-xs text-[rgba(245,243,236,0.45)]">
-              Odd média mercado
+              Jogos do Dia
             </div>
           </div>
 

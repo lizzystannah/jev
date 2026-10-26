@@ -120,6 +120,20 @@ export function isMainLeague(league?: string | null, competitionId?: string | nu
   return leaguePriorityRank(league) < 99;
 }
 
+/**
+ * Liga de fallback: nÃ£o Ã© principal, mas pode entrar nas fichas quando faltam
+ * jogos das ligas whitelist. Continua a excluir feminino, obscuro e divisÃµes
+ * inferiores.
+ */
+export function isFallbackLeague(
+  league?: string | null,
+  competitionId?: string | null
+): boolean {
+  const cid = (competitionId || '').trim();
+  if (cid && LOWER_COMPETITION_IDS.has(cid)) return false;
+  return !isWomensLeague(league) && !isObscureLeague(league) && !isLowerDivisionLeague(league);
+}
+
 export function leaguePriorityRank(league?: string | null, competitionId?: string | null): number {
   const s = league || '';
   const cid = (competitionId || '').trim();

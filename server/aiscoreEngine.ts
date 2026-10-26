@@ -94,6 +94,33 @@ function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
 }
 
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function envFloat(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  const n = raw ? Number.parseFloat(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// Mesmos nomes usados no ticketEngine (helper local para nao criar ciclo).
+const MALUCA_MIN_LEG_ODD = Math.max(
+  1.01,
+  envFloat('TICKETS_MALUCA_MIN_LEG_ODD', 1.75)
+);
+const MALUCA_MAX_LEG_ODD = Math.max(
+  MALUCA_MIN_LEG_ODD,
+  envFloat('TICKETS_MALUCA_MAX_LEG_ODD', 3.0)
+);
+const MALUCA_MIN_PROB = Math.min(
+  95,
+  Math.max(0, envInt('TICKETS_MALUCA_MIN_PROB', 25))
+);
+const MALUCA_IDEAL_LEG_ODD = (MALUCA_MIN_LEG_ODD + MALUCA_MAX_LEG_ODD) / 2;
+
 function num(v: unknown, fb = 0): number {
   const f = Number(v);
   return Number.isFinite(f) ? f : fb;
@@ -645,13 +672,23 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     }))
     .filter((x) => Number.isFinite(x.odd) && x.odd > 1.01 && x.p > 0.01);
   const preferredHighRisk = (() => {
-    const withBase = highRiskPool.filter((x) => x.p >= 0.25);
-    const nonTrivial = highRiskPool.filter((x) => x.p >= 0.08);
-    return withBase.length > 0 ? withBase
-      : nonTrivial.length > 0 ? nonTrivial
-      : highRiskPool;
+    const grounded = highRiskPool.filter(
+      (x) =>
+        x.p * 100 >= MALUCA_MIN_PROB &&
+        x.odd >= MALUCA_MIN_LEG_ODD &&
+        x.odd <= MALUCA_MAX_LEG_ODD
+    );
+    if (grounded.length > 0) return grounded;
+    // Fallback: ainda com alguma base, mas nunca odds extremas (6x-10x).
+    return highRiskPool.filter((x) => x.p >= 0.2 && x.odd >= 1.5 && x.odd <= 3.25);
   })();
-  const highRisk = preferredHighRisk.sort((a, b) => b.odd - a.odd)[0];
+  const highRisk = preferredHighRisk.sort(
+    (a, b) =>
+      Math.abs(a.odd - MALUCA_IDEAL_LEG_ODD) -
+        Math.abs(b.odd - MALUCA_IDEAL_LEG_ODD) ||
+      b.p - a.p ||
+      b.odd - a.odd
+  )[0];
   const highRiskLabel = highRisk ? MARKET_LABELS[highRisk.m] : undefined;
   const highRiskTip: MatchTip | undefined = highRisk
     ? {

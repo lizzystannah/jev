@@ -1,8 +1,9 @@
 ﻿import React, { useMemo, useState } from 'react';
-import { BetSlip, MatchItem, MatchTip } from '../types.js';
+import { BetSlip, MatchItem, MatchTip, TipMarket } from '../types.js';
 import { FixturesSidebar } from './FixturesSidebar.js';
 import { EngineSlipsPanel } from './EngineSlipsPanel.js';
-import { matchInScope, SCOPE_OPTIONS, ScopeOption } from '../utils/slips.js';
+import { matchInScope, SCOPE_OPTIONS, ScopeOption, scopeLabel } from '../utils/slips.js';
+import { Zap, Loader2 } from 'lucide-react';
 
 interface ManualTabProps {
   matches: MatchItem[];
@@ -22,6 +23,11 @@ interface ManualTabProps {
   isInCart: (matchId: string, market: string) => boolean;
   cartCount: number;
   onOpenCart: () => void;
+  tipMarkets: TipMarket[];
+  selectedMarket: string;
+  onMarketChange: (market: string) => void;
+  onGenerateByMarket: (scope: ScopeOption, market: string) => void;
+  generating: boolean;
 }
 
 export const ManualTab: React.FC<ManualTabProps> = ({
@@ -42,6 +48,11 @@ export const ManualTab: React.FC<ManualTabProps> = ({
   isInCart,
   cartCount,
   onOpenCart,
+  tipMarkets,
+  selectedMarket,
+  onMarketChange,
+  onGenerateByMarket,
+  generating,
 }) => {
   const [browseScope, setBrowseScope] = useState<ScopeOption>('dia');
 
@@ -64,6 +75,48 @@ export const ManualTab: React.FC<ManualTabProps> = ({
         <p className="mt-1.5 text-sm text-[rgba(245,243,236,0.6)] max-w-2xl">
           Escolhe o horizonte para explorar os jogos, adiciona as tips ao carrinho e define
           o escopo e o tier na criaÃ§Ã£o da ficha. O carrinho mantÃ©m as seleÃ§Ãµes entre escopos.
+        </p>
+      </div>
+
+      <div className="mb-6 rounded-lg border border-[rgba(245,243,236,0.14)] bg-[#0E2A1C] px-5 py-4">
+        <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+          <label className="flex flex-col gap-1.5 flex-1">
+            <span className="text-[10px] uppercase tracking-wider font-semibold text-[rgba(245,243,236,0.55)]">
+              Tipo de tip / mercado
+            </span>
+            <select
+              value={selectedMarket}
+              onChange={(e) => onMarketChange(e.target.value)}
+              disabled={generating}
+              className="cursor-pointer bg-[#081C13] border border-[rgba(245,243,236,0.2)] rounded px-3 py-2 text-sm text-[#F5F3EC] focus:outline-none focus:border-[#E7B33E] disabled:opacity-60"
+            >
+              <option value="">Automático (recomendada)</option>
+              {tipMarkets.map((m) => (
+                <option key={m.market} value={m.market}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            type="button"
+            onClick={() => onGenerateByMarket(browseScope, selectedMarket)}
+            disabled={generating}
+            className="cursor-pointer inline-flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded bg-[#E7B33E] hover:bg-[#F0C869] text-[#3A2A06] disabled:opacity-50 active:translate-y-[1px] shrink-0"
+          >
+            {generating ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Zap className="w-4 h-4 fill-current" />
+            )}
+            <span>Gerar ficha manual</span>
+          </button>
+        </div>
+        <p className="mt-2.5 text-[11px] text-[rgba(245,243,236,0.5)]">
+          Horizonte ativo: <strong className="text-[#F5F3EC]">{scopeLabel(browseScope)}</strong>{' '}
+          (muda nas abas de escopo ao lado). As fichas geradas ficam nesta aba (Manual), separadas
+          das fichas automáticas da Principal.
         </p>
       </div>
 

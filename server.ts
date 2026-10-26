@@ -20,7 +20,7 @@ import {
 import { resolvePremierBetOdds } from './server/premierbetOdds.js';
 import { jevStatus } from './server/jevEngine.js';
 import { cacheGet, cacheSet, cacheDel } from './server/cache.js';
-import type { BetSlip, MarketType, MatchItem, SlipScope, SlipTier, SlipUpload } from './server/types.js';
+import type { BetSlip, MarketType, MatchItem, SlipEngine, SlipScope, SlipTier, SlipUpload } from './server/types.js';
 import {
   PremierBetConfigError,
   premierBetStatus,
@@ -376,7 +376,7 @@ async function startServer() {
   // Generate slips for scope (botÃ£o manual em qualquer parte do site)
   app.post('/api/tickets/generate', async (req: Request, res: Response) => {
     try {
-      const { scope = 'dia', leagues, limit, market } = req.body || {};
+      const { scope = 'dia', leagues, limit, market, engine = 'local' } = req.body || {};
       const validScopes = ['dia', '2_3_dias', 'longo'];
       if (!validScopes.includes(scope)) {
         return res.status(400).json({ error: `Escopo invÃ¡lido: ${scope}` });
@@ -384,12 +384,15 @@ async function startServer() {
       if (market !== undefined && market !== null && market !== '' && !ALL_MARKETS.includes(market)) {
         return res.status(400).json({ error: `Tipo de tip invÃ¡lido: ${market}` });
       }
+      if (!['local', 'manual'].includes(engine)) {
+        return res.status(400).json({ error: `Motor invÃ¡lido: ${engine}` });
+      }
       const result = await ticketScheduler.generateMore(
         scope,
         Array.isArray(leagues) ? leagues : undefined,
         Number(limit) > 0 ? Number(limit) : 4,
         market || undefined,
-        'local'
+        engine as SlipEngine
       );
       await cacheDel('matches:api:v2');
       res.json({
