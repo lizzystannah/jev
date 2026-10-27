@@ -170,8 +170,61 @@ export interface MatchItem {
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo';
 export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
-/** Motor que produziu a ficha (principal local, JEV ou montagem manual). */
-export type SlipEngine = 'local' | 'manual' | 'jev';
+/** Motor que produziu a ficha (principal local, JEV, manual ou progressão). */
+export type SlipEngine = 'local' | 'manual' | 'jev' | 'progression';
+
+/** Modo de gestão de banca de uma progressão. */
+export type ProgressionMode = 'fixo' | 'total' | 'metade' | 'soros';
+/** `ativa` gera/coloca automaticamente; `pausada` espera pelo Play. */
+export type ProgressionStatus = 'ativa' | 'pausada' | 'erro';
+export type ProgressionRunStatus = 'pendente' | 'ganhou' | 'perdeu' | 'expirado' | 'falhou';
+
+/** Uma ficha gerada por uma progressão (um nível). */
+export interface ProgressionRun {
+  level: number;
+  slipId: string;
+  stake: number;
+  odds: number;
+  status: ProgressionRunStatus;
+  /** Lucro/prejuízo em Kwanzas quando resolvida (null enquanto pendente). */
+  profit: number | null;
+  /** ID devolvido pela Premier Bet quando a aposta é colocada. */
+  betId?: string;
+  message?: string;
+  createdAt: number;
+  resolvedAt?: number | null;
+}
+
+/** Configuração persistida de uma automação de progressão. */
+export interface Progression {
+  id: string;
+  name: string;
+  /** Motor que escolhe as tips: principal (local) ou JEV. */
+  engine: 'local' | 'jev';
+  tier: Exclude<SlipTier, 'maluca'>;
+  scope: SlipScope;
+  mode: ProgressionMode;
+  /** Valor base de cada ficha, em Kwanzas. */
+  baseStake: number;
+  /** Percentagem do lucro anterior reinvestida (0-100). */
+  reinvestPct: number;
+  /** Nº de níveis do ciclo; ao chegar ao fim, recomeça no nível 1. */
+  maxLevel: number;
+  targetOddsMin: number;
+  targetOddsMax: number;
+  status: ProgressionStatus;
+  currentLevel: number;
+  /** Valor que será usado na próxima ficha. */
+  currentStake: number;
+  lastProfit: number;
+  totalProfit: number;
+  cycles: number;
+  createdAt: number;
+  updatedAt: number;
+  lastRunAt?: number | null;
+  lastError?: string | null;
+  runs: ProgressionRun[];
+}
 
 /** Estado da Ãºltima tentativa de subir a ficha para a Premier Bet. */
 export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
@@ -248,6 +301,9 @@ export interface BetSlip {
   isAiGenerated?: boolean;
   /** Data-calendÃ¡rio de Angola (YYYY-MM-DD) em que a ficha foi criada. */
   dayKey?: string;
+  /** Progressão que criou esta ficha (quando engine === 'progression'). */
+  progressionId?: string;
+  progressionLevel?: number;
   /** Preenchido pela API: Ãºltima tentativa de subir para a Premier Bet. */
   upload?: SlipUpload | null;
 }

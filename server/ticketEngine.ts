@@ -92,17 +92,25 @@ function legsCoherence(legs: MatchItem[]): number {
  */
 function pickUntilTarget(
   ordered: MatchItem[],
-  cfg: { targetOdds: number; maxLegs: number; minLegs: number },
+  cfg: { targetOdds: number; maxLegs: number; minLegs: number; maxOdds?: number },
   diversifyLeagues = true
 ): MatchItem[] | null {
   const picked: MatchItem[] = [];
   const leagues = new Set<string>();
+  const maxOdds = cfg.maxOdds ?? Infinity;
 
   const product = (): number => picked.reduce((acc, leg) => acc * leg.tip.odds, 1);
+  const inRange = (): boolean => {
+    const total = product();
+    return total >= cfg.targetOdds && total <= maxOdds;
+  };
 
   for (const match of ordered) {
     if (picked.length >= cfg.maxLegs) break;
     if (picked.some((leg) => leg.id === match.id)) continue;
+
+    // Automação com teto: nunca aceita uma perna que estoure a faixa.
+    if (product() * match.tip.odds > maxOdds) continue;
 
     if (diversifyLeagues && leagues.has(match.league)) {
       const hasAlternative = ordered.some(
@@ -116,12 +124,12 @@ function pickUntilTarget(
     picked.push(match);
     leagues.add(match.league);
 
-    if (picked.length >= cfg.minLegs && product() >= cfg.targetOdds) {
+    if (picked.length >= cfg.minLegs && inRange()) {
       return picked;
     }
   }
 
-  return picked.length >= cfg.minLegs && product() >= cfg.targetOdds ? picked : null;
+  return picked.length >= cfg.minLegs && inRange() ? picked : null;
 }
 
 export const TIERS_CONFIG = {
@@ -306,6 +314,13 @@ export interface GenerateOptions {
    * probabilidades jÃ¡ calculadas pelo motor local).
    */
   engine?: SlipEngine;
+  /**
+   * Automação: gera apenas UM tier e exige que a odd combinada caia dentro
+   * desta faixa (ex.: 4.00–4.99). Sem isto o alvo é o do tier (3x/15x/100x).
+   */
+  oddsRange?: { min: number; max: number };
+  /** Automação: constrói somente este tier (Segura/Moderada/Ousada/Maluca). */
+  onlyTier?: SlipTier;
 }
 
 /** Telemetria da geraÃ§Ã£o JEV (chamadas reais vs decisÃµes reaproveitadas). */
@@ -790,7 +805,14 @@ export class TicketEngine {
         diversifyLeagues?: boolean;
       }
     ): BetSlip | null => {
-      const cfg = legsConfigFor(scope, tier);
+      const baseCfg = legsConfigFor(scope, tier);
+      const cfg = options?.oddsRange
+        ? {
+            ...baseCfg,
+            targetOdds: options.oddsRange.min,
+            maxOdds: options.oddsRange.max,
+          }
+        : baseCfg;
       // Segura/Moderada/Ousada: só pernas de odd baixa (a pontuação alta vem
       // de acumular jogos). A Maluca é a única que pode usar odds altas.
       const selectedMarket = options?.market;
@@ -1033,6 +1055,58 @@ export class TicketEngine {
       pickScore(b) * Math.sqrt(b.tip.odds) - pickScore(a) * Math.sqrt(a.tip.odds);
     malucaPool.sort(malucaSort);
 
+    // ------------------------------------------------ automação/progressões ---
+    // Constrói UMA ficha do tier pedido cuja odd total caia na faixa exigida
+    // (ex.: 4.00–4.99). A ficha fica marcada com engine "progression" para não
+    // contar para as quotas dos motores Principal/Manual/JEV.
+    if (options?.onlyTier) {
+      const onlyTier = options.onlyTier;
+      const pool =
+        onlyTier === 'segura'
+          ? seguraPool
+          : onlyTier === 'moderada'
+          ? moderadaPool
+          : onlyTier === 'ousada'
+          ? ousadaPool
+          : malucaPool;
+      const sorters: Array<((a: MatchItem, b: MatchItem) => number) | undefined> = [
+        undefined,
+        (a, b) => b.tip.odds - a.tip.odds,
+        (a, b) => a.tip.odds - b.tip.odds,
+      ];
+      let slip: BetSlip | null = null;
+      for (const sortFn of sorters) {
+        slip = buildTargetTier(onlyTier, { pool, sortFn, preferFresh: false });
+        if (slip) break;
+      }
+      if (!slip) {
+        console.warn(
+          `[Progressão] Sem combinação de odds entre ${options.oddsRange?.min ?? '?'} e ` +
+            `${options.oddsRange?.max ?? '?'} para o tier ${onlyTier}.`
+        );
+        return {
+          generated: [],
+          all: this.slips,
+          jevLatencyMs: localResponse.latencyMs,
+          jevMeta,
+        };
+      }
+      slip.engine = 'progression';
+      slip.customTitle = `Progressão · ${onlyTier} · ${slip.combinedOdds.toFixed(2)}x`;
+      this.slips.push(slip);
+      bilheteriaDb.upsertSlip(slip);
+      console.log(
+        `[Progressão] Ficha ${slip.id} criada: ${slip.legs.length} jogos, ` +
+          `${slip.combinedOdds.toFixed(2)}x (faixa ${options.oddsRange?.min}-${options.oddsRange?.max}).`
+      );
+      return {
+        generated: [slip],
+        all: this.slips,
+        jevLatencyMs: localResponse.latencyMs,
+        jevMeta,
+      };
+    }
+
     // A Maluca e construida primeiro para reservar as melhores pernas de odd
     // 2.0x-3.0x; Segura/Moderada/Ousada podem usar os mesmos jogos com outro
     // mercado real. Assim a ficha maluca fundamentada nao desaparece nos dias
@@ -1166,6 +1240,26 @@ export class TicketEngine {
       jevLatencyMs: localResponse.latencyMs,
       jevMeta,
     };
+  }
+
+  /**
+   * Automação: devolve uma única ficha do tier/motor pedidos, com a odd
+   * combinada obrigatoriamente dentro da faixa indicada.
+   */
+  public async generateProgressionSlip(params: {
+    scope: SlipScope;
+    tier: SlipTier;
+    engine: 'local' | 'jev';
+    oddsMin: number;
+    oddsMax: number;
+  }): Promise<BetSlip | null> {
+    const result = await this.generateTicketsForScope(params.scope, undefined, {
+      limit: 1,
+      engine: params.engine,
+      onlyTier: params.tier,
+      oddsRange: { min: params.oddsMin, max: params.oddsMax },
+    });
+    return result.generated[0] ?? null;
   }
 
   /**

@@ -134,7 +134,62 @@ export interface MatchItem {
 export type SlipScope = 'dia' | '2_3_dias' | 'longo' | 'historico';
 export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
 /** Motor que criou a ficha. `local` Ã© o motor principal. */
-export type BetEngine = 'local' | 'manual' | 'jev';
+export type BetEngine = 'local' | 'manual' | 'jev' | 'progression';
+
+export type ProgressionMode = 'fixo' | 'total' | 'metade' | 'soros';
+export type ProgressionStatus = 'ativa' | 'pausada' | 'erro';
+export type ProgressionRunStatus = 'pendente' | 'ganhou' | 'perdeu' | 'expirado' | 'falhou';
+
+export interface ProgressionRun {
+  level: number;
+  slipId: string;
+  stake: number;
+  odds: number;
+  status: ProgressionRunStatus;
+  profit: number | null;
+  betId?: string;
+  message?: string;
+  createdAt: number;
+  resolvedAt?: number | null;
+}
+
+export interface Progression {
+  id: string;
+  name: string;
+  engine: 'local' | 'jev';
+  tier: Exclude<SlipTier, 'maluca'>;
+  scope: Exclude<SlipScope, 'historico'>;
+  mode: ProgressionMode;
+  baseStake: number;
+  reinvestPct: number;
+  maxLevel: number;
+  targetOddsMin: number;
+  targetOddsMax: number;
+  status: ProgressionStatus;
+  currentLevel: number;
+  currentStake: number;
+  lastProfit: number;
+  totalProfit: number;
+  cycles: number;
+  createdAt: number;
+  updatedAt: number;
+  lastRunAt?: number | null;
+  lastError?: string | null;
+  runs: ProgressionRun[];
+}
+
+export interface CreateProgressionInput {
+  name?: string;
+  engine: 'local' | 'jev';
+  tier: Exclude<SlipTier, 'maluca'>;
+  scope: Exclude<SlipScope, 'historico'>;
+  mode: ProgressionMode;
+  baseStake: number;
+  reinvestPct?: number;
+  maxLevel: number;
+  targetOddsMin?: number;
+  targetOddsMax?: number;
+}
 
 /** Estado do motor JEV exposto por `GET /api/jev/status`. */
 export interface JevStatus {
@@ -204,6 +259,9 @@ export interface BetSlip {
   dayKey?: string;
   /** Motor que criou a ficha (`local` quando o backend nÃ£o envia o campo). */
   engine?: BetEngine;
+  /** Progressão que criou esta ficha (quando engine === 'progression'). */
+  progressionId?: string;
+  progressionLevel?: number;
   /** Preenchido pela API: Ãºltima tentativa de subir para a Premier Bet. */
   upload?: SlipUpload | null;
 }

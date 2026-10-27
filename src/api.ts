@@ -11,6 +11,8 @@ import {
   TipMarket,
   SlipTier,
   JevStatus,
+  Progression,
+  CreateProgressionInput,
 } from './types.js';
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
@@ -169,6 +171,51 @@ export async function createCustomSlip(
     throw new Error(data.error || 'Erro ao criar a ficha manual');
   }
   return data as { slip: BetSlip; all: BetSlip[] };
+}
+
+export async function fetchProgressions(): Promise<Progression[]> {
+  const res = await fetch('/api/progressions');
+  if (!res.ok) throw new Error('Falha ao carregar as progressões');
+  return res.json();
+}
+
+export async function createProgression(
+  input: CreateProgressionInput
+): Promise<Progression> {
+  const res = await fetch('/api/progressions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Falha ao criar a progressão');
+  return data as Progression;
+}
+
+export async function playProgression(id: string): Promise<Progression> {
+  const res = await fetch(`/api/progressions/${encodeURIComponent(id)}/play`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Falha ao iniciar a progressão');
+  return data as Progression;
+}
+
+export async function stopProgression(id: string): Promise<Progression> {
+  const res = await fetch(`/api/progressions/${encodeURIComponent(id)}/stop`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Falha ao parar a progressão');
+  return data as Progression;
+}
+
+export async function deleteProgression(id: string): Promise<void> {
+  const res = await fetch(`/api/progressions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Falha ao excluir a progressão');
 }
 
 export async function resolveMatch(

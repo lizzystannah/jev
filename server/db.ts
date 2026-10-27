@@ -12,7 +12,7 @@
  */
 
 import path from 'path';
-import type { BetSlip, MatchItem, SlipUpload } from './types.js';
+import type { BetSlip, MatchItem, Progression, SlipUpload } from './types.js';
 import {
   createSqlDriver,
   mysqlConfigFromEnv,
@@ -117,6 +117,13 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
         PRIMARY KEY (slip_id),
         KEY idx_slip_uploads_status (status)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+      `CREATE TABLE IF NOT EXISTS progressions (
+        id VARCHAR(64) NOT NULL,
+        data_json LONGTEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        PRIMARY KEY (id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     ];
   }
 
@@ -157,6 +164,12 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
       updated_at INTEGER NOT NULL
     )`,
     'CREATE INDEX IF NOT EXISTS idx_slip_uploads_status ON slip_uploads(status)',
+    `CREATE TABLE IF NOT EXISTS progressions (
+      id TEXT PRIMARY KEY,
+      data_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
   ];
 }
 
@@ -180,6 +193,20 @@ export function metaUpsertSql(dialect: Dialect): string {
        ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)`
     : `INSERT INTO meta (meta_key, meta_value) VALUES (?, ?)
        ON CONFLICT (meta_key) DO UPDATE SET meta_value = excluded.meta_value`;
+}
+
+export function progressionUpsertSql(dialect: Dialect): string {
+  return dialect === 'mysql'
+    ? `INSERT INTO progressions (id, data_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         data_json = VALUES(data_json),
+         updated_at = VALUES(updated_at)`
+    : `INSERT INTO progressions (id, data_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET
+         data_json = excluded.data_json,
+         updated_at = excluded.updated_at`;
 }
 
 export function slipUploadUpsertSql(dialect: Dialect): string {
@@ -215,6 +242,7 @@ class BilheteriaDatabase {
   private slipUpsert = '';
   private metaUpsert = '';
   private uploadUpsert = '';
+  private progressionUpsert = '';
 
   public get isReady(): boolean {
     return this.ready;
@@ -262,6 +290,7 @@ class BilheteriaDatabase {
     this.slipUpsert = slipUpsertSql(this.driver.dialect);
     this.metaUpsert = metaUpsertSql(this.driver.dialect);
     this.uploadUpsert = slipUploadUpsertSql(this.driver.dialect);
+    this.progressionUpsert = progressionUpsertSql(this.driver.dialect);
     this.ready = true;
     console.log(`[Bilheteria DB] Persistência ativa: ${this.driver.description}`);
   }
@@ -493,6 +522,58 @@ class BilheteriaDatabase {
           at,
           at,
         ])
+        .then(() => undefined)
+    );
+  }
+
+  // -------------------------------------------------------- progressões ---
+
+  /** Carrega as progressões persistidas (JSON) para o motor de automação. */
+  public async loadProgressions(): Promise<Progression[]> {
+    try {
+      const rows = await this.requireDriver().query(
+        'SELECT data_json FROM progressions ORDER BY created_at ASC'
+      );
+      const items: Progression[] = [];
+      for (const row of rows) {
+        try {
+          const parsed = JSON.parse(String(row.data_json)) as Progression;
+          if (parsed && typeof parsed.id === 'string' && Array.isArray(parsed.runs)) {
+            items.push(parsed);
+          }
+        } catch (err: any) {
+          console.warn('[Bilheteria DB] Progressão inválida ignorada:', err?.message);
+        }
+      }
+      if (items.length > 0) {
+        console.log(`[Bilheteria DB] ${items.length} progressão(ões) restaurada(s).`);
+      }
+      return items;
+    } catch (err: any) {
+      console.warn('[Bilheteria DB] Falha ao carregar progressões:', err?.message);
+      return [];
+    }
+  }
+
+  public upsertProgression(progression: Progression): void {
+    const json = JSON.stringify(progression);
+    const createdAt = progression.createdAt || Date.now();
+    this.enqueue(() =>
+      this.requireDriver()
+        .query(this.progressionUpsert, [
+          progression.id,
+          json,
+          createdAt,
+          Date.now(),
+        ])
+        .then(() => undefined)
+    );
+  }
+
+  public deleteProgression(id: string): void {
+    this.enqueue(() =>
+      this.requireDriver()
+        .query('DELETE FROM progressions WHERE id = ?', [id])
         .then(() => undefined)
     );
   }

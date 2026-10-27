@@ -8,6 +8,7 @@ import { createServer as createViteServer } from 'vite';
 import { marketService, MARKET_LABELS, oddsSignature } from './server/marketService.js';
 import { ticketEngine } from './server/ticketEngine.js';
 import { ticketScheduler } from './server/ticketScheduler.js';
+import { progressionEngine } from './server/progressionEngine.js';
 import { bilheteriaDb } from './server/db.js';
 import { analyzeMatchTactics, generateSmartSlipWithAi } from './server/aiService.js';
 import { aiscoreClient, decodePackedSint32, parseMatchScores, scoutToMatchContext } from './server/aiscoreService.js';
@@ -37,6 +38,7 @@ async function startServer() {
   // PersistÃªncia primeiro: sem base de dados pronta nÃ£o hÃ¡ fichas nem agendador.
   await bilheteriaDb.init();
   await ticketEngine.init();
+  await progressionEngine.init();
 
   const app = express();
   app.use(express.json());
@@ -331,7 +333,7 @@ async function startServer() {
     // Run validation sweep before returning
     ticketEngine.validateSlips();
     const engine = String(req.query.engine || '').trim();
-    const slips = ['local', 'manual', 'jev'].includes(engine)
+    const slips = ['local', 'manual', 'jev', 'progression'].includes(engine)
       ? ticketEngine.getSlips().filter((s) => (s.engine ?? 'local') === engine)
       : ticketEngine.getSlips();
     res.json(withUploads(slips));
@@ -786,6 +788,61 @@ async function startServer() {
     }
   });
 
+  // ------------------------------------------------------------- progressões ---
+
+  app.get('/api/progressions', (_req: Request, res: Response) => {
+    res.json(progressionEngine.list());
+  });
+
+  app.get('/api/progressions/:id', (req: Request, res: Response) => {
+    const progression = progressionEngine.get(req.params.id);
+    if (!progression) return res.status(404).json({ error: 'Progressão não encontrada.' });
+    res.json(progression);
+  });
+
+  app.post('/api/progressions', (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      const progression = progressionEngine.create({
+        name: body.name,
+        engine: body.engine,
+        tier: body.tier,
+        scope: body.scope,
+        mode: body.mode,
+        baseStake: Number(body.baseStake),
+        reinvestPct: body.reinvestPct == null ? undefined : Number(body.reinvestPct),
+        maxLevel: Number(body.maxLevel),
+        targetOddsMin: body.targetOddsMin == null ? 4 : Number(body.targetOddsMin),
+        targetOddsMax: body.targetOddsMax == null ? 4.99 : Number(body.targetOddsMax),
+      });
+      res.status(201).json(progression);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Configuração de progressão inválida.' });
+    }
+  });
+
+  app.post('/api/progressions/:id/play', async (req: Request, res: Response) => {
+    try {
+      const progression = await progressionEngine.play(req.params.id);
+      if (!progression) return res.status(404).json({ error: 'Progressão não encontrada.' });
+      res.json(progression);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Falha ao iniciar a progressão.' });
+    }
+  });
+
+  app.post('/api/progressions/:id/stop', (req: Request, res: Response) => {
+    const progression = progressionEngine.pause(req.params.id);
+    if (!progression) return res.status(404).json({ error: 'Progressão não encontrada.' });
+    res.json(progression);
+  });
+
+  app.delete('/api/progressions/:id', (req: Request, res: Response) => {
+    const deleted = progressionEngine.delete(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Progressão não encontrada.' });
+    res.json({ deleted: true, id: req.params.id });
+  });
+
   // AI Tactical Analysis for a single match
   app.post('/api/ai/analyze-match', async (req: Request, res: Response) => {
     try {
@@ -948,6 +1005,7 @@ async function startServer() {
     // Agendador em background: fichas do dia Ã  meia-noite (Angola), reposiÃ§Ã£o de
     // estoque, expiraÃ§Ã£o e sincronizaÃ§Ã£o de mercado â€” funciona sem browser aberto.
     ticketScheduler.start();
+    progressionEngine.start();
 
     // Quando o backfill dos dias +1..+8 termina, repÃµe as quotas dos escopos
     // futuros (2-3 dias / longo) sem esperar o prÃ³ximo tick.
@@ -959,6 +1017,7 @@ async function startServer() {
   const shutdown = async (signal: string) => {
     console.log(`[Bilheteria Backend] ${signal} recebido. A encerrar agendador e a gravar estado...`);
     ticketScheduler.stop();
+    progressionEngine.stop();
     try {
       await bilheteriaDb.close();
     } catch (err: any) {

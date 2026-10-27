@@ -1,7 +1,7 @@
 import React from 'react';
-import { LayoutGrid, SlidersHorizontal, Cpu } from 'lucide-react';
+import { LayoutGrid, SlidersHorizontal, Cpu, Bot } from 'lucide-react';
 
-export type EngineTab = 'principal' | 'manual' | 'jev';
+export type EngineTab = 'principal' | 'manual' | 'jev' | 'automacao';
 
 interface EngineTabsProps {
   active: EngineTab;
@@ -13,6 +13,7 @@ const TABS: Array<{ id: EngineTab; label: string; icon: React.ReactNode }> = [
   { id: 'principal', label: 'Principal', icon: <LayoutGrid className="w-3.5 h-3.5" /> },
   { id: 'manual', label: 'Manual', icon: <SlidersHorizontal className="w-3.5 h-3.5" /> },
   { id: 'jev', label: 'JEV', icon: <Cpu className="w-3.5 h-3.5" /> },
+  { id: 'automacao', label: 'Automação', icon: <Bot className="w-3.5 h-3.5" /> },
 ];
 
 export const EngineTabs: React.FC<EngineTabsProps> = ({ active, onChange, counts }) => {

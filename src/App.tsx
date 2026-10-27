@@ -18,6 +18,7 @@ import {
   TipMarket,
   CartLeg,
   JevStatus,
+  Progression,
 } from './types.js';
 import * as api from './api.js';
 import { Header } from './components/Header.tsx';
@@ -33,6 +34,7 @@ import { CustomSlipDrawer } from './components/CustomSlipDrawer.tsx';
 import { EngineTabs, EngineTab } from './components/EngineTabs.tsx';
 import { ManualTab } from './components/ManualTab.tsx';
 import { JevTab } from './components/JevTab.tsx';
+import { AutomationTab } from './components/AutomationTab.tsx';
 import { Zap, CheckCircle2, RotateCcw, Cpu, Loader2, ShoppingCart } from 'lucide-react';
 import { getSavedTimezone, saveTimezone, getDayKeyInTz } from './utils/timezone.js';
 import { leagueRank } from './utils/leagues.js';
@@ -59,6 +61,7 @@ export default function App() {
   const [lastGeneratedTime, setLastGeneratedTime] = useState<string>('');
   const [timezone, setTimezone] = useState<string>(() => getSavedTimezone());
   const [activeEngine, setActiveEngine] = useState<EngineTab>('principal');
+  const [progressions, setProgressions] = useState<Progression[]>([]);
 
   const [jevStatus, setJevStatus] = useState<JevStatus | null>(null);
   const [jevStatusLoading, setJevStatusLoading] = useState(false);
@@ -95,17 +98,19 @@ export default function App() {
   const loadInitialData = useCallback(async (isRefresh = false) => {
     try {
       if (isRefresh) setLoading(true);
-      const [statusData, matchesData, slipsData, stockData] = await Promise.all([
+      const [statusData, matchesData, slipsData, stockData, progressionsData] = await Promise.all([
         api.fetchBackendStatus(),
         api.fetchMatches(isRefresh),
         api.fetchTickets(),
         api.fetchTicketStock(),
+        api.fetchProgressions().catch(() => [] as Progression[]),
       ]);
 
       setBackendStatus(statusData);
       setMatches(matchesData);
       setSlips(slipsData);
       setStock(stockData);
+      setProgressions(progressionsData);
 
       // Initialize all leagues as active and ensure new leagues are included
       setActiveLeagues((prev) => {
@@ -147,6 +152,26 @@ export default function App() {
   useEffect(() => {
     void loadJevStatus();
   }, [loadJevStatus]);
+
+  const refreshProgressions = useCallback(async () => {
+    try {
+      const [progressionsData, slipsData] = await Promise.all([
+        api.fetchProgressions(),
+        api.fetchTickets(),
+      ]);
+      setProgressions(progressionsData);
+      setSlips(slipsData);
+    } catch {
+      /* silencioso */
+    }
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void refreshProgressions();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [refreshProgressions]);
 
   // Tipos de tip disponÃ­veis para a geraÃ§Ã£o automÃ¡tica.
   useEffect(() => {
@@ -562,16 +587,23 @@ export default function App() {
   const jevSlips = useMemo(() => slips.filter((s) => engineOf(s) === 'jev'), [slips]);
 
   const engineCounts = useMemo<Record<EngineTab, number>>(() => {
-    const counts: Record<EngineTab, number> = { principal: 0, manual: 0, jev: 0 };
+    const counts: Record<EngineTab, number> = {
+      principal: 0,
+      manual: 0,
+      jev: 0,
+      automacao: 0,
+    };
     for (const slip of slips) {
       if (slip.status !== 'pendente') continue;
       const engine = engineOf(slip);
       if (engine === 'manual') counts.manual += 1;
       else if (engine === 'jev') counts.jev += 1;
+      else if (engine === 'progression') continue;
       else counts.principal += 1;
     }
+    counts.automacao = progressions.filter((p) => p.status === 'ativa').length;
     return counts;
-  }, [slips]);
+  }, [slips, progressions]);
 
   const todayKey = getDayKeyInTz(Date.now(), DAY_TIMEZONE);
 
@@ -1049,6 +1081,14 @@ export default function App() {
           timezone={timezone}
           onUpload={setUploadSlip}
           onDelete={handleDeleteSlip}
+        />
+      )}
+
+      {activeEngine === 'automacao' && (
+        <AutomationTab
+          progressions={progressions}
+          onRefresh={refreshProgressions}
+          onToast={showToast}
         />
       )}
 
