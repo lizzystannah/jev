@@ -597,7 +597,10 @@ async function startServer() {
         engine: 'manual',
       });
       const added = ticketEngine.addCustomSlip(slip);
+      // Persistência confirmada antes de responder (ficha manual).
+      await bilheteriaDb.flush();
       await cacheDel('matches:api:v2');
+
       res.json({
         slip: { ...added, upload: bilheteriaDb.getUpload(added.id) },
         all: withUploads(ticketEngine.getSlips()),

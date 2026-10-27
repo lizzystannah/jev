@@ -1225,6 +1225,10 @@ export class TicketEngine {
       this.slips.push(slip);
     }
     bilheteriaDb.upsertMany(topSlips);
+    // Garante que as fichas chegam à BD antes de a API responder. Sem isto,
+    // um encerramento abrupto podia perder fichas que já apareciam na UI.
+    await bilheteriaDb.flush();
+
     // CalibraÃ§Ã£o/enriquecimento ficam no cache de jogos (sobrevive a redeploy).
     if (evaluatedMatches.length > 0) marketService.saveCacheSoon();
     if (topSlips.length > 0) {
