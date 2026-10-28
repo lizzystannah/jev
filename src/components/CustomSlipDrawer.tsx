@@ -29,6 +29,7 @@ const tierOptions: Array<{ id: SlipTier; label: string }> = [
   { id: 'moderada', label: 'Moderada' },
   { id: 'ousada', label: 'Ousada' },
   { id: 'maluca', label: 'Maluca' },
+  { id: 'compostas', label: 'Compostas' },
 ];
 
 export const CustomSlipDrawer: React.FC<CustomSlipDrawerProps> = ({

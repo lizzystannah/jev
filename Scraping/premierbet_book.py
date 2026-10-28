@@ -4,8 +4,8 @@ Fluxo:
   1. Para cada perna: localiza o jogo na API da Premier Bet
      (events/upcoming por data + fuzzy de nomes) e lê events/{id}
      (mercados, outcomes, odds atuais).
-  2. Mapeia o nosso mercado (home/draw/away/double_chance_*/over*/under*/btts_*/dnb_*)
-     para {marketId, outcomeId} da Premier Bet.
+  2. Mapeia o nosso mercado (home/draw/away/double_chance_*/over*/under*/btts_*/dnb_*
+     e tips compostas) para {marketId, outcomeId} da Premier Bet.
   3. Abre o site num browser Playwright, faz login (credenciais na env),
      injeta as seleções no localStorage (chave sah_ao-betslip — formato do site
      real), define o valor da aposta e, quando pedido, coloca a aposta.
@@ -77,6 +77,84 @@ MARKET_MAP = {
     "dnb_home": ("18", lambda o: o.get("name") == "1"),
     "dnb_away": ("18", lambda o: o.get("name") == "2"),
 }
+
+
+def _combo_total(base: str, direction: str, handicap: str):
+    name = f"{base} + {direction}"
+    return lambda o: o.get("name") == name and o.get("handicap") == handicap
+
+
+def _combo_dc_total(base: str, direction: str, handicap: str):
+    name = f"{base} / {direction}"
+    return lambda o: o.get("name") == name and o.get("handicap") == handicap
+
+
+def _combo_btts_total(btts: str, direction: str, handicap: str):
+    name = f"{btts} + {direction}"
+    return lambda o: o.get("name") == name and o.get("handicap") == handicap
+
+
+def _combo_result_btts(base: str, btts: str):
+    name = f"{base} + {btts}"
+    return lambda o: o.get("name") == name
+
+
+def _combo_dc_btts(base: str, btts: str):
+    name = f"{base} / {btts}"
+    return lambda o: o.get("name") == name
+
+
+# Novos mercados COMPOSTOS: a Premier Bet já os expõe pré-combinados, pelo que
+# não é preciso um bet builder próprio. Cada chave do nosso motor mapeia para
+# um marketId/outcome real.
+_TOTAL_LINES = {
+    "over15": ("Acima", "1.5"),
+    "over25": ("Acima", "2.5"),
+    "over35": ("Acima", "3.5"),
+    "over45": ("Acima", "4.5"),
+    "under15": ("Abaixo", "1.5"),
+    "under25": ("Abaixo", "2.5"),
+    "under35": ("Abaixo", "3.5"),
+    "under45": ("Abaixo", "4.5"),
+}
+for _key, _label in (("home", "1"), ("draw", "X"), ("away", "2")):
+    for _line, (_direction, _handicap) in _TOTAL_LINES.items():
+        MARKET_MAP[f"{_key}_{_line}"] = (
+            "36",
+            _combo_total(_label, _direction, _handicap),
+        )
+for _key, _label in (
+    ("double_chance_1x", "1X"),
+    ("double_chance_x2", "X2"),
+    ("double_chance_12", "12"),
+):
+    for _line, (_direction, _handicap) in _TOTAL_LINES.items():
+        MARKET_MAP[f"{_key}_{_line}"] = (
+            "569",
+            _combo_dc_total(_label, _direction, _handicap),
+        )
+for _key, _label in (("btts_yes", "Sim"), ("btts_no", "Não")):
+    for _line, (_direction, _handicap) in _TOTAL_LINES.items():
+        MARKET_MAP[f"{_key}_{_line}"] = (
+            "414",
+            _combo_btts_total(_label, _direction, _handicap),
+        )
+for _key, _label in (("home", "1"), ("draw", "X"), ("away", "2")):
+    for _btts_key, _btts_label in (("btts_yes", "Sim Golos"), ("btts_no", "Não Golos")):
+        MARKET_MAP[f"{_key}_{_btts_key}"] = (
+            "386",
+            _combo_result_btts(_label, _btts_label),
+        )
+for _key, _label in (
+    ("double_chance_1x", "1X"),
+    ("double_chance_x2", "X2"),
+    ("double_chance_12", "12"),
+):
+    for _btts_key, _btts_label in (("btts_yes", "Sim"), ("btts_no", "Não")):
+        MARKET_MAP[f"{_key}_{_btts_key}"] = (
+            "570",
+            _combo_dc_btts(_label, _btts_label),
+        )
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -210,7 +288,7 @@ def to_selection(ev_detail: dict, market: dict, outcome: dict, stake: float = 0)
         "outcomeValue": str(outcome.get("value")),
         "outcomeName": outcome.get("name"),
         "eventStartTimestamp": ev_detail.get("startTime"),
-        "isBetBuilderAvailable": True,
+        "isBetBuilderAvailable": bool(market.get("isBetBuilderAvailable", False)),
         "eventId": str(ev_detail.get("id")),
         "eventName": f"{names[0]} v {names[1]}" if len(names) > 1 else "",
         "marketTypeRef": str(market.get("id")),

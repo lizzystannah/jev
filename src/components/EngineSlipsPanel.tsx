@@ -22,6 +22,7 @@ const emptyTierCounts = (): Record<SlipTier, number> => ({
   moderada: 0,
   ousada: 0,
   maluca: 0,
+  compostas: 0,
 });
 
 const emptyByScope = (): Record<ScopeOption, BetSlip[]> => ({

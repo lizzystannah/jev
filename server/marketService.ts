@@ -1,6 +1,7 @@
 ﻿import fs from 'fs';
 import path from 'path';
-import { MatchItem, MatchOdds, MarketType, MarketProviderStatus } from './types.js';
+import { MatchItem, MatchOdds, MarketType, MarketProviderStatus, SimpleMarket } from './types.js';
+import { compostaLabel, compostaOutcome, isCompostaMarket } from './compostas.js';
 import {
   aiscoreClient,
   aiscoreYmd,
@@ -156,22 +157,25 @@ export function leaguePriorityRank(league?: string | null, competitionId?: strin
 /** Assinatura estÃ¡vel das odds/mercados reais (reutilizaÃ§Ã£o da calibraÃ§Ã£o). */
 export function oddsSignature(odds: MatchOdds): string {
   const rm = [...(odds.realMarkets || [])].sort().join(',');
+  const combo = Object.entries(odds.comboOdds || {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([market, odd]) => `${market}=${odd}`)
+    .join(',');
   const parts: Array<string | number | null | undefined> = [
     odds.home, odds.draw, odds.away, odds.over25, odds.under25,
     odds.btts_yes, odds.btts_no, odds.over15, odds.over35, odds.under35,
     odds.double_chance_1x, odds.double_chance_x2, odds.double_chance_12,
-    odds.dnb_home, odds.dnb_away, rm,
+    odds.dnb_home, odds.dnb_away, rm, combo,
   ];
-  // v2: invalida calibrações/picks antigos depois da correção da fórmula DNB
-  // e da mudança de montagem das fichas.
-  return ['v2', ...parts.map((v) => (v == null ? '' : String(v)))].join('|');
+  // v3: inclui odds compostas e invalida calibrações antigas.
+  return ['v3', ...parts.map((v) => (v == null ? '' : String(v)))].join('|');
 }
 
 function impliedProb(odd: number): number {
   return (1 / odd) * 100;
 }
 
-export const MARKET_LABELS: Record<MarketType, (ctx: { home: string; away: string }) => string> = {
+export const MARKET_LABELS: Record<SimpleMarket, (ctx: { home: string; away: string }) => string> = {
   home: ({ home }) => `VitÃ³ria ${home} (1)`,
   draw: () => 'Empate (X)',
   away: ({ away }) => `VitÃ³ria ${away} (2)`,
@@ -189,6 +193,15 @@ export const MARKET_LABELS: Record<MarketType, (ctx: { home: string; away: strin
   dnb_away: ({ away }) => `Empate Anula: ${away}`,
 };
 
+export function labelForMarket(
+  market: MarketType,
+  ctx: { home: string; away: string }
+): string {
+  return isCompostaMarket(market)
+    ? compostaLabel(market, ctx)
+    : MARKET_LABELS[market](ctx);
+}
+
 /**
  * Resultado de um mercado para um placar final. Usado tanto no match como
  * por perna de ficha (cada perna pode ter um tip diferente do match).
@@ -199,11 +212,14 @@ export function marketOutcomeFor(
   homeScore: number,
   awayScore: number
 ): { won: boolean; pushed: boolean } {
+  if (isCompostaMarket(market)) {
+    return { won: compostaOutcome(market, homeScore, awayScore), pushed: false };
+  }
   const isHomeWin = homeScore > awayScore;
   const isAwayWin = awayScore > homeScore;
   const isDraw = homeScore === awayScore;
   const total = homeScore + awayScore;
-  const actual: Record<MarketType, boolean> = {
+  const actual: Record<SimpleMarket, boolean> = {
     home: isHomeWin,
     draw: isDraw,
     away: isAwayWin,
@@ -224,7 +240,7 @@ export function marketOutcomeFor(
   return { won: pushed ? true : !!actual[market], pushed };
 }
 
-export function deriveCompleteOdds(odds: MatchOdds): Record<MarketType, number> {
+export function deriveCompleteOdds(odds: MatchOdds): Record<SimpleMarket, number> {
   const pHome = (1 / odds.home) * 100;
   const pDraw = (1 / odds.draw) * 100;
   const pAway = (1 / odds.away) * 100;
@@ -410,8 +426,7 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
   });
 
   const best = candidates[0];
-  const labelFn = MARKET_LABELS[best.market];
-  const label = labelFn ? labelFn({ home, away }) : best.market;
+  const label = labelForMarket(best.market, { home, away });
 
   return {
     market: best.market,

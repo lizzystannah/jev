@@ -39,6 +39,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
     moderada: '#E7B33E',
     ousada: '#D1594B',
     maluca: '#C084FC',
+    compostas: '#38BDF8',
   };
   const tierColor = tierColors[slip.tier] || '#E7B33E';
 

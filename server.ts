@@ -5,7 +5,8 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { marketService, MARKET_LABELS, oddsSignature } from './server/marketService.js';
+import { marketService, labelForMarket, oddsSignature } from './server/marketService.js';
+import { COMPOSTA_MARKETS, isCompostaMarket } from './server/compostas.js';
 import { ticketEngine } from './server/ticketEngine.js';
 import { ticketScheduler } from './server/ticketScheduler.js';
 import { progressionEngine } from './server/progressionEngine.js';
@@ -156,6 +157,7 @@ async function startServer() {
     'double_chance_1x', 'double_chance_x2', 'double_chance_12',
     'over15', 'over25', 'over35', 'under25', 'under35',
     'btts_yes', 'btts_no', 'dnb_home', 'dnb_away',
+    ...COMPOSTA_MARKETS,
   ];
 
   // Matches list com TODAS as tips calculadas (probabilidade por mercado).
@@ -256,9 +258,7 @@ async function startServer() {
     res.json(
       ALL_MARKETS.map((market) => ({
         market,
-        label: MARKET_LABELS[market]
-          ? MARKET_LABELS[market]({ home: 'Casa', away: 'Fora' })
-          : market,
+        label: labelForMarket(market, { home: 'Casa', away: 'Fora' }),
       }))
     );
   });
@@ -463,7 +463,7 @@ async function startServer() {
     try {
       const { scope = 'dia', tier = 'moderada', legs } = req.body || {};
       const validScopes = ['dia', '2_3_dias', 'longo'];
-      const validTiers = ['segura', 'moderada', 'ousada', 'maluca'];
+      const validTiers = ['segura', 'moderada', 'ousada', 'maluca', 'compostas'];
       if (!validScopes.includes(scope)) {
         return res.status(400).json({ error: `Escopo invÃ¡lido: ${scope}` });
       }
@@ -543,11 +543,19 @@ async function startServer() {
         if (!odds.realMarkets?.includes(sel.market)) {
           const pbOdd = pbOddsByIndex.get(index);
           if (pbOdd) {
-            odds = {
-              ...odds,
-              [sel.market]: pbOdd,
-              realMarkets: Array.from(new Set([...(odds.realMarkets || []), sel.market])),
-            } as MatchItem['odds'];
+            if (isCompostaMarket(sel.market)) {
+              odds = {
+                ...odds,
+                comboOdds: { ...(odds.comboOdds || {}), [sel.market]: pbOdd },
+                realMarkets: Array.from(new Set([...(odds.realMarkets || []), sel.market])),
+              } as MatchItem['odds'];
+            } else {
+              odds = {
+                ...odds,
+                [sel.market]: pbOdd,
+                realMarkets: Array.from(new Set([...(odds.realMarkets || []), sel.market])),
+              } as MatchItem['odds'];
+            }
           }
         }
         const ev = evaluateOne({
@@ -566,7 +574,7 @@ async function startServer() {
         });
         if (!ev || ev.selectedOdds <= 1.01) {
           errors.push(
-            `${match.home} v ${match.away}: sem odd real para "${MARKET_LABELS[sel.market]?.({ home: match.home, away: match.away }) || sel.market}"`
+            `${match.home} v ${match.away}: sem odd real para "${labelForMarket(sel.market, { home: match.home, away: match.away })}"`
           );
           return;
         }

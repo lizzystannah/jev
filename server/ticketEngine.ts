@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BetSlip, MatchItem, MarketType, SlipEngine, SlipScope, SlipTier } from './types.js';
+import { BetSlip, CompostaMarket, MatchItem, MarketType, SlipEngine, SlipScope, SlipTier } from './types.js';
+import { COMPOSTA_MARKETS, isCompostaMarket } from './compostas.js';
 import {
   marketService,
   leaguePriorityRank,
@@ -30,6 +31,17 @@ import { getDayKey } from './time.js';
  * Serie A/Bundesliga 1.10 > Ligue 1 1.08 > outras top 1.05 > resto 1.0
  */
 const LEAGUE_WEIGHTS = [1.30, 1.22, 1.18, 1.15, 1.10, 1.10, 1.08, 1.05];
+
+/** Faixa de odds por perna das tips compostas (mesmo jogo). */
+const COMPOSTA_MIN_LEG_ODD = 1.5;
+const COMPOSTA_MAX_LEG_ODD = 3.5;
+/** Odd combinada alvo e tolerancia da ficha Compostas. */
+const COMPOSTA_TARGET_MIN = 5.5;
+const COMPOSTA_TARGET_MAX = 6.5;
+/** Probabilidade minima de cada tip de duas condicoes (nao do produto da ficha). */
+const COMPOSTA_MIN_TIP_PROB = 35;
+const COMPOSTA_MAX_LEGS = 4;
+const COMPOSTA_MIN_LEGS = 2;
 
 export function leagueWeight(league?: string | null, competitionId?: string | null): number {
   const rank = leaguePriorityRank(league, competitionId);
@@ -138,6 +150,7 @@ export const TIERS_CONFIG = {
   moderada: { min: 48, max: 63, color: 'var(--amber-tier, #E7B33E)', hex: '#E7B33E' },
   ousada: { min: 28, max: 48, color: 'var(--red-tier, #D1594B)', hex: '#D1594B' },
   maluca: { min: 0, max: 28, color: 'var(--violet-tier, #C084FC)', hex: '#C084FC' },
+  compostas: { min: 0, max: 101, color: 'var(--blue-tier, #38BDF8)', hex: '#38BDF8' },
 };
 
 function envInt(name: string, fallback: number): number {
@@ -186,6 +199,12 @@ export const TICKET_TARGETS: Record<
     maxLegs: envInt('TICKETS_MAX_LEGS_MALUCA', 8),
     minLegs: 4,
     label: 'Maluca',
+  },
+  compostas: {
+    targetOdds: envFloat('TICKETS_TARGET_COMPOSTAS', 6),
+    maxLegs: envInt('TICKETS_MAX_LEGS_COMPOSTAS', COMPOSTA_MAX_LEGS),
+    minLegs: COMPOSTA_MIN_LEGS,
+    label: 'Compostas',
   },
 };
 
@@ -265,7 +284,7 @@ function legsConfigFor(
   const base = TICKET_TARGETS[tier];
   // A Maluca tem faixa propria (4-8 pernas) tambem no longo prazo; o minimo
   // de 10 jogos so se aplica a Segura/Moderada/Ousada.
-  if (scope !== 'longo' || tier === 'maluca') return base;
+  if (scope !== 'longo' || tier === 'maluca' || tier === 'compostas') return base;
   const extra = tier === 'ousada' ? 8 : tier === 'moderada' ? 4 : 0;
   const minLegs = Math.min(
     LONGO_MAX_LEGS,
@@ -284,10 +303,10 @@ function legsConfigFor(
  * ou quando a mudanÃ§a do dia cria a nova fornada de "Hoje".
  */
 export const SCOPE_QUOTAS: Record<SlipScope, number> = {
-  // Quatro vagas = uma ficha de cada tier (segura, moderada, ousada e maluca).
-  dia: envInt('TICKETS_QUOTA_DIA', 4),
-  '2_3_dias': envInt('TICKETS_QUOTA_MED', 4),
-  longo: envInt('TICKETS_QUOTA_LONGO', 4),
+  // Cinco vagas = uma ficha de cada tier, incluindo Compostas.
+  dia: envInt('TICKETS_QUOTA_DIA', 5),
+  '2_3_dias': envInt('TICKETS_QUOTA_MED', 5),
+  longo: envInt('TICKETS_QUOTA_LONGO', 5),
 };
 
 /** Teto de seguranÃ§a para o botÃ£o manual "Gerar" nÃ£o inundar o estoque. */
@@ -520,14 +539,21 @@ export class TicketEngine {
       'over25', 'under25', 'btts_yes', 'btts_no',
       'over35', 'under35', 'dnb_home', 'dnb_away',
     ];
-    const enrichMarkets = forcedMarket
+    const enrichMarkets: MarketType[] = forcedMarket
       ? [forcedMarket]
-      : [...BASE_MARKETS, ...EXTRA_MARKETS];
+      : [...BASE_MARKETS, ...EXTRA_MARKETS, ...COMPOSTA_MARKETS];
+    const needCompostas = !forcedMarket || isCompostaMarket(forcedMarket);
     const enrichEnabled = forcedMarket || process.env.PREMIERBET_ENRICH !== '0';
     if (enrichEnabled) {
       const missing = (m: (typeof filtered)[number]): boolean => {
-        const rm = m.odds.realMarkets;
-        return enrichMarkets.some((mk) => !rm?.includes(mk));
+        if (needCompostas && !m.compostaOddsChecked) return true;
+        if (forcedMarket) {
+          if (isCompostaMarket(forcedMarket)) return false;
+          return !m.odds.realMarkets?.includes(forcedMarket);
+        }
+        return [...BASE_MARKETS, ...EXTRA_MARKETS].some(
+          (mk) => !m.odds.realMarkets?.includes(mk)
+        );
       };
       // SÃ³ ligas elegiveis (principais + fallback) entram nas fichas; nÃ£o vale
       // a pena consultar a Premier Bet por ligas que nÃ£o podem ser usadas.
@@ -578,13 +604,20 @@ export class TicketEngine {
               const real = new Set(m.odds.realMarkets || []);
               for (const mk of enrichMarkets) {
                 const odd = result.odds?.[mk];
-                if (typeof odd === 'number' && Number.isFinite(odd) && odd > 1.01) {
+                if (typeof odd !== 'number' || !Number.isFinite(odd) || odd <= 1.01) continue;
+                if (isCompostaMarket(mk)) {
+                  m.odds.comboOdds = {
+                    ...(m.odds.comboOdds || {}),
+                    [mk]: Number(odd.toFixed(2)),
+                  };
+                } else {
                   (m.odds as any)[mk] = Number(odd.toFixed(2));
-                  real.add(mk);
-                  filled += 1;
                 }
+                real.add(mk);
+                filled += 1;
               }
               m.odds.realMarkets = Array.from(real);
+              if (needCompostas) m.compostaOddsChecked = true;
             });
           } catch (err: any) {
             console.warn('[PremierBet] lote de enriquecimento falhou:', err?.message);
@@ -1057,12 +1090,128 @@ export class TicketEngine {
       pickScore(b) * Math.sqrt(b.tip.odds) - pickScore(a) * Math.sqrt(a.tip.odds);
     malucaPool.sort(malucaSort);
 
+    // Compostas: cada perna e uma tip de DUAS condicoes no mesmo jogo. A odd
+    // tem de vir da Premier Bet (mercados pre-combinados) e a probabilidade
+    // conjunta e calculada por Poisson, nao pelo produto das marginais.
+    const compostaPicksFor = (
+      m: MatchItem
+    ): Array<{ market: CompostaMarket; label: string; odds: number; prob: number }> => {
+      const candidates = (m.tips || [])
+        .filter(
+          (t) =>
+            isCompostaMarket(t.market) &&
+            t.odds != null &&
+            Number.isFinite(t.odds) &&
+            t.odds >= COMPOSTA_MIN_LEG_ODD &&
+            t.odds <= COMPOSTA_MAX_LEG_ODD &&
+            Number.isFinite(t.prob) &&
+            t.prob >= COMPOSTA_MIN_TIP_PROB
+        )
+        .map((t) => ({
+          market: t.market as CompostaMarket,
+          label: t.label,
+          odds: t.odds as number,
+          prob: t.prob,
+        }));
+      if (candidates.length === 0) return [];
+      const picks = new Map<CompostaMarket, (typeof candidates)[number]>();
+      const add = (c?: (typeof candidates)[number]) => {
+        if (c) picks.set(c.market, c);
+      };
+      add([...candidates].sort((a, b) => b.prob - a.prob)[0]);
+      add([...candidates].sort((a, b) => Math.abs(a.odds - 1.8) - Math.abs(b.odds - 1.8))[0]);
+      add([...candidates].sort((a, b) => Math.abs(a.odds - 2.45) - Math.abs(b.odds - 2.45))[0]);
+      return [...picks.values()];
+    };
+    const compostaPoolBase: MatchItem[] = [];
+    for (const m of evaluatedMatches) {
+      if (!isFallbackLeague(m.league, m.competitionId)) continue;
+      for (const best of compostaPicksFor(m)) {
+        compostaPoolBase.push({ ...m, tip: { ...best } });
+      }
+    }
+
+    const buildCompostasTier = (oddsRange?: { min: number; max: number }): BetSlip | null => {
+      if (compostaPoolBase.length < COMPOSTA_MIN_LEGS) return null;
+      const minOdds = oddsRange?.min ?? COMPOSTA_TARGET_MIN;
+      const maxOdds = oddsRange?.max ?? COMPOSTA_TARGET_MAX;
+      const fresh = compostaPoolBase.filter((m) => (matchSlipCount.get(m.id) || 0) === 0);
+      const source = fresh.length >= COMPOSTA_MIN_LEGS ? fresh : compostaPoolBase;
+      const ordered = orderTopFirst(
+        source,
+        (a, b) => pickScore(b) - pickScore(a)
+      ).slice(0, 45);
+
+      let best: { legs: MatchItem[]; odds: number; prob: number } | null = null;
+      const search = (
+        start: number,
+        legs: MatchItem[],
+        odds: number,
+        prob: number
+      ): void => {
+        if (legs.length >= COMPOSTA_MIN_LEGS && odds >= minOdds && odds <= maxOdds) {
+          const score = Math.abs(odds - 6) - prob * 2 + legs.length * 0.05;
+          const bestScore = best
+            ? Math.abs(best.odds - 6) - best.prob * 2 + best.legs.length * 0.05
+            : Infinity;
+          if (score < bestScore) best = { legs: [...legs], odds, prob };
+        }
+        if (legs.length >= COMPOSTA_MAX_LEGS) return;
+        for (let i = start; i < ordered.length; i++) {
+          const leg = ordered[i];
+          if (legs.some((chosenLeg) => chosenLeg.id === leg.id)) continue;
+          const nextOdds = odds * leg.tip.odds;
+          if (nextOdds > maxOdds + 1e-9) continue;
+          const nextProb = prob * (leg.tip.prob / 100);
+          search(i + 1, [...legs, leg], nextOdds, nextProb);
+        }
+      };
+      search(0, [], 1, 1);
+      if (!best) return null;
+      const chosen = best as { legs: MatchItem[]; odds: number; prob: number };
+      return this.createSlip(scope, 'compostas', chosen.legs, {
+        customTitle: `Compostas (${chosen.legs.length} jogos • ${chosen.odds.toFixed(2)}x)`,
+        rationale:
+          `Ficha Compostas: ${chosen.legs.length} tips de duas condicoes no mesmo jogo, ` +
+          `com odds reais entre ${COMPOSTA_MIN_LEG_ODD.toFixed(2)}x e ${COMPOSTA_MAX_LEG_ODD.toFixed(2)}x. ` +
+          `Cada tip tem probabilidade conjunta minima de ${COMPOSTA_MIN_TIP_PROB}% (Poisson); ` +
+          `probabilidade da ficha ${(chosen.prob * 100).toFixed(1)}%, odd combinada ` +
+          `${chosen.odds.toFixed(2)}x, perto do alvo de 6.00x.`,
+        engine: options?.engine ?? 'local',
+      });
+    };
+
     // ------------------------------------------------ automação/progressões ---
     // Constrói UMA ficha do tier pedido cuja odd total caia na faixa exigida
     // (ex.: 4.00–4.99). A ficha fica marcada com engine "progression" para não
     // contar para as quotas dos motores Principal/Manual/JEV.
     if (options?.onlyTier) {
       const onlyTier = options.onlyTier;
+      if (onlyTier === 'compostas') {
+        const slip = buildCompostasTier(options.oddsRange);
+        if (!slip) {
+          console.warn(
+            `[Progressão] Sem combinação Compostas entre ${options.oddsRange?.min ?? COMPOSTA_TARGET_MIN} e ` +
+              `${options.oddsRange?.max ?? COMPOSTA_TARGET_MAX}.`
+          );
+          return {
+            generated: [],
+            all: this.slips,
+            jevLatencyMs: localResponse.latencyMs,
+            jevMeta,
+          };
+        }
+        slip.engine = 'progression';
+        slip.customTitle = `Progressão · compostas · ${slip.combinedOdds.toFixed(2)}x`;
+        this.slips.push(slip);
+        bilheteriaDb.upsertSlip(slip);
+        return {
+          generated: [slip],
+          all: this.slips,
+          jevLatencyMs: localResponse.latencyMs,
+          jevMeta,
+        };
+      }
       const pool =
         onlyTier === 'segura'
           ? seguraPool
@@ -1142,6 +1291,12 @@ export class TicketEngine {
       claim(ousada.legs);
     }
 
+    const compostas = buildCompostasTier();
+    if (compostas) {
+      candidateSlips.push(compostas);
+      claim(compostas.legs);
+    }
+
     if (candidateSlips.length === 0) {
       console.warn(
         `[Fichas] ${scope}: nenhum tier atingiu o alvo com ${selectionPool.length} tip(s) ` +
@@ -1159,12 +1314,13 @@ export class TicketEngine {
       moderada: 0,
       ousada: 0,
       maluca: 0,
+      compostas: 0,
     };
     existingPending.forEach((s) => {
       existingByTier[s.tier] += 1;
     });
 
-    const tierOrder: SlipTier[] = ['segura', 'moderada', 'ousada', 'maluca'];
+    const tierOrder: SlipTier[] = ['segura', 'moderada', 'ousada', 'maluca', 'compostas'];
     const tierPriority = [...tierOrder].sort(
       (a, b) =>
         existingByTier[a] - existingByTier[b] ||
@@ -1175,6 +1331,7 @@ export class TicketEngine {
       moderada: [],
       ousada: [],
       maluca: [],
+      compostas: [],
     };
     candidateSlips.forEach((s) => byTier[s.tier].push(s));
     tierOrder.forEach((tier) => {

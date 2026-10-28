@@ -63,6 +63,7 @@ const tierColor: Record<string, string> = {
   moderada: '#E7B33E',
   ousada: '#D1594B',
   maluca: '#C084FC',
+  compostas: '#38BDF8',
 };
 
 export const HistoryList: React.FC<HistoryListProps> = ({

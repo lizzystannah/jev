@@ -16,9 +16,11 @@
   double_chance_12?: number;
   dnb_home?: number;
   dnb_away?: number;
+  /** Odds reais das tips compostas (mesmo jogo, duas condicoes). */
+  comboOdds?: Partial<Record<CompostaMarket, number>>;
 }
 
-export type MarketType =
+export type SimpleMarket =
   | 'home'
   | 'draw'
   | 'away'
@@ -34,6 +36,35 @@ export type MarketType =
   | 'double_chance_12'
   | 'dnb_home'
   | 'dnb_away';
+
+export type ResultOutcome = 'home' | 'draw' | 'away';
+export type DcOutcome =
+  | 'double_chance_1x'
+  | 'double_chance_x2'
+  | 'double_chance_12';
+export type BttsOutcome = 'btts_yes' | 'btts_no';
+export type TotalLine =
+  | 'over15'
+  | 'over25'
+  | 'over35'
+  | 'over45'
+  | 'under15'
+  | 'under25'
+  | 'under35'
+  | 'under45';
+
+/**
+ * Tip composta: duas condicoes no MESMO jogo (resultado/DC/BTTS + linha de
+ * golos, ou resultado/DC + BTTS). A odd tem de vir da Premier Bet.
+ */
+export type CompostaMarket =
+  | `${ResultOutcome}_${TotalLine}`
+  | `${DcOutcome}_${TotalLine}`
+  | `${BttsOutcome}_${TotalLine}`
+  | `${ResultOutcome}_${BttsOutcome}`
+  | `${DcOutcome}_${BttsOutcome}`;
+
+export type MarketType = SimpleMarket | CompostaMarket;
 
 export interface MatchTip {
   market: string;
@@ -132,7 +163,7 @@ export interface MatchItem {
 }
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo' | 'historico';
-export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca';
+export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca' | 'compostas';
 /** Motor que criou a ficha. `local` Ã© o motor principal. */
 export type BetEngine = 'local' | 'manual' | 'jev' | 'progression';
 
@@ -312,6 +343,7 @@ export interface JevMetrics {
     moderada: number;
     ousada: number;
     maluca: number;
+    compostas: number;
   };
   topMarkets: Array<{ market: string; count: number; percentage: number }>;
   lastInferenceAt: string;

@@ -31,14 +31,9 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from premierbet_book import PBClient, find_event, pick_outcome  # noqa: E402
+from premierbet_book import MARKET_MAP, PBClient, find_event, pick_outcome  # noqa: E402
 
-MARKETS = [
-    "home", "draw", "away",
-    "double_chance_1x", "double_chance_x2", "double_chance_12",
-    "over15", "over25", "over35", "under25", "under35",
-    "btts_yes", "btts_no", "dnb_home", "dnb_away",
-]
+MARKETS = list(MARKET_MAP.keys())
 
 
 def _ymd(leg: dict) -> str:

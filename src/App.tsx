@@ -648,6 +648,7 @@ export default function App() {
       moderada: 0,
       ousada: 0,
       maluca: 0,
+      compostas: 0,
     };
     for (const slip of slipsInScope) counts[slip.tier] += 1;
     return counts;
@@ -747,6 +748,10 @@ export default function App() {
 
     if (tier === 'ousada') {
       return `Fichas de ${spread} com alvo de 100x: mais jogos e odds individuais do tier ousado, sem empilhar pernas inventadas para chegar aos pontos.`;
+    }
+
+    if (tier === 'compostas') {
+      return 'Compostas: 2 a 4 tips de duas condições no mesmo jogo (resultado/dupla chance/BTTS + golos), com odds reais da Premier Bet entre 1.50x e 3.50x, cada tip com probabilidade conjunta mínima de 35% e alvo total de 6.00x.';
     }
 
     return `Ficha Maluca: 4 a 8 ${spread}, com odds individuais 1.75x-3.0x, probabilidade mínima 25% e alvo 250x. As tips são escolhidas por probabilidade/forma, sem odds extremas 6x/8x.`;
@@ -1003,6 +1008,22 @@ export default function App() {
                     </span>
                     {tier === 'maluca' && (
                       <span className="absolute left-0 right-0 bottom-[-1px] h-[2px] bg-[#C084FC]" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTier('compostas')}
+                    className={`cursor-pointer font-body font-semibold text-sm pb-2.5 mr-6 relative transition-colors ${
+                      tier === 'compostas' ? 'text-[#F5F3EC]' : 'text-[rgba(245,243,236,0.45)] hover:text-[#F5F3EC]'
+                    }`}
+                  >
+                    <span>Compostas</span>
+                    <span className="font-display ml-1.5 text-xs text-[#38BDF8]">
+                      {tierCounts.compostas}
+                    </span>
+                    {tier === 'compostas' && (
+                      <span className="absolute left-0 right-0 bottom-[-1px] h-[2px] bg-[#38BDF8]" />
                     )}
                   </button>
                 </div>

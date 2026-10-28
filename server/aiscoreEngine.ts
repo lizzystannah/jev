@@ -39,10 +39,11 @@
  * Espelha motor_aiscore.py do workspace Scraping (port fiel).
  */
 
-import type { MarketType, MatchOdds, MatchTip, SlipScope, SlipTier, TipOption } from './types.js';
-import { deriveCompleteOdds, MARKET_LABELS } from './marketService.js';
+import type { MarketType, MatchOdds, MatchTip, SimpleMarket, SlipScope, SlipTier, TipOption } from './types.js';
+import { deriveCompleteOdds, labelForMarket } from './marketService.js';
+import { isCompostaMarket, poissonCompostaProbs } from './compostas.js';
 
-export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v3';
+export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v4';
 
 export interface LocalDecisionInput {
   scope: SlipScope;
@@ -296,7 +297,7 @@ function lateBoost(advanced: any, homeId: string | null, awayId: string | null):
   const gds: any[] = Array.isArray(advanced?.goal_distributions)
     ? advanced.goal_distributions : [];
   for (const gd of gds) {
-    if (gd?.team_id !== homeId && gd?.team_id !== awayId) continue;
+    if (teamKey(gd?.team_id) !== teamKey(homeId) && teamKey(gd?.team_id) !== teamKey(awayId)) continue;
     const it = gd?.all || {};
     const sbw = it.scored_by_window || {};
     const cbw = it.conceded_by_window || {};
@@ -322,9 +323,68 @@ function tableRows(tables: any): any[] {
   const rows: any[] = [];
   for (const x of t) {
     if (x && typeof x === 'object' && Array.isArray((x as any).rows)) rows.push(...(x as any).rows);
-    else if (x && typeof x === 'object' && (x as any).team_id) rows.push(x);
+    else if (x && typeof x === 'object' && ((x as any).team_id || (x as any).teamId)) rows.push(x);
   }
   return rows;
+}
+
+function teamKey(v: any): string {
+  return v == null ? '' : String(v).trim();
+}
+
+function normTeamName(v: any): string {
+  return String(v || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+interface TableInfo {
+  pos: number;
+  played: number;
+  points: number;
+  groupSize: number;
+  tableKey: string;
+}
+
+function tableInfo(row: any, rows: any[]): TableInfo | null {
+  if (!row) return null;
+  const pos = num(row.position, 0);
+  if (!pos) return null;
+  const tableKey = teamKey(
+    row.table_id ?? row.tableId ?? row.group ?? row.table ?? ''
+  );
+  const groupSize = tableKey
+    ? rows.filter((r) => teamKey(r.table_id ?? r.tableId ?? r.group ?? r.table) === tableKey).length
+    : rows.length;
+  return {
+    pos,
+    played: num(row.total, 0),
+    points: num(row.points, 0),
+    groupSize: Math.max(groupSize, pos),
+    tableKey,
+  };
+}
+
+/**
+ * Motivacao por posicao: lideres/topo e equipas na luta pela permanencia
+ * ganham peso no fim da epoca; equipas de meio-tabela sem objetivo perdem
+ * um pouco. Devolve um score pequeno; o ajuste final e limitado a +-4%.
+ */
+function motivationScore(info: TableInfo | null): number {
+  if (!info || !info.groupSize) return 0;
+  const n = info.groupSize;
+  const late = info.played >= 20;
+  let score = 0;
+  if (info.pos <= 3) score += 1;
+  if (info.pos >= n - 2) score += 0.9;
+  if (late && info.pos <= Math.max(4, Math.ceil(n * 0.2))) score += 0.6;
+  if (late && info.pos >= Math.max(4, n - 3)) score += 0.7;
+  if (late && info.pos > Math.ceil(n * 0.25) && info.pos < n - 4) score -= 0.2;
+  return score;
 }
 
 function lineupSide(lineups: any, side: 'home' | 'away'): {
@@ -408,23 +468,62 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
   xgH *= 1 + venueEdge(H);
   xgA *= 1 + venueEdge(A);
 
-  // classificaÃ§Ã£o: PPG + saldo-de-golos por jogo (vale p/ grupos e ligas)
+  // classificação: PPG + saldo-de-golos por jogo (vale p/ grupos e ligas)
   const trows = tableRows(ex.tables);
   if (trows.length) {
-    const byId: Record<string, any> = {};
-    for (const r of trows) if (r?.team_id) byId[r.team_id] = r;
+    const ctx0 = ex.context || {};
+    const homeIds = new Set(
+      [scout?.home?.id, scout?.home_team_id, ctx0.homeTeamId, ctx0.home_team_id,
+        ctx0.home?.id].map(teamKey).filter(Boolean)
+    );
+    const awayIds = new Set(
+      [scout?.away?.id, scout?.away_team_id, ctx0.awayTeamId, ctx0.away_team_id,
+        ctx0.away?.id].map(teamKey).filter(Boolean)
+    );
+    const homeNames = new Set(
+      [scout?.home?.name, scout?.home_team, ctx0.homeTeam, ctx0.home].map(normTeamName).filter(Boolean)
+    );
+    const awayNames = new Set(
+      [scout?.away?.name, scout?.away_team, ctx0.awayTeam, ctx0.away].map(normTeamName).filter(Boolean)
+    );
+    const findRow = (ids: Set<string>, names: Set<string>): any | null => {
+      for (const r of trows) {
+        const id = teamKey(r?.team_id ?? r?.teamId ?? r?.id);
+        if (id && ids.has(id)) return r;
+      }
+      for (const r of trows) {
+        if (names.has(normTeamName(r?.team))) return r;
+      }
+      return null;
+    };
+    const rh = findRow(homeIds, homeNames);
+    const ra = findRow(awayIds, awayNames);
     const strength = (r: any): number | null => {
       const tot = num(r?.total);
       if (!tot || tot < 3 || r?.points == null) return null;
       const gd = num(r?.goalDiff);
       return (num(r.points) / tot) / 3 * 0.7 + clamp(gd / tot / 2, -1, 1) * 0.3;
     };
-    const sH = homeId && byId[homeId] ? strength(byId[homeId]) : null;
-    const sA = awayId && byId[awayId] ? strength(byId[awayId]) : null;
+    const sH = rh ? strength(rh) : null;
+    const sA = ra ? strength(ra) : null;
     if (sH != null && sA != null) {
       const adj = clamp((sH - sA) * 0.12, -0.06, 0.06);
       xgH *= 1 + adj;
       xgA *= 1 - adj;
+    }
+
+    // Posicao + motivacao: no maximo +-4% no total (nao substitui o PPG).
+    const tiH = tableInfo(rh, trows);
+    const tiA = tableInfo(ra, trows);
+    if (tiH && tiA) {
+      const n = Math.max(tiH.groupSize, tiA.groupSize, 1);
+      const posAdj = clamp(((tiA.pos - tiH.pos) / Math.max(1, n - 1)) * 0.02, -0.02, 0.02);
+      const motAdj = clamp((motivationScore(tiH) - motivationScore(tiA)) * 0.01, -0.02, 0.02);
+      const adj = clamp(posAdj + motAdj, -0.04, 0.04);
+      if (adj) {
+        xgH *= 1 + adj;
+        xgA *= 1 - adj;
+      }
     }
   }
 
@@ -446,7 +545,7 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
     if (ownA || oppH) xgA *= (1 - ownA) * (1 + oppH);
   }
 
-  // descanso: diferenÃ§a de dias desde o Ãºltimo jogo (+-4% max)
+  // descanso: diferença de dias desde o último jogo (+-4% max)
   const ctx = ex.context || {};
   if (typeof ctx.restDaysHome === 'number' && typeof ctx.restDaysAway === 'number') {
     const adj = clamp((ctx.restDaysHome - ctx.restDaysAway) * 0.008, -0.04, 0.04);
@@ -533,6 +632,7 @@ export function localProbabilities(scout: any, advanced: any, extra?: EngineExtr
     dnb_home: clamp(pH / Math.max(0.05, pH + pA), 0.05, 0.97),
     dnb_away: clamp(pA / Math.max(0.05, pH + pA), 0.05, 0.97),
   };
+  Object.assign(probs, poissonCompostaProbs(xgH, xgA));
   return probs as Record<MarketType, number>;
 }
 
@@ -577,7 +677,7 @@ function essentialsFromContext(ctx: any): any {
 }
 
 export function evaluateOne(match: LocalDecisionInput['matches'][number]): LocalEvaluatedMatch {
-  const compOdds = deriveCompleteOdds(match.odds) as Record<MarketType, number>;
+  const compOdds = deriveCompleteOdds(match.odds);
   const scout = match.scout || essentialsFromContext(match.context);
   const advanced = match.advanced || (match.scout as any)?.advanced || null;
   const extra: EngineExtra = {
@@ -602,9 +702,9 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
       under25: 1 - (1 / compOdds.over25) * 0.95, under35: 0.7,
       btts_yes: (1 / compOdds.btts_yes) * 0.95, btts_no: 1 - (1 / compOdds.btts_yes) * 0.95,
       dnb_home: 0.55, dnb_away: 0.45,
-    } as Record<MarketType, number>;
+    } as Record<string, number>;
   })();
-  const P = probs || fallbackProbs;
+  const P: Record<string, number> = probs || fallbackProbs;
 
   const realMarkets = match.odds.realMarkets;
   const allMarkets = Object.keys(P) as MarketType[];
@@ -620,22 +720,27 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const ODD_FLOOR = 1.10;
   const forced = (match as any).forcedMarket as MarketType | undefined;
 
-  // Odd real do mercado; 0 = sem preÃ§o real (nunca fallback sintÃ©tico).
+  // Odd real do mercado; 0 = sem preco real (nunca fallback sintetico).
   const realOddOf = (m: MarketType): number => {
+    if (isCompostaMarket(m)) {
+      const odd = match.odds.comboOdds?.[m];
+      return Number.isFinite(odd) && (odd as number) > 1.01
+        ? Number((odd as number).toFixed(2))
+        : 0;
+    }
     if (realMarkets && !realMarkets.includes(m)) return 0;
     if (!realMarkets && m !== 'home' && m !== 'draw' && m !== 'away') return 0;
-    return sanitizeOdd((compOdds as any)[m], 0);
+    return sanitizeOdd(compOdds[m as SimpleMarket], 0);
   };
 
   // TODAS as tips do jogo (probabilidade por mercado). `odds` fica null quando
   // nÃ£o hÃ¡ preÃ§o real â€” a UI mostra a probabilidade e desativa a seleÃ§Ã£o.
   const allTips: TipOption[] = allMarkets
     .map((m) => {
-      const labelFn = MARKET_LABELS[m];
       const odd = realOddOf(m);
       return {
         market: m,
-        label: labelFn ? labelFn({ home: match.home, away: match.away }) : m,
+        label: labelForMarket(m, { home: match.home, away: match.away }),
         odds: odd > 1.01 ? odd : null,
         prob: Math.round(clamp(P[m] ?? 0, 0.01, 0.99) * 100),
       } as TipOption;
@@ -643,6 +748,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     .filter((t) => t.prob > 0);
 
   const cands = allMarkets
+    .filter((m) => !isCompostaMarket(m))
     .map((m) => ({ m, p: P[m] ?? 0, odd: realOddOf(m) }))
     .filter((x) => x.p > 0.01);
 
@@ -665,6 +771,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   // Tip alternativa de odd alta para a Maluca. Usa o mesmo modelo e apenas
   // mercados com preÃ§o real; nÃ£o Ã© uma odd inventada, Ã© outro mercado do jogo.
   const highRiskPool = allMarkets
+    .filter((m) => !isCompostaMarket(m))
     .map((m) => ({
       m,
       p: P[m] ?? 0,
@@ -689,13 +796,10 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
       b.p - a.p ||
       b.odd - a.odd
   )[0];
-  const highRiskLabel = highRisk ? MARKET_LABELS[highRisk.m] : undefined;
   const highRiskTip: MatchTip | undefined = highRisk
     ? {
         market: highRisk.m,
-        label: highRiskLabel
-          ? highRiskLabel({ home: match.home, away: match.away })
-          : highRisk.m,
+        label: labelForMarket(highRisk.m, { home: match.home, away: match.away }),
         odds: highRisk.odd,
         prob: Math.round(clamp(highRisk.p, 0.01, 0.99) * 100),
       }
@@ -705,7 +809,6 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const edgePct = Math.round(edge * 100 * 10) / 10;
   const riskTier: SlipTier =
     calib >= 63 ? 'segura' : calib >= 48 ? 'moderada' : calib >= 28 ? 'ousada' : 'maluca';
-  const labelFn = MARKET_LABELS[b.m];
   let confidence = scout?._fromContext ? 0.55 : 0.8;
   const lin = (match as any).lineups;
   if (lin && lin.available && lin.confirmed !== 1) confidence = Math.max(0.1, confidence - 0.05);
@@ -714,7 +817,7 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
     calibratedProb: calib,
     expectedValueEdge: edgePct,
     recommendedMarket: b.m,
-    marketLabel: labelFn ? labelFn({ home: match.home, away: match.away }) : b.m,
+    marketLabel: labelForMarket(b.m, { home: match.home, away: match.away }),
     selectedOdds: b.odd,
     riskTier,
     highRiskTip,
@@ -735,15 +838,14 @@ interface AccStats {
 }
 
 const ACC: AccStats = { total: 0, probSum: 0, edgeSum: 0,
-  tiers: { segura: 0, moderada: 0, ousada: 0, maluca: 0 }, markets: {}, at: new Date().toISOString() };
+  tiers: { segura: 0, moderada: 0, ousada: 0, maluca: 0, compostas: 0 }, markets: {}, at: new Date().toISOString() };
 
 export function getLocalCumulativeMetrics() {
   const total = ACC.total;
   const topMarkets = Object.entries(ACC.markets)
     .sort((a, b) => b[1] - a[1]).slice(0, 4)
     .map(([market, count]) => ({
-      market: MARKET_LABELS[market as MarketType]
-        ? MARKET_LABELS[market as MarketType]({ home: 'Casa', away: 'Fora' }) : market,
+      market: labelForMarket(market as MarketType, { home: 'Casa', away: 'Fora' }),
       count, percentage: total > 0 ? Math.round((count / total) * 100) : 0,
     }));
   return {

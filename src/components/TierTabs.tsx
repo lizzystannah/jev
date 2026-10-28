@@ -13,6 +13,7 @@ const TIERS: Array<{ id: SlipTier; label: string; color: string }> = [
   { id: 'moderada', label: 'Moderada', color: '#E7B33E' },
   { id: 'ousada', label: 'Ousada', color: '#D1594B' },
   { id: 'maluca', label: 'Maluca', color: '#C084FC' },
+  { id: 'compostas', label: 'Compostas', color: '#38BDF8' },
 ];
 
 export const TierTabs: React.FC<TierTabsProps> = ({ tier, counts, onChange, className = '' }) => {

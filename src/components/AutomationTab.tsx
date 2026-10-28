@@ -29,7 +29,7 @@ interface AutomationTabProps {
   onToast: (message: string) => void;
 }
 
-type AutomationTier = Exclude<SlipTier, 'maluca'>;
+type AutomationTier = Exclude<SlipTier, 'maluca' | 'compostas'>;
 type AutomationScope = Exclude<SlipScope, 'historico'>;
 
 const ENGINE_LABELS: Record<'local' | 'jev', string> = {
@@ -37,10 +37,12 @@ const ENGINE_LABELS: Record<'local' | 'jev', string> = {
   jev: 'JEV',
 };
 
-const TIER_LABELS: Record<AutomationTier, string> = {
+const TIER_LABELS: Record<SlipTier, string> = {
   segura: 'Segura',
   moderada: 'Moderada',
   ousada: 'Ousada',
+  maluca: 'Maluca',
+  compostas: 'Compostas',
 };
 
 const SCOPE_LABELS: Record<AutomationScope, string> = {
