@@ -17,22 +17,28 @@ export const engineOf = (slip: BetSlip): BetEngine => slip.engine ?? 'local';
 export const byMostRecent = (a: BetSlip, b: BetSlip): number =>
   (b.resolvedAt || b.createdAt) - (a.resolvedAt || a.createdAt);
 
+function dayDiffInTz(targetMs: number, nowMs: number, timezone: string): number {
+  const targetKey = getDayKeyInTz(targetMs, timezone);
+  const nowKey = getDayKeyInTz(nowMs, timezone);
+  const target = Date.parse(`${targetKey}T00:00:00Z`);
+  const current = Date.parse(`${nowKey}T00:00:00Z`);
+  return Math.round((target - current) / (24 * 60 * 60 * 1000));
+}
+
 export function matchInScope(
   match: MatchItem,
   scope: ScopeOption,
-  now: number = Date.now()
+  now: number = Date.now(),
+  timezone = 'Africa/Luanda'
 ): boolean {
+  const dayDiff = dayDiffInTz(match.kickoffAt, now, timezone);
   if (scope === 'dia') {
-    return (
-      match.daysFromNow === 0 ||
-      (match.kickoffAt - now <= 24 * 60 * 60 * 1000 &&
-        match.kickoffAt >= now - 2 * 60 * 60 * 1000)
-    );
+    return dayDiff === 0 && match.kickoffAt >= now - 2 * 60 * 60 * 1000;
   }
   if (scope === '2_3_dias') {
-    return match.daysFromNow >= 1 && match.daysFromNow <= 3;
+    return dayDiff >= 1 && dayDiff <= 3;
   }
-  return match.daysFromNow >= 4;
+  return dayDiff >= 4;
 }
 
 export function isSlipToday(slip: BetSlip, todayKey: string, timezone: string): boolean {

@@ -7,6 +7,7 @@ import {
   aiscoreDateKey,
   parseKickoffMs,
 } from './aiscoreService.js';
+import { getDayKey } from './time.js';
 
 /** Ligas principais primeiro na ingestÃ£o/seleÃ§Ã£o (peso espelha ticketEngine). */
 export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: string }> = [
@@ -460,6 +461,8 @@ export class MarketService {
   private activeFetchPromise: Promise<void> | null = null;
   private activeAiscorePromise: Promise<void> | null = null;
   private aiscoreLastSync = 0;
+  private aiscoreLastDayKey = '';
+  private aiscoreSyncDayKey = '';
   /** Callbacks chamados quando o backfill +1..+8 termina (o scheduler repÃµe quotas). */
   private backfillCallbacks: Array<() => void> = [];
   private readonly AISCORE_TTL_MS = 15 * 60 * 1000;
@@ -621,22 +624,41 @@ export class MarketService {
     }
 
     // Complementa / substitui com AiScore quando nÃ£o hÃ¡ jogos "hoje" (ou sem chave Odds)
+    const todayKey = getDayKey();
+    const dayChanged = this.aiscoreLastDayKey !== todayKey;
     const hasToday = this.matches.some(
       (m) =>
         m.status !== 'resolved' &&
         getCalendarDayDiff(m.kickoffAt) === 0 &&
         m.kickoffAt > now - 2 * 60 * 60 * 1000
     );
-    if (forceRefresh || !hasToday || now - this.aiscoreLastSync > this.AISCORE_TTL_MS) {
-      await this.syncFromAiscore(forceRefresh);
+    const aiscoreStale = now - this.aiscoreLastSync > this.AISCORE_TTL_MS;
+    if (forceRefresh || dayChanged || !hasToday || aiscoreStale) {
+      await this.syncFromAiscore(forceRefresh || dayChanged || !hasToday);
+    }
+
+    const refreshedNow = Date.now();
+    for (const m of this.matches) {
+      m.daysFromNow = getCalendarDayDiff(m.kickoffAt);
+      m.kickoffInSeconds = Math.max(30, Math.round((m.kickoffAt - refreshedNow) / 1000));
     }
 
     // Retorna estritamente as partidas com kickoff futuro ou partidas recÃ©m-resolvidas
     const validMatches = this.matches.filter(
-      (m) => m.status === 'resolved' || m.kickoffAt > now - 2 * 60 * 60 * 1000
+      (m) => m.status === 'resolved' || m.kickoffAt > refreshedNow - 2 * 60 * 60 * 1000
     );
 
     return validMatches;
+  }
+
+  public getTodayMatchCount(referenceMs = Date.now()): number {
+    const dayKey = getDayKey(referenceMs);
+    return this.matches.filter(
+      (m) =>
+        m.status !== 'resolved' &&
+        getDayKey(m.kickoffAt) === dayKey &&
+        m.kickoffAt > referenceMs - 2 * 60 * 60 * 1000
+    ).length;
   }
 
   /**
@@ -646,15 +668,20 @@ export class MarketService {
    * Evita duplicar jogos jÃ¡ vindos do The Odds API (match por home/away/data).
    */
   private async syncFromAiscore(force = false): Promise<void> {
-    if (this.activeAiscorePromise) {
+    const dayKey = getDayKey();
+    while (this.activeAiscorePromise) {
+      const runningDayKey = this.aiscoreSyncDayKey;
       await this.activeAiscorePromise;
-      return;
+      if (!force || runningDayKey === dayKey) {
+        return;
+      }
     }
     const now = Date.now();
-    if (!force && now - this.aiscoreLastSync < this.AISCORE_TTL_MS) {
+    if (!force && this.aiscoreLastDayKey === dayKey && now - this.aiscoreLastSync < this.AISCORE_TTL_MS) {
       return;
     }
 
+    this.aiscoreSyncDayKey = dayKey;
     this.activeAiscorePromise = (async () => {
       try {
         const dayZero = this.matches.filter(
@@ -671,6 +698,10 @@ export class MarketService {
         // cortadas pelo odds_limit.
         await this.syncAiscoreDay(0, { limit: 200, oddsLimit: 30 });
         this.aiscoreLastSync = Date.now();
+        this.aiscoreLastDayKey = dayKey;
+        console.log(
+          `[MarketService] AiScore dia 0: ${this.getTodayMatchCount()} jogos de hoje (${dayKey}).`
+        );
         this.saveDiskCache();
 
         // Dias 1..8 (~1 semana+): background sequencial. Sem odds do AiScore
@@ -700,6 +731,9 @@ export class MarketService {
         console.warn('[MarketService] AiScore sync falhou:', err?.message);
       } finally {
         this.activeAiscorePromise = null;
+        if (this.aiscoreSyncDayKey === dayKey) {
+          this.aiscoreSyncDayKey = '';
+        }
       }
     })();
 
@@ -720,126 +754,159 @@ export class MarketService {
       oddsLimit: opts.oddsLimit,
     });
 
-        const timezone = 'Africa/Luanda';
-        const existingKeys = new Set(
-          this.matches.map(
-            (m) => `${m.home.toLowerCase()}||${m.away.toLowerCase()}||${m.dateStr || ''}||${m.league.toLowerCase()}`
+    const timezone = 'Africa/Luanda';
+    const existingByKey = new Map<string, MatchItem>();
+    for (const m of this.matches) {
+      const key = `${m.home.toLowerCase()}||${m.away.toLowerCase()}||${m.dateStr || ''}||${m.league.toLowerCase()}`;
+      existingByKey.set(key, m);
+    }
+    const added: MatchItem[] = [];
+    let updated = 0;
+
+    for (const meta of card.data) {
+      const kickoffAt = parseKickoffMs(meta.kickoff);
+      if (!kickoffAt || kickoffAt <= now - 2 * 60 * 60 * 1000) continue;
+      if (meta.statusId != null && meta.statusId !== 1) continue;
+
+      const home = (meta.home?.name || '').trim();
+      const away = (meta.away?.name || '').trim();
+      if (!home || !away) continue;
+
+      const league = meta.competition || 'AiScore';
+      if (isWomensLeague(league)) continue; // femininos nem entram no mercado
+
+      const daysFromNow = getCalendarDayDiff(kickoffAt, timezone);
+      const kickoffInSeconds = Math.max(30, Math.round((kickoffAt - now) / 1000));
+      const matchDate = new Date(kickoffAt);
+      const dateStr = matchDate.toLocaleDateString('pt-PT', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: timezone,
+      });
+
+      // Chave inclui data+liga (formato dia, nÃ£o ms exato): mesmo confronto
+      // em dias diferentes nÃ£o colide; OddsAPI vs AiScore fundem no dia.
+      const dedupeKey = `${home.toLowerCase()}||${away.toLowerCase()}||${dateStr}||${league.toLowerCase()}`;
+
+      // O jogo entra SEMPRE no horizonte (mesmo sem odd no feed). Os
+      // placeholders NUNCA sÃ£o marcados como reais (`realMarkets` fica
+      // vazio) â€” as odds reais sÃ£o anexadas depois, na geraÃ§Ã£o, via
+      // Premier Bet. Antes, descartar jogos sem odds era o que deixava o
+      // horizonte longo sem mercado (os dias futuros quase nÃ£o tÃªm odds).
+      const real = meta.odds;
+      const validReal = Boolean(
+        real &&
+          [real.home, real.draw, real.away].every(
+            (v) => Number.isFinite(v) && v > 1.01 && v < 1000
           )
-        );
-        const added: MatchItem[] = [];
+      );
+      const overround = validReal
+        ? 1 / real!.home + 1 / real!.draw + 1 / real!.away
+        : 0;
+      const hasReal =
+        validReal && overround >= 0.9 && overround <= 1.3;
 
-        for (const meta of card.data) {
-          const kickoffAt = parseKickoffMs(meta.kickoff);
-          if (!kickoffAt || kickoffAt <= now - 2 * 60 * 60 * 1000) continue;
-          if (meta.statusId != null && meta.statusId !== 1) continue;
-
-          const home = (meta.home?.name || '').trim();
-          const away = (meta.away?.name || '').trim();
-          if (!home || !away) continue;
-
-          const league = meta.competition || 'AiScore';
-          if (isWomensLeague(league)) continue; // femininos nem entram no mercado
-
-          const daysFromNow = getCalendarDayDiff(kickoffAt, timezone);
-          const kickoffInSeconds = Math.max(30, Math.round((kickoffAt - now) / 1000));
-          const matchDate = new Date(kickoffAt);
-          const dateStr = matchDate.toLocaleDateString('pt-PT', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            timeZone: timezone,
-          });
-
-          // Chave inclui data+liga (formato dia, nÃ£o ms exato): mesmo confronto
-          // em dias diferentes nÃ£o colide; OddsAPI vs AiScore fundem no dia.
-          const dedupeKey = `${home.toLowerCase()}||${away.toLowerCase()}||${dateStr}||${league.toLowerCase()}`;
-          if (existingKeys.has(dedupeKey)) continue;
-          existingKeys.add(dedupeKey);
-
-          // O jogo entra SEMPRE no horizonte (mesmo sem odd no feed). Os
-          // placeholders NUNCA sÃ£o marcados como reais (`realMarkets` fica
-          // vazio) â€” as odds reais sÃ£o anexadas depois, na geraÃ§Ã£o, via
-          // Premier Bet. Antes, descartar jogos sem odds era o que deixava o
-          // horizonte longo sem mercado (os dias futuros quase nÃ£o tÃªm odds).
-          const real = meta.odds;
-          const validReal = Boolean(
-            real &&
-              [real.home, real.draw, real.away].every(
-                (v) => Number.isFinite(v) && v > 1.01 && v < 1000
-              )
-          );
-          const overround = validReal
-            ? 1 / real!.home + 1 / real!.draw + 1 / real!.away
-            : 0;
-          const hasReal =
-            validReal && overround >= 0.9 && overround <= 1.3;
-
-          const odds: MatchOdds = hasReal
-            ? {
-                home: real!.home,
-                draw: real!.draw,
-                away: real!.away,
-                over25: 1.90,
-                under25: 1.90,
-                btts_yes: 1.85,
-                btts_no: 1.90,
-                realMarkets: ['home', 'draw', 'away'],
-              }
-            : {
-                // Placeholders neutros; realMarkets vazio = sem preÃ§o real.
-                home: 2.60,
-                draw: 3.30,
-                away: 2.90,
-                over25: 1.90,
-                under25: 1.90,
-                btts_yes: 1.85,
-                btts_no: 1.90,
-                realMarkets: [],
-              };
-
-          const timeStr = matchDate.toLocaleTimeString('pt-PT', {
-            hour: '2-digit',
-            minute: '2-digit',
-            timeZone: timezone,
-          });
-
-          const rawItem = {
-            id: `aiscore_${meta.match_id}`,
-            league,
-            competitionId: meta.competition_id ?? null,
-            home,
-            away,
-            time: timeStr,
-            dateStr,
-            daysFromNow,
-            kickoffInSeconds,
-            kickoffAt,
-            odds,
-            context: null,
+      const odds: MatchOdds = hasReal
+        ? {
+            home: real!.home,
+            draw: real!.draw,
+            away: real!.away,
+            over25: 1.90,
+            under25: 1.90,
+            btts_yes: 1.85,
+            btts_no: 1.90,
+            realMarkets: ['home', 'draw', 'away'],
+          }
+        : {
+            // Placeholders neutros; realMarkets vazio = sem preÃ§o real.
+            home: 2.60,
+            draw: 3.30,
+            away: 2.90,
+            over25: 1.90,
+            under25: 1.90,
+            btts_yes: 1.85,
+            btts_no: 1.90,
+            realMarkets: [],
           };
 
-          added.push({
-            ...rawItem,
-            tip: hasReal
-              ? scoreMatch(rawItem)
-              : {
-                  market: 'home' as MarketType,
-                  label: 'Sem odds reais (a obter na Premier Bet)',
-                  odds: 0,
-                  prob: 0,
-                },
-            status: 'pending',
-            result: null,
-            sourceProvider: 'aiscore',
-          });
-        }
+      const timeStr = matchDate.toLocaleTimeString('pt-PT', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: timezone,
+      });
 
-        if (added.length > 0) {
-          this.matches = [...this.matches, ...added];
-          console.log(`[MarketService] AiScore day_card: +${added.length} jogos (${ymd}).`);
+      const rawItem = {
+        id: `aiscore_${meta.match_id}`,
+        league,
+        competitionId: meta.competition_id ?? null,
+        home,
+        away,
+        time: timeStr,
+        dateStr,
+        daysFromNow,
+        kickoffInSeconds,
+        kickoffAt,
+        odds,
+        context: null,
+      };
+
+      const scoredTip = hasReal ? scoreMatch(rawItem) : null;
+      const existing = existingByKey.get(dedupeKey);
+      if (existing) {
+        existing.league = league;
+        existing.competitionId = meta.competition_id ?? null;
+        existing.home = home;
+        existing.away = away;
+        existing.time = timeStr;
+        existing.dateStr = dateStr;
+        existing.daysFromNow = daysFromNow;
+        existing.kickoffInSeconds = kickoffInSeconds;
+        existing.kickoffAt = kickoffAt;
+        const existingHasReal = (existing.odds.realMarkets?.length || 0) > 0;
+        if (hasReal) {
+          existing.odds = {
+            ...existing.odds,
+            home: odds.home,
+            draw: odds.draw,
+            away: odds.away,
+            realMarkets: Array.from(
+              new Set([...(existing.odds.realMarkets || []), ...(odds.realMarkets || [])])
+            ),
+          };
+          if (scoredTip) existing.tip = scoredTip;
+        } else if (!existingHasReal) {
+          existing.odds = odds;
         }
-        this.updateProviderStatusAfterAiscore(card.oddsCount, added.length);
-        return added.length;
+        updated++;
+        continue;
+      }
+
+      const newItem: MatchItem = {
+        ...rawItem,
+        tip: scoredTip || {
+          market: 'home' as MarketType,
+          label: 'Sem odds reais (a obter na Premier Bet)',
+          odds: 0,
+          prob: 0,
+        },
+        status: 'pending',
+        result: null,
+        sourceProvider: 'aiscore',
+      };
+      added.push(newItem);
+      existingByKey.set(dedupeKey, newItem);
+    }
+
+    const cardCount = Array.isArray(card.data) ? card.data.length : 0;
+    if (added.length > 0) {
+      this.matches = [...this.matches, ...added];
+    }
+    console.log(
+      `[MarketService] AiScore day_card ${ymd}: ${cardCount} no cartÃ£o, +${added.length} novos, ${updated} atualizados.`
+    );
+    this.updateProviderStatusAfterAiscore(card.oddsCount, added.length);
+    return added.length;
   }
 
   private updateProviderStatusAfterAiscore(oddsCount: number, added: number): void {

@@ -12,6 +12,7 @@ import {
   isFallbackLeague,
   oddsSignature,
   marketOutcomeFor,
+  getCalendarDayDiff,
 } from './marketService.js';
 import {
   callLocalInferenceEngine,
@@ -475,17 +476,18 @@ export class TicketEngine {
       const matchLeague = !activeLeagues || activeLeagues.length === 0 || activeLeagues.includes(m.league);
       const notResolved = m.status !== 'resolved';
       const isFutureMatch = m.kickoffAt > now; // Jamais criar bilhetes com jogos passados ou iniciados
+      const dayDiff = getCalendarDayDiff(m.kickoffAt);
 
       let matchScopeMatches = false;
       if (scope === 'dia') {
-        matchScopeMatches = m.daysFromNow === 0;
+        matchScopeMatches = dayDiff === 0;
       } else if (scope === '2_3_dias') {
         // Inclui HOJE e os prÃ³ximos 3 dias (nÃ£o sÃ³ 1..3).
-        matchScopeMatches = m.daysFromNow >= 0 && m.daysFromNow <= 3;
+        matchScopeMatches = dayDiff >= 0 && dayDiff <= 3;
       } else {
         // Longo prazo: os MELHORES jogos de hoje atÃ© +8 dias (janela ~1 semana),
         // com probabilidade mÃ­nima mais alta. NÃ£o Ã© sÃ³ "daqui a 4+ dias".
-        matchScopeMatches = m.daysFromNow >= 0 && m.daysFromNow <= 8;
+        matchScopeMatches = dayDiff >= 0 && dayDiff <= 8;
       }
 
       return matchLeague && matchScopeMatches && notResolved && isFutureMatch;
@@ -630,7 +632,7 @@ export class TicketEngine {
         league: m.league,
         home: m.home,
         away: m.away,
-        daysFromNow: m.daysFromNow,
+        daysFromNow: getCalendarDayDiff(m.kickoffAt),
         odds: m.odds,
         context: m.context,
         scout: (m as any).scout,
@@ -1502,7 +1504,7 @@ export class TicketEngine {
         league: m.league,
         home: m.home,
         away: m.away,
-        daysFromNow: m.daysFromNow,
+        daysFromNow: getCalendarDayDiff(m.kickoffAt),
         odds: m.odds,
         context: m.context,
         scout: m.scout,

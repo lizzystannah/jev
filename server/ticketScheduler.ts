@@ -22,12 +22,18 @@ import {
 } from './ticketEngine.js';
 import { marketService } from './marketService.js';
 import { bilheteriaDb } from './db.js';
+import { cacheDel } from './cache.js';
+import { matchesApiCacheKey } from './cacheKeys.js';
 import { DAY_TIMEZONE, getDayKey, msUntilNextMidnight } from './time.js';
 import type { BetSlip, MarketType, SlipEngine, SlipScope, TicketStockStatus } from './types.js';
 
 const SCOPES: SlipScope[] = ['dia', '2_3_dias', 'longo'];
 const RETRY_THROTTLE_MS = 90 * 1000;
 const MATCH_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const MIN_TODAY_MATCHES = (() => {
+  const parsed = Number(process.env.MIN_TODAY_MATCHES);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 10;
+})();
 
 export class TicketScheduler {
   private started = false;
@@ -38,6 +44,7 @@ export class TicketScheduler {
   private lastTickAt: number | null = null;
   private lastMatchSyncAt = 0;
   private generating = false;
+  private todayRefreshTimers: NodeJS.Timeout[] = [];
 
   // ------------------------------------------------------------------ queue ---
 
@@ -85,6 +92,7 @@ export class TicketScheduler {
     if (this.midnightTimer) clearTimeout(this.midnightTimer);
     this.tickTimer = null;
     this.midnightTimer = null;
+    this.clearTodayRefreshTimers();
     this.started = false;
   }
 
@@ -96,6 +104,40 @@ export class TicketScheduler {
       this.scheduleMidnight();
     }, delay);
     this.midnightTimer.unref?.();
+  }
+
+  private clearTodayRefreshTimers(): void {
+    for (const timer of this.todayRefreshTimers) clearTimeout(timer);
+    this.todayRefreshTimers = [];
+  }
+
+  private scheduleTodayRefreshRetries(): void {
+    this.clearTodayRefreshTimers();
+    for (const delay of [30_000, 120_000, 300_000]) {
+      const timer = setTimeout(() => {
+        void this.refreshTodayIfSparse();
+      }, delay);
+      timer.unref?.();
+      this.todayRefreshTimers.push(timer);
+    }
+  }
+
+  private async refreshTodayIfSparse(): Promise<void> {
+    return this.enqueue(async () => {
+      try {
+        const count = marketService.getTodayMatchCount();
+        if (count >= MIN_TODAY_MATCHES) {
+          this.clearTodayRefreshTimers();
+          return;
+        }
+        console.log(`[Scheduler] Hoje com ${count} jogo(s); refresh forçado (${getDayKey()}).`);
+        this.lastMatchSyncAt = Date.now();
+        await marketService.getMatches(true);
+        await cacheDel(matchesApiCacheKey());
+      } catch (err: any) {
+        console.warn('[Scheduler] Refresh de hoje falhou:', err?.message);
+      }
+    });
   }
 
   // ------------------------------------------------------------------ counts ---
@@ -167,9 +209,11 @@ export class TicketScheduler {
       try {
         this.lastMatchSyncAt = Date.now();
         await marketService.getMatches(true);
+        await cacheDel(matchesApiCacheKey());
       } catch (err: any) {
         console.warn('[Scheduler] Refresh forÃ§ado do dia falhou:', err?.message);
       }
+      this.scheduleTodayRefreshRetries();
       await this.ensureScopeNow('dia', true);
       bilheteriaDb.setMeta('last_daily_run', today);
       console.log(`[Scheduler] Fichas de Hoje garantidas (${this.pendingCount('dia')}/${SCOPE_QUOTAS.dia}).`);
@@ -269,9 +313,11 @@ export class TicketScheduler {
       try {
         this.lastMatchSyncAt = Date.now();
         await marketService.getMatches(true);
+        await cacheDel(matchesApiCacheKey());
       } catch {
         /* best effort */
       }
+      this.scheduleTodayRefreshRetries();
       await this.ensureScopeNow('dia', true);
       bilheteriaDb.setMeta('last_daily_run', today);
     });

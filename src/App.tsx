@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   MatchItem,
   MatchTip,
@@ -60,6 +60,7 @@ export default function App() {
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('andamento');
   const [lastGeneratedTime, setLastGeneratedTime] = useState<string>('');
   const [timezone, setTimezone] = useState<string>(() => getSavedTimezone());
+  const todayKeyRef = useRef<string>(getDayKeyInTz(Date.now(), timezone));
   const [activeEngine, setActiveEngine] = useState<EngineTab>('principal');
   const [progressions, setProgressions] = useState<Progression[]>([]);
 
@@ -137,6 +138,10 @@ export default function App() {
     loadInitialData();
   }, [loadInitialData]);
 
+  useEffect(() => {
+    todayKeyRef.current = getDayKeyInTz(Date.now(), timezone);
+  }, [timezone]);
+
   const loadJevStatus = useCallback(async () => {
     setJevStatusLoading(true);
     setJevStatusError(false);
@@ -196,18 +201,37 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Os jogos sÃ³ sÃ£o atualizados na aba Manual (e no refresh explÃ­cito).
   useEffect(() => {
-    if (activeEngine !== 'manual') return;
-    const interval = setInterval(async () => {
-      try {
-        setMatches(await api.fetchMatches());
-      } catch {
-        /* silencioso */
+    const tick = async () => {
+      const nextKey = getDayKeyInTz(Date.now(), timezone);
+      if (nextKey !== todayKeyRef.current) {
+        todayKeyRef.current = nextKey;
+        await loadInitialData(true);
+      } else {
+        try {
+          setMatches(await api.fetchMatches());
+        } catch {
+          /* silencioso */
+        }
       }
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [activeEngine]);
+    };
+
+    const interval = setInterval(() => {
+      void tick();
+    }, 60000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void tick();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [timezone, loadInitialData]);
 
   // Stock/quota refresh (pouco frequente â€” geraÃ§Ã£o Ã© pesada, leitura Ã© leve)
   useEffect(() => {
@@ -551,8 +575,8 @@ export default function App() {
 
   const poolMatches = useMemo(() => {
     if (scope === 'historico') return filteredMatches;
-    return filteredMatches.filter((m) => matchInScope(m, scope));
-  }, [filteredMatches, scope]);
+    return filteredMatches.filter((m) => matchInScope(m, scope, Date.now(), timezone));
+  }, [filteredMatches, scope, timezone]);
 
   // Toggle "SÃ³ principais": filtra para Champions/Europa/EPL/La Liga/Serie A/Bundesliga/Ligue 1+
   const topTierLeagues = useMemo(

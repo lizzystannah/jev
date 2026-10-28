@@ -21,6 +21,7 @@ import {
 import { resolvePremierBetOdds } from './server/premierbetOdds.js';
 import { jevStatus } from './server/jevEngine.js';
 import { cacheGet, cacheSet, cacheDel } from './server/cache.js';
+import { matchesApiCacheKey } from './server/cacheKeys.js';
 import type { BetSlip, MarketType, MatchItem, SlipEngine, SlipScope, SlipTier, SlipUpload } from './server/types.js';
 import {
   PremierBetConfigError,
@@ -162,7 +163,7 @@ async function startServer() {
   app.get('/api/matches', async (req: Request, res: Response) => {
     try {
       const forceRefresh = req.query.refresh === 'true';
-      const cacheKey = 'matches:api:v2';
+      const cacheKey = matchesApiCacheKey();
       if (!forceRefresh) {
         const cached = await cacheGet(cacheKey);
         if (cached) return res.type('application/json').send(cached);
@@ -267,7 +268,7 @@ async function startServer() {
     try {
       const matches = await marketService.getMatches(true);
       const status = marketService.getProviderStatus();
-      await cacheDel('matches:api:v2');
+      await cacheDel(matchesApiCacheKey());
       res.json({
         success: true,
         message: 'SincronizaÃ§Ã£o processada com sucesso.',
@@ -366,7 +367,7 @@ async function startServer() {
     } catch {
       /* a escrita Ã© write-behind; o erro fica no log da BD */
     }
-    await cacheDel('matches:api:v2');
+    await cacheDel(matchesApiCacheKey());
     res.json({
       deleted: true,
       id: slip.id,
@@ -396,7 +397,7 @@ async function startServer() {
         market || undefined,
         engine as SlipEngine
       );
-      await cacheDel('matches:api:v2');
+      await cacheDel(matchesApiCacheKey());
       res.json({
         ...result,
         all: withUploads(result.all),
@@ -437,7 +438,7 @@ async function startServer() {
         undefined,
         'jev'
       );
-      await cacheDel('matches:api:v2');
+      await cacheDel(matchesApiCacheKey());
       let message = result.message;
       if (result.jevMeta) {
         const meta = result.jevMeta;
@@ -599,7 +600,7 @@ async function startServer() {
       const added = ticketEngine.addCustomSlip(slip);
       // Persistência confirmada antes de responder (ficha manual).
       await bilheteriaDb.flush();
-      await cacheDel('matches:api:v2');
+      await cacheDel(matchesApiCacheKey());
 
       res.json({
         slip: { ...added, upload: bilheteriaDb.getUpload(added.id) },
