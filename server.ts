@@ -824,8 +824,8 @@ async function startServer() {
         baseStake: Number(body.baseStake),
         reinvestPct: body.reinvestPct == null ? undefined : Number(body.reinvestPct),
         maxLevel: Number(body.maxLevel),
-        targetOddsMin: body.targetOddsMin == null ? 4 : Number(body.targetOddsMin),
-        targetOddsMax: body.targetOddsMax == null ? 4.99 : Number(body.targetOddsMax),
+        targetOddsMin: Number(body.targetOddsMin),
+        targetOddsMax: Number(body.targetOddsMax),
       });
       res.status(201).json(progression);
     } catch (err: any) {

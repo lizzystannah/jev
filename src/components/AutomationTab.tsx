@@ -110,8 +110,8 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
   const [baseStake, setBaseStake] = useState('100');
   const [reinvestPct, setReinvestPct] = useState('50');
   const [maxLevel, setMaxLevel] = useState('10');
-  const [oddsMin, setOddsMin] = useState('4.00');
-  const [oddsMax, setOddsMax] = useState('4.99');
+  const [oddsMin, setOddsMin] = useState('');
+  const [oddsMax, setOddsMax] = useState('');
 
   useEffect(() => {
     api
@@ -134,8 +134,8 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
     setBaseStake('100');
     setReinvestPct('50');
     setMaxLevel('10');
-    setOddsMin('4.00');
-    setOddsMax('4.99');
+    setOddsMin('');
+    setOddsMax('');
   };
 
   const handleCreate = async (event: React.FormEvent) => {
@@ -149,7 +149,21 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
       return;
     }
     if (!Number.isFinite(level) || level < 1) {
-      onToast('Indique o nível máximo da progressão.');
+      onToast('Indique o n��vel mǭximo da progressǜo.');
+      return;
+    }
+    const minOdds = Number(oddsMin);
+    const maxOdds = Number(oddsMax);
+    if (!Number.isFinite(minOdds) || minOdds <= 1) {
+      onToast('Indique uma odd mínima válida (maior que 1.00).');
+      return;
+    }
+    if (!Number.isFinite(maxOdds) || maxOdds <= 1) {
+      onToast('Indique uma odd máxima válida (maior que 1.00).');
+      return;
+    }
+    if (maxOdds < minOdds) {
+      onToast('A odd máxima tem de ser maior ou igual à odd mínima.');
       return;
     }
 
@@ -162,8 +176,8 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
       baseStake: stake,
       reinvestPct: mode === 'soros' ? Number(reinvestPct) : undefined,
       maxLevel: level,
-      targetOddsMin: Number(oddsMin) || 4,
-      targetOddsMax: Number(oddsMax) || 4.99,
+      targetOddsMin: minOdds,
+      targetOddsMax: maxOdds,
     };
 
     try {
@@ -252,8 +266,7 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
             )}
           </div>
           <p className="text-xs text-[rgba(245,243,236,0.55)] mt-1 max-w-2xl">
-            Cada nível gera uma ficha com odd total entre{' '}
-            <strong className="text-[#F5F3EC]">4.00x e 4.99x</strong> e coloca-a
+            Cada nível gera uma ficha com a faixa de odds que definires e coloca-a
             automaticamente na Premier Bet com dinheiro real. Ao perder, o ciclo volta ao
             nível 1. Ao chegar ao nível máximo, recomeça no nível 1 e continua até clicar
             Stop.
@@ -434,9 +447,8 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
               </span>
               <input
                 type="number"
-                min={4}
-                max={4.99}
                 step={0.01}
+                placeholder="ex.: 4.00"
                 value={oddsMin}
                 onChange={(event) => setOddsMin(event.target.value)}
                 className="rounded border border-[rgba(245,243,236,0.18)] bg-[#081C13] px-3 py-2 text-sm text-[#F5F3EC] outline-none focus:border-[#E7B33E]/60"
@@ -449,9 +461,8 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
               </span>
               <input
                 type="number"
-                min={4.01}
-                max={4.99}
                 step={0.01}
+                placeholder="ex.: 8.00"
                 value={oddsMax}
                 onChange={(event) => setOddsMax(event.target.value)}
                 className="rounded border border-[rgba(245,243,236,0.18)] bg-[#081C13] px-3 py-2 text-sm text-[#F5F3EC] outline-none focus:border-[#E7B33E]/60"

@@ -1,8 +1,8 @@
 /**
  * Motor de automação por progressões.
  *
- * Uma progressão gera fichas sequenciais (níveis) com odd total entre 4.00 e
- * 4.99, coloca-as na Premier Bet com dinheiro real e ajusta o valor da ficha
+ * Uma progressão gera fichas sequenciais (níveis) com a faixa de odds definida pelo utilizador e
+ * coloca-as na Premier Bet com dinheiro real e ajusta o valor da ficha
  * seguinte conforme o modo escolhido:
  *   - fixo   : valor base em todos os níveis;
  *   - total  : base + 100% do lucro do nível anterior;
@@ -148,10 +148,16 @@ class ProgressionEngine {
       throw new Error('O nível máximo deve estar entre 1 e 100.');
     }
 
-    const min = Math.max(1.01, Number(input.targetOddsMin) || 4);
-    const max = Math.max(min, Number(input.targetOddsMax) || 4.99);
-    if (min < 4 || max > 4.99) {
-      throw new Error('A faixa de odds da automação deve ficar entre 4.00 e 4.99.');
+    const min = round2(Number(input.targetOddsMin));
+    const max = round2(Number(input.targetOddsMax));
+    if (!Number.isFinite(min) || min <= 1) {
+      throw new Error('Indique uma odd mínima válida (maior que 1.00).');
+    }
+    if (!Number.isFinite(max) || max <= 1) {
+      throw new Error('Indique uma odd máxima válida (maior que 1.00).');
+    }
+    if (max < min) {
+      throw new Error('A odd máxima tem de ser maior ou igual à odd mínima.');
     }
 
     this.counter += 1;
