@@ -114,7 +114,8 @@ export async function generateTickets(
   leagues?: string[],
   limit = 4,
   market?: string,
-  engine: 'local' | 'manual' = 'local'
+  engine: 'local' | 'manual' = 'local',
+  minOdds?: number
 ): Promise<{
   generated: BetSlip[];
   all: BetSlip[];
@@ -124,7 +125,14 @@ export async function generateTickets(
   const res = await fetch('/api/tickets/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scope, leagues, limit, market: market || undefined, engine }),
+    body: JSON.stringify({
+      scope,
+      leagues,
+      limit,
+      market: market || undefined,
+      engine,
+      minOdds: Number.isFinite(minOdds) && (minOdds as number) > 1 ? minOdds : undefined,
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

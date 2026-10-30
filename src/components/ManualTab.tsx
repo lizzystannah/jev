@@ -26,7 +26,7 @@ interface ManualTabProps {
   tipMarkets: TipMarket[];
   selectedMarket: string;
   onMarketChange: (market: string) => void;
-  onGenerateByMarket: (scope: ScopeOption, market: string) => void;
+  onGenerateByMarket: (scope: ScopeOption, market: string, minOdds?: number) => void;
   generating: boolean;
 }
 
@@ -55,11 +55,18 @@ export const ManualTab: React.FC<ManualTabProps> = ({
   generating,
 }) => {
   const [browseScope, setBrowseScope] = useState<ScopeOption>('dia');
+  const [minOdds, setMinOdds] = useState('');
 
   const scopedMatches = useMemo(
     () => matches.filter((match) => matchInScope(match, browseScope)),
     [matches, browseScope]
   );
+
+  const handleGenerate = () => {
+    const parsed = Number.parseFloat(minOdds.replace(',', '.'));
+    const value = Number.isFinite(parsed) && parsed > 1 ? parsed : undefined;
+    onGenerateByMarket(browseScope, selectedMarket, value);
+  };
 
   return (
     <div className="max-w-[1180px] w-full mx-auto px-4 sm:px-6 py-9">
@@ -99,9 +106,26 @@ export const ManualTab: React.FC<ManualTabProps> = ({
             </select>
           </label>
 
+          <label className="flex flex-col gap-1.5 w-full sm:w-44">
+            <span className="text-[10px] uppercase tracking-wider font-semibold text-[rgba(245,243,236,0.55)]">
+              Pontuação mínima (odd)
+            </span>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="1.01"
+              step="0.1"
+              value={minOdds}
+              onChange={(e) => setMinOdds(e.target.value)}
+              disabled={generating}
+              placeholder="Ex.: 10"
+              className="bg-[#081C13] border border-[rgba(245,243,236,0.2)] rounded px-3 py-2 text-sm text-[#F5F3EC] focus:outline-none focus:border-[#E7B33E] disabled:opacity-60"
+            />
+          </label>
+
           <button
             type="button"
-            onClick={() => onGenerateByMarket(browseScope, selectedMarket)}
+            onClick={handleGenerate}
             disabled={generating}
             className="cursor-pointer inline-flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded bg-[#E7B33E] hover:bg-[#F0C869] text-[#3A2A06] disabled:opacity-50 active:translate-y-[1px] shrink-0"
           >
@@ -117,6 +141,11 @@ export const ManualTab: React.FC<ManualTabProps> = ({
           Horizonte ativo: <strong className="text-[#F5F3EC]">{scopeLabel(browseScope)}</strong>{' '}
           (muda nas abas de escopo ao lado). As fichas geradas ficam nesta aba (Manual), separadas
           das fichas automáticas da Principal.
+        </p>
+        <p className="mt-1 text-[11px] text-[rgba(245,243,236,0.5)]">
+          Com pontuação mínima, a ficha é montada como a Segura: acumula jogos de tips com odds
+          baixas até a odd total atingir o valor definido (ex.: 1.20 × vários jogos). Sem valor
+          preenchido, mantém o comportamento automático.
         </p>
       </div>
 

@@ -237,6 +237,19 @@ export const LONGO_MIN_PROB = Math.min(
 export const MAX_LEG_ODD = Math.max(1.01, envFloat('TICKETS_MAX_LEG_ODD', 2.2));
 /** Odd minima por perna nos tiers nao-Maluca (evita acumular 1.05/1.10). */
 export const MIN_LEG_ODD = Math.max(1.01, envFloat('TICKETS_MIN_LEG_ODD', 1.25));
+/**
+ * Ficha manual com pontuaÃ§Ã£o mÃ­nima: aceita pernas de odd mais baixa (ex.: 1.20)
+ * porque a pontuaÃ§Ã£o total Ã© alcanÃ§ada pelo nÃºmero de jogos, nunca por odds altas.
+ */
+export const MANUAL_MIN_LEG_ODD = Math.max(
+  1.01,
+  envFloat('TICKETS_MANUAL_MIN_LEG_ODD', 1.2)
+);
+/** Teto de pernas na ficha manual por pontuaÃ§Ã£o mÃ­nima (acumula jogos, sem teto de odd). */
+export const MANUAL_MAX_LEGS = Math.max(
+  2,
+  envInt('TICKETS_MANUAL_MAX_LEGS', 60)
+);
 /** Probabilidade minima por perna nas fichas nao-Maluca (evita escolher alternativas fracas). */
 export const NON_MALUCA_MIN_PROB = Math.min(
   95,
@@ -341,6 +354,11 @@ export interface GenerateOptions {
   oddsRange?: { min: number; max: number };
   /** Automação: constrói somente este tier (Segura/Moderada/Ousada/Maluca). */
   onlyTier?: SlipTier;
+  /**
+   * Ficha manual: pontuação mínima (odd combinada) que a ficha tem de atingir.
+   * Sem teto — acumula jogos de tips seguras até chegar ao valor escolhido.
+   */
+  minOdds?: number;
 }
 
 /** Telemetria da geraÃ§Ã£o JEV (chamadas reais vs decisÃµes reaproveitadas). */
@@ -838,6 +856,12 @@ export class TicketEngine {
         preferFresh?: boolean;
         /** Se false, permite vÃ¡rias pernas da mesma liga (mais jogos na Ousada). */
         diversifyLeagues?: boolean;
+        /** Alvo de odd total prÃ³prio (ficha manual com pontuaÃ§Ã£o mÃ­nima). */
+        targetOdds?: number;
+        /** Teto de pernas prÃ³prio (a ficha manual acumula jogos sem teto de odd). */
+        maxLegs?: number;
+        /** Odd mÃ­nima por perna prÃ³pria (a ficha manual aceita odds mais baixas). */
+        minLegOdd?: number;
       }
     ): BetSlip | null => {
       const baseCfg = legsConfigFor(scope, tier);
@@ -847,10 +871,17 @@ export class TicketEngine {
             targetOdds: options.oddsRange.min,
             maxOdds: options.oddsRange.max,
           }
+        : overrides?.targetOdds != null
+        ? {
+            ...baseCfg,
+            targetOdds: overrides.targetOdds,
+            maxLegs: Math.max(baseCfg.maxLegs, overrides.maxLegs ?? baseCfg.maxLegs),
+          }
         : baseCfg;
       // Segura/Moderada/Ousada: só pernas de odd baixa (a pontuação alta vem
       // de acumular jogos). A Maluca é a única que pode usar odds altas.
       const selectedMarket = options?.market;
+      const minLegOdd = overrides?.minLegOdd ?? MIN_LEG_ODD;
       const primary = (overrides?.pool ?? selectionPool).filter((m) => {
         if (m.tip.odds <= 1.01 || !Number.isFinite(m.tip.prob)) return false;
         // Geracao manual por mercado: o utilizador escolheu o mercado, por isso
@@ -863,7 +894,7 @@ export class TicketEngine {
             m.tip.prob >= MALUCA_MIN_PROB
           );
         }
-        return m.tip.odds >= MIN_LEG_ODD && m.tip.odds <= MAX_LEG_ODD;
+        return m.tip.odds >= minLegOdd && m.tip.odds <= MAX_LEG_ODD;
       });
       if (primary.length < cfg.minLegs) return null;
 
@@ -905,7 +936,7 @@ export class TicketEngine {
                       ? t.odds >= MALUCA_MIN_LEG_ODD &&
                         t.odds <= MALUCA_MAX_LEG_ODD &&
                         t.prob >= MALUCA_MIN_PROB
-                      : t.odds >= MIN_LEG_ODD &&
+                      : t.odds >= minLegOdd &&
                         t.odds <= MAX_LEG_ODD &&
                         t.prob >= NON_MALUCA_MIN_PROB))
             )
@@ -992,14 +1023,18 @@ export class TicketEngine {
     // cuja tip recomendada caiu para 1.10-1.20 e permite atingir os alvos com
     // menos jogos, sem inventar odds.
     type NonMalucaTip = { market: MarketType; label: string; odds: number; prob: number };
-    const nonMalucaPickFor = (m: MatchItem, tier: SlipTier): NonMalucaTip | null => {
+    const nonMalucaPickFor = (
+      m: MatchItem,
+      tier: SlipTier,
+      minLegOdd = MIN_LEG_ODD
+    ): NonMalucaTip | null => {
       const candidates: NonMalucaTip[] = [];
       const consider = (
         t?: { market: MarketType; label: string; odds: number | null; prob: number } | null
       ) => {
         if (!t || t.odds == null) return;
         if (!Number.isFinite(t.odds) || !Number.isFinite(t.prob)) return;
-        if (t.odds < MIN_LEG_ODD || t.odds > MAX_LEG_ODD) return;
+        if (t.odds < minLegOdd || t.odds > MAX_LEG_ODD) return;
         if (t.prob < NON_MALUCA_MIN_PROB) return;
         candidates.push({ market: t.market, label: t.label, odds: t.odds, prob: t.prob });
       };
@@ -1020,10 +1055,13 @@ export class TicketEngine {
       }
       return candidates[0];
     };
-    const nonMalucaPoolFor = (tier: SlipTier): MatchItem[] => {
+    const nonMalucaPoolFor = (
+      tier: SlipTier,
+      minLegOdd = MIN_LEG_ODD
+    ): MatchItem[] => {
       const pool: MatchItem[] = [];
       for (const m of selectionPool) {
-        const best = nonMalucaPickFor(m, tier);
+        const best = nonMalucaPickFor(m, tier, minLegOdd);
         if (best) pool.push({ ...m, tip: { ...best } });
       }
       return pool;
@@ -1252,6 +1290,74 @@ export class TicketEngine {
       );
       return {
         generated: [slip],
+        all: this.slips,
+        jevLatencyMs: localResponse.latencyMs,
+        jevMeta,
+      };
+    }
+
+    // ------------------------------------------- ficha manual com pontuação ---
+    // O utilizador define uma odd total MÍNIMA (ex.: 10x, 100x). A ficha é
+    // montada como a Segura — tips de maior probabilidade e odds baixas — e
+    // acumula o número de jogos necessário para atingir essa pontuação. Não há
+    // teto: o alvo é um mínimo, nunca uma odd alta por perna.
+    const manualMinOdds =
+      options?.engine === 'manual' &&
+      Number.isFinite(options.minOdds) &&
+      (options.minOdds as number) > 1
+        ? (options.minOdds as number)
+        : undefined;
+    if (manualMinOdds !== undefined) {
+      const wanted = Math.max(1, options?.limit ?? 2);
+      const safePool = options?.market
+        ? selectionPool
+        : nonMalucaPoolFor('segura', MANUAL_MIN_LEG_ODD);
+      const manualSlips: BetSlip[] = [];
+      for (let i = 0; i < wanted; i++) {
+        const slip = buildTargetTier('segura', {
+          pool: safePool,
+          targetOdds: manualMinOdds,
+          maxLegs: Math.max(MANUAL_MAX_LEGS, safePool.length),
+          minLegOdd: MANUAL_MIN_LEG_ODD,
+        });
+        if (!slip) break;
+        slip.engine = 'manual';
+        slip.customTitle = `Manual · segura · ${slip.legs.length} jogos · ${slip.combinedOdds.toFixed(2)}x`;
+        slip.rationale =
+          `Ficha manual: ${slip.legs.length} jogos de tips seguras (maior probabilidade) ` +
+          `acumulados até atingir a pontuação mínima de ${manualMinOdds.toFixed(2)}x ` +
+          `(odd total ${slip.combinedOdds.toFixed(2)}x). Todas as odds são reais; ` +
+          `a pontuação vem do número de jogos, não de pernas de odd alta.`;
+        manualSlips.push(slip);
+        candidateSlips.push(slip);
+        claim(slip.legs);
+      }
+      if (manualSlips.length === 0) {
+        console.warn(
+          `[Fichas] ${scope}: sem jogos suficientes para a pontuação mínima de ` +
+            `${manualMinOdds.toFixed(2)}x.`
+        );
+        return {
+          generated: [],
+          all: this.slips,
+          jevLatencyMs: localResponse.latencyMs,
+          jevMeta,
+        };
+      }
+      manualSlips.forEach((slip) => this.slips.push(slip));
+      bilheteriaDb.upsertMany(manualSlips);
+      await bilheteriaDb.flush();
+      if (evaluatedMatches.length > 0) marketService.saveCacheSoon();
+      console.log(
+        `[Fichas] ${scope}: ${manualSlips.length} ficha(s) manual(is) com pontuação mínima ` +
+          `${manualMinOdds.toFixed(2)}x: ` +
+          manualSlips
+            .map((s) => `${s.legs.length} jogos/${s.combinedOdds.toFixed(2)}x`)
+            .join(', ') +
+          '.'
+      );
+      return {
+        generated: manualSlips,
         all: this.slips,
         jevLatencyMs: localResponse.latencyMs,
         jevMeta,

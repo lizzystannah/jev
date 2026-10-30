@@ -379,7 +379,7 @@ async function startServer() {
   // Generate slips for scope (botÃ£o manual em qualquer parte do site)
   app.post('/api/tickets/generate', async (req: Request, res: Response) => {
     try {
-      const { scope = 'dia', leagues, limit, market, engine = 'local' } = req.body || {};
+      const { scope = 'dia', leagues, limit, market, engine = 'local', minOdds } = req.body || {};
       const validScopes = ['dia', '2_3_dias', 'longo'];
       if (!validScopes.includes(scope)) {
         return res.status(400).json({ error: `Escopo invÃ¡lido: ${scope}` });
@@ -390,12 +390,16 @@ async function startServer() {
       if (!['local', 'manual'].includes(engine)) {
         return res.status(400).json({ error: `Motor invÃ¡lido: ${engine}` });
       }
+      const minOddsValue = Number(minOdds);
+      const parsedMinOdds =
+        Number.isFinite(minOddsValue) && minOddsValue > 1 ? minOddsValue : undefined;
       const result = await ticketScheduler.generateMore(
         scope,
         Array.isArray(leagues) ? leagues : undefined,
         Number(limit) > 0 ? Number(limit) : 4,
         market || undefined,
-        engine as SlipEngine
+        engine as SlipEngine,
+        parsedMinOdds
       );
       await cacheDel(matchesApiCacheKey());
       res.json({

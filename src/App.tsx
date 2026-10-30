@@ -296,7 +296,11 @@ export default function App() {
   };
 
   // ---------------------------------------- geraÃ§Ã£o manual por tipo de tip ---
-  const handleGenerateManualByMarket = async (targetScope: ScopeOption, market: string) => {
+  const handleGenerateManualByMarket = async (
+    targetScope: ScopeOption,
+    market: string,
+    minOdds?: number
+  ) => {
     try {
       setGenerating(true);
       const result = await api.generateTickets(
@@ -304,7 +308,8 @@ export default function App() {
         Array.from(activeLeagues),
         2,
         market || undefined,
-        'manual'
+        'manual',
+        minOdds
       );
       setSlips(result.all);
       if (result.stock) setStock(result.stock);

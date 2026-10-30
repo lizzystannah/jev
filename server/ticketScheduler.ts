@@ -330,7 +330,8 @@ export class TicketScheduler {
     activeLeagues?: string[],
     limit = 4,
     market?: MarketType,
-    engine: SlipEngine = 'local'
+    engine: SlipEngine = 'local',
+    minOdds?: number
   ): Promise<{
     generated: BetSlip[];
     all: BetSlip[];
@@ -358,6 +359,7 @@ export class TicketScheduler {
             limit: Math.min(Math.max(1, limit), room),
             market,
             engine,
+            minOdds,
           })
         );
         return {
