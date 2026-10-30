@@ -1,7 +1,7 @@
 import React from 'react';
-import { LayoutGrid, SlidersHorizontal, Cpu, Bot } from 'lucide-react';
+import { LayoutGrid, SlidersHorizontal, Cpu, Bot, BarChart3 } from 'lucide-react';
 
-export type EngineTab = 'principal' | 'manual' | 'jev' | 'automacao';
+export type EngineTab = 'principal' | 'manual' | 'jev' | 'automacao' | 'dashboard';
 
 interface EngineTabsProps {
   active: EngineTab;
@@ -14,13 +14,14 @@ const TABS: Array<{ id: EngineTab; label: string; icon: React.ReactNode }> = [
   { id: 'manual', label: 'Manual', icon: <SlidersHorizontal className="w-3.5 h-3.5" /> },
   { id: 'jev', label: 'JEV', icon: <Cpu className="w-3.5 h-3.5" /> },
   { id: 'automacao', label: 'Automação', icon: <Bot className="w-3.5 h-3.5" /> },
+  { id: 'dashboard', label: 'Dashboard', icon: <BarChart3 className="w-3.5 h-3.5" /> },
 ];
 
 export const EngineTabs: React.FC<EngineTabsProps> = ({ active, onChange, counts }) => {
   return (
     <div className="max-w-[1180px] w-full mx-auto px-4 sm:px-6 pt-6">
       <div
-        className="inline-flex items-center gap-1 rounded-lg border border-[rgba(245,243,236,0.14)] bg-[#0E2A1C] p-1"
+        className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-[rgba(245,243,236,0.14)] bg-[#0E2A1C] p-1"
         role="tablist"
         aria-label="Motor de bilhetes"
       >

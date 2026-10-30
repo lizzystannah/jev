@@ -35,6 +35,7 @@ import { EngineTabs, EngineTab } from './components/EngineTabs.tsx';
 import { ManualTab } from './components/ManualTab.tsx';
 import { JevTab } from './components/JevTab.tsx';
 import { AutomationTab } from './components/AutomationTab.tsx';
+import { DashboardTab } from './components/DashboardTab.tsx';
 import { Zap, CheckCircle2, RotateCcw, Cpu, Loader2, ShoppingCart } from 'lucide-react';
 import { getSavedTimezone, saveTimezone, getDayKeyInTz } from './utils/timezone.js';
 import { leagueRank } from './utils/leagues.js';
@@ -616,6 +617,7 @@ export default function App() {
       manual: 0,
       jev: 0,
       automacao: 0,
+      dashboard: 0,
     };
     for (const slip of slips) {
       if (slip.status !== 'pendente') continue;
@@ -626,6 +628,7 @@ export default function App() {
       else counts.principal += 1;
     }
     counts.automacao = progressions.filter((p) => p.status === 'ativa').length;
+    counts.dashboard = slips.filter((s) => s.status !== 'pendente').length;
     return counts;
   }, [slips, progressions]);
 
@@ -1135,6 +1138,10 @@ export default function App() {
           onRefresh={refreshProgressions}
           onToast={showToast}
         />
+      )}
+
+      {activeEngine === 'dashboard' && (
+        <DashboardTab slips={slips} timezone={timezone} />
       )}
 
       {/* Carrinho da ficha manual */}
