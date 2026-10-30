@@ -235,7 +235,7 @@ function criteriaFor(candidate: JevCandidate): Record<string, string> {
       `${tip.label} — probabilidade do motor local ${tip.prob}%, ${oddText}${edgeText}.`;
   }
   criteria[SKIP_OPTION] =
-    'Nenhum dos mercados acima tem valor suficiente; não escolher este jogo.';
+    'Nenhum dos mercados acima faz sentido face ao contexto; não escolher este jogo.';
   return criteria;
 }
 
@@ -284,11 +284,11 @@ export async function jevChooseMarkets(
       tarefa:
         'Escolher a melhor tip (mercado) para cada jogo de futebol, comparando a probabilidade do motor local com a odd real e validando com o contexto do jogo.',
       regras: [
-        'Prefere mercados com EV positivo; não escolhas um mercado só porque a odd é alta.',
+        'A odd real e o EV são informação de preço; escolhe o mercado com o melhor equilíbrio entre a probabilidade local e o contexto. Não descartes um jogo só porque o EV é negativo.',
         'Valida a probabilidade local com o contexto: forma recente, H2H, média de golos, taxas de over25/BTTS e tendências.',
         'Evita under 3.5 em jogos com média de golos alta ou em que ambas as equipas marcam/sofrem com frequência.',
         'Evita mercados cuja probabilidade local esteja muito acima da odd implícita sem suporte no contexto.',
-        'Não escolhas mercados sem base estatística. Se nenhum candidato tiver qualidade suficiente, usa "skip".',
+        'Não escolhas mercados sem base estatística. Usa "skip" apenas se nenhum candidato fizer sentido face ao contexto.',
       ],
       matches: batch.map((c, index) => ({
         index,
@@ -313,11 +313,11 @@ export async function jevChooseMarkets(
         type: 'choice',
         instructions:
           `Jogo ${candidate.home} vs ${candidate.away} (${candidate.league}), ` +
-          `em state.matches[${index}]. Escolhe o mercado com melhor relação risco/valor, ` +
-          `usando também state.matches[${index}].contexto. Não escolhas um mercado apenas ` +
+          `em state.matches[${index}]. Escolhe o mercado mais coerente com a probabilidade ` +
+          `local e com state.matches[${index}].contexto. Não escolhas um mercado apenas ` +
           `por ter odd alta. Se a probabilidade local parecer exagerada face ao contexto e ` +
           `à odd implícita, escolhe outro mercado ou "${SKIP_OPTION}". Usa "${SKIP_OPTION}" ` +
-          'só se nenhum candidato tiver valor.',
+          'só se nenhum candidato fizer sentido face ao contexto.',
         criteria: criteriaFor(candidate),
       };
     });

@@ -1516,12 +1516,18 @@ export class TicketEngine {
       costUsd: 0,
       stale: 0,
     };
-    // Qualidade mínima das decisões JEV: EV não negativo e sem desalinhamento
-    // extremo entre a probabilidade local e a odd implícita do mercado.
-    const minEdge = Number(process.env.JEV_MIN_EV_PCT ?? '0') / 100;
-    const maxProbEdge = Number(process.env.JEV_MAX_PROB_EDGE ?? '20') / 100;
-    const safeMinEdge = Number.isFinite(minEdge) ? minEdge : 0;
-    const safeMaxProbEdge = Number.isFinite(maxProbEdge) && maxProbEdge > 0 ? maxProbEdge : 0.2;
+    // O motor local escolhe por probabilidade, nao por EV: contra odds de casa
+    // o EV dos picks costuma ser negativo. Se o JEV fosse obrigado a EV >= 0
+    // rejeitava quase todas as escolhas e devolvia sempre "mercado insuficiente",
+    // apesar de o motor principal gerar fichas. Os limites de qualidade ficam
+    // desligados por omissao; JEV_MIN_EV_PCT/JEV_MAX_PROB_EDGE podem impo-los.
+    const rawMinEdge = process.env.JEV_MIN_EV_PCT;
+    const minEdge = rawMinEdge == null ? -1 : Number(rawMinEdge) / 100;
+    const rawMaxProbEdge = process.env.JEV_MAX_PROB_EDGE;
+    const maxProbEdge = rawMaxProbEdge == null ? 1 : Number(rawMaxProbEdge) / 100;
+    const safeMinEdge = Number.isFinite(minEdge) ? minEdge : -1;
+    const safeMaxProbEdge =
+      Number.isFinite(maxProbEdge) && maxProbEdge > 0 ? maxProbEdge : 1;
     const acceptable = (
       tip: { prob: number; odds: number | null } | undefined | null
     ): boolean => {
@@ -1533,11 +1539,16 @@ export class TicketEngine {
       return edge >= safeMinEdge && probEdge <= safeMaxProbEdge;
     };
 
+    // O JEV tem de ver exatamente as mesmas ligas elegiveis do motor principal:
+    // principais + fallback. Antes filtrava so `isMainLeague`, pelo que nos dias
+    // sem jogos das ligas whitelist o JEV ficava sem pool e devolvia "mercado
+    // insuficiente", apesar de o motor local gerar fichas com as ligas fallback.
     const pool = evaluated.filter(
       (m) =>
-        isMainLeague(m.league, m.competitionId) &&
+        isFallbackLeague(m.league, m.competitionId) &&
         m.tip &&
         m.tip.odds > 1.01 &&
+        Number.isFinite(m.tip.prob) &&
         (m.tips || []).some((t) => t.odds != null && t.odds > 1.01)
     );
     if (pool.length === 0) return { matches: [], meta: emptyMeta };
