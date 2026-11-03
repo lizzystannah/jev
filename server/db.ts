@@ -56,6 +56,7 @@ const SLIP_COLUMNS = [
   'legs_json',
   'combined_odds',
   'combined_prob',
+  'effective_odds',
   'expires_at',
   'created_at',
   'resolved_at',
@@ -88,6 +89,7 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
         legs_json LONGTEXT NOT NULL,
         combined_odds DOUBLE NOT NULL,
         combined_prob DOUBLE NOT NULL,
+        effective_odds DOUBLE NULL,
         expires_at BIGINT NOT NULL,
         created_at BIGINT NOT NULL,
         resolved_at BIGINT NULL,
@@ -138,6 +140,7 @@ export function buildSchemaStatements(dialect: Dialect): string[] {
       legs_json TEXT NOT NULL,
       combined_odds REAL NOT NULL,
       combined_prob REAL NOT NULL,
+      effective_odds REAL,
       expires_at INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       resolved_at INTEGER,
@@ -312,12 +315,16 @@ class BilheteriaDatabase {
       driver.dialect === 'mysql'
         ? [
             "ALTER TABLE slips ADD COLUMN engine VARCHAR(16) NOT NULL DEFAULT 'local'",
+            'ALTER TABLE slips ADD COLUMN effective_odds DOUBLE NULL',
           ]
-        : ["ALTER TABLE slips ADD COLUMN engine TEXT NOT NULL DEFAULT 'local'"];
+        : [
+            "ALTER TABLE slips ADD COLUMN engine TEXT NOT NULL DEFAULT 'local'",
+            'ALTER TABLE slips ADD COLUMN effective_odds REAL',
+          ];
     for (const sql of statements) {
       try {
         await driver.exec(sql);
-        console.log('[Bilheteria DB] Migração aplicada: slips.engine');
+        console.log(`[Bilheteria DB] Migração aplicada: ${sql}`);
       } catch {
         /* coluna já existe */
       }
@@ -399,6 +406,10 @@ class BilheteriaDatabase {
             legs,
             combinedOdds: Number(row.combined_odds),
             combinedProb: Number(row.combined_prob),
+            effectiveOdds:
+              row.effective_odds == null
+                ? Number(row.combined_odds)
+                : Number(row.effective_odds),
             expiresAt: Number(row.expires_at),
             status: row.status,
             createdAt: Number(row.created_at),
@@ -447,6 +458,7 @@ class BilheteriaDatabase {
       JSON.stringify(data.legs),
       data.combinedOdds,
       data.combinedProb,
+      data.effectiveOdds ?? data.combinedOdds,
       data.expiresAt,
       data.createdAt,
       data.resolvedAt ?? null,

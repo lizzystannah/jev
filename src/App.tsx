@@ -78,7 +78,7 @@ export default function App() {
   const [aiAnalysis, setAiAnalysis] = useState<AiMatchAnalysis | null>(null);
   const [uploadSlip, setUploadSlip] = useState<BetSlip | null>(null);
 
-  // GeraÃ§Ã£o automÃ¡tica por tipo de tip + carrinho da ficha manual
+  // Geração automática por tipo de tip + carrinho da ficha manual
   const [tipMarkets, setTipMarkets] = useState<TipMarket[]>([]);
   const [selectedMarket, setSelectedMarket] = useState('');
   const [cart, setCart] = useState<CartLeg[]>([]);
@@ -179,17 +179,17 @@ export default function App() {
     return () => clearInterval(interval);
   }, [refreshProgressions]);
 
-  // Tipos de tip disponÃ­veis para a geraÃ§Ã£o automÃ¡tica.
+  // Tipos de tip disponíveis para a geração automática.
   useEffect(() => {
     api
       .fetchTipMarkets()
       .then(setTipMarkets)
       .catch(() => {
-        /* o seletor fica sÃ³ com a opÃ§Ã£o automÃ¡tica */
+        /* o seletor fica só com a opção automática */
       });
   }, []);
 
-  // Polling de bilhetes mais espaÃ§ado (evita re-renders e pedidos em rajada).
+  // Polling de bilhetes mais espaçado (evita re-renders e pedidos em rajada).
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -234,7 +234,7 @@ export default function App() {
     };
   }, [timezone, loadInitialData]);
 
-  // Stock/quota refresh (pouco frequente â€” geraÃ§Ã£o Ã© pesada, leitura Ã© leve)
+  // Stock/quota refresh (pouco frequente — geração é pesada, leitura é leve)
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -295,7 +295,7 @@ export default function App() {
     }
   };
 
-  // ---------------------------------------- geraÃ§Ã£o manual por tipo de tip ---
+  // ---------------------------------------- geração manual por tipo de tip ---
   const handleGenerateManualByMarket = async (
     targetScope: ScopeOption,
     market: string,
@@ -336,7 +336,7 @@ export default function App() {
     }
   };
 
-  // ------------------------------------------------------------- geraÃ§Ã£o JEV ---
+  // ------------------------------------------------------------- geração JEV ---
   const handleGenerateJev = async (targetScope: ScopeOption, limit: number) => {
     try {
       setGeneratingJev(true);
@@ -431,7 +431,7 @@ export default function App() {
     }
   };
 
-  // Sincroniza o estado da ficha depois de uma tentativa de submissÃ£o Ã  Premier Bet.
+  // Sincroniza o estado da ficha depois de uma tentativa de submissão à Premier Bet.
   const handleSlipUploaded = async (result: PremierBetUploadResult | null) => {
     try {
       const refreshed = await api.fetchTickets();
@@ -451,19 +451,19 @@ export default function App() {
     }
   };
 
-  // Exclui a ficha da memÃ³ria e da base de dados (sem resquÃ­cios).
+  // Exclui a ficha da memória e da base de dados (sem resquícios).
   const handleDeleteSlip = async (slip: BetSlip) => {
     const aviso =
       slip.upload?.status === 'placed'
-        ? `A ficha ${slip.id} jÃ¡ foi colocada na Premier Bet. Excluir remove o registo local e o histÃ³rico de submissÃ£o (a aposta na Premier Bet NÃƒO Ã© cancelada). Continuar?`
-        : `Excluir a ficha ${slip.id}? Esta aÃ§Ã£o remove a ficha da memÃ³ria e da base de dados.`;
+        ? `A ficha ${slip.id} já foi colocada na Premier Bet. Excluir remove o registo local e o histórico de submissão (a aposta na Premier Bet NÃO é cancelada). Continuar?`
+        : `Excluir a ficha ${slip.id}? Esta ação remove a ficha da memória e da base de dados.`;
     if (!window.confirm(aviso)) return;
     try {
       const result = await api.deleteTicket(slip.id);
       setSlips(result.all);
       if (result.stock) setStock(result.stock);
       setUploadSlip((current) => (current?.id === slip.id ? null : current));
-      showToast(`Ficha ${slip.id} excluÃ­da.`);
+      showToast(`Ficha ${slip.id} excluída.`);
     } catch (err: any) {
       showToast(err?.message || 'Falha ao excluir a ficha.');
     }
@@ -480,10 +480,10 @@ export default function App() {
 
       if (resolved.length > 0) {
         const m = resolved[0];
-        const statusStr = m.result?.tipWon ? 'Venceu âœ“' : 'Falhou âœ•';
+        const statusStr = m.result?.tipWon ? 'Venceu ✓' : 'Falhou ✕';
         showToast(`${m.home} ${m.result?.homeScore}-${m.result?.awayScore} ${m.away} (${statusStr})`);
       } else {
-        showToast('Todas as partidas desta lista jÃ¡ foram resolvidas.');
+        showToast('Todas as partidas desta lista já foram resolvidas.');
       }
     } catch (err: any) {
       showToast(err?.message || 'Erro ao simular');
@@ -546,7 +546,7 @@ export default function App() {
   };
 
   // Rank por ID oficial quando existir (evita "Premier League" do Catar
-  // ser confundida com a inglesa); senÃ£o, cai no nome.
+  // ser confundida com a inglesa); senão, cai no nome.
   const leagueRankById = useMemo(() => {
     const map = new Map<string, number>();
     for (const m of matches) {
@@ -570,7 +570,7 @@ export default function App() {
     [matches, rankOf]
   );
 
-  // Ligas principais primeiro, depois cronolÃ³gico.
+  // Ligas principais primeiro, depois cronológico.
   const filteredMatches = useMemo(
     () =>
       matches
@@ -584,7 +584,7 @@ export default function App() {
     return filteredMatches.filter((m) => matchInScope(m, scope, Date.now(), timezone));
   }, [filteredMatches, scope, timezone]);
 
-  // Toggle "SÃ³ principais": filtra para Champions/Europa/EPL/La Liga/Serie A/Bundesliga/Ligue 1+
+  // Toggle "Só principais": filtra para Champions/Europa/EPL/La Liga/Serie A/Bundesliga/Ligue 1+
   const topTierLeagues = useMemo(
     () => allLeaguesList.filter((l) => rankOf(l) < 8),
     [allLeaguesList, rankOf]
@@ -609,9 +609,9 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------- fichas ---
-  // "Hoje" mostra apenas as fichas pendentes criadas no dia-calendÃ¡rio de
-  // Angola. As mais antigas continuam a persistir e aparecem no histÃ³rico
-  // (Em andamento) atÃ© serem resolvidas ou expirarem.
+  // "Hoje" mostra apenas as fichas pendentes criadas no dia-calendário de
+  // Angola. As mais antigas continuam a persistir e aparecem no histórico
+  // (Em andamento) até serem resolvidas ou expirarem.
   const principalSlips = useMemo(() => slips.filter((s) => engineOf(s) === 'local'), [slips]);
   const manualSlips = useMemo(() => slips.filter((s) => engineOf(s) === 'manual'), [slips]);
   const jevSlips = useMemo(() => slips.filter((s) => engineOf(s) === 'jev'), [slips]);
@@ -700,25 +700,25 @@ export default function App() {
     andamento: 'Em andamento',
     ganhas: 'Ganhas',
     perdidas: 'Perdidas',
-    vencidas: 'Vencidas',
+    vencidas: 'Vencidas/Anuladas',
   };
 
   const historyEmpty: Record<HistoryFilter, { title: string; hint: string }> = {
     andamento: {
       title: 'Nenhuma ficha em andamento.',
-      hint: 'As fichas pendentes (incluindo as de dias anteriores ainda nÃ£o resolvidas) aparecem aqui.',
+      hint: 'As fichas pendentes (incluindo as de dias anteriores ainda não resolvidas) aparecem aqui.',
     },
     ganhas: {
-      title: 'Ainda nÃ£o hÃ¡ fichas ganhas.',
+      title: 'Ainda não há fichas ganhas.',
       hint: 'Quando todas as pernas de uma ficha acertarem, ela passa para esta aba.',
     },
     perdidas: {
-      title: 'Ainda nÃ£o hÃ¡ fichas perdidas.',
+      title: 'Ainda não há fichas perdidas.',
       hint: 'Uma ficha cai para aqui no momento em que a primeira perna falha.',
     },
     vencidas: {
-      title: 'Ainda nÃ£o hÃ¡ fichas vencidas.',
-      hint: 'Fichas sem resoluÃ§Ã£o depois do prazo (Ãºltimo jogo + tolerÃ¢ncia) sÃ£o movidas para aqui.',
+      title: 'Ainda não há fichas vencidas.',
+      hint: 'Fichas sem resolução depois do prazo (último jogo + tolerância) são movidas para aqui.',
     },
   };
 
@@ -743,15 +743,15 @@ export default function App() {
       scope === 'dia'
         ? 'jogos de hoje'
         : scope === '2_3_dias'
-        ? 'jogos de hoje atÃ© +3 dias'
-        : 'os melhores jogos de hoje atÃ© +8 dias (seleÃ§Ã£o rigorosa, 10 a 22 jogos)';
+        ? 'jogos de hoje até +3 dias'
+        : 'os melhores jogos de hoje até +8 dias (seleção rigorosa, 10 a 22 jogos)';
 
     if (tier === 'segura') {
-      return `Fichas de ${spread} escolhidas entre as tips de maior probabilidade, atÃ© ao alvo de 3x. O nÃºmero de jogos Ã© o necessÃ¡rio para chegar ao alvo â€” sem odds inventadas.`;
+      return `Fichas de ${spread} escolhidas entre as tips de maior probabilidade, até ao alvo de 3x. O número de jogos é o necessário para chegar ao alvo — sem odds inventadas.`;
     }
 
     if (tier === 'moderada') {
-      return `Fichas de ${spread} com alvo de 15x: o motor pega nas tips de risco moderado e acrescenta jogos atÃ© completar os pontos, sem pernas de odd artificial.`;
+      return `Fichas de ${spread} com alvo de 15x: o motor pega nas tips de risco moderado e acrescenta jogos até completar os pontos, sem pernas de odd artificial.`;
     }
 
     if (tier === 'ousada') {
@@ -788,7 +788,7 @@ export default function App() {
         onTimezoneChange={(tz) => {
           setTimezone(tz);
           saveTimezone(tz);
-          showToast(`Fuso horÃ¡rio atualizado para ${tz}`);
+          showToast(`Fuso horário atualizado para ${tz}`);
         }}
       />
 
@@ -859,7 +859,7 @@ export default function App() {
               )}
             </div>
 
-            {/* Scope Tabs: Hoje | 2 a 3 Dias | Longo Prazo | HistÃ³rico */}
+            {/* Scope Tabs: Hoje | 2 a 3 Dias | Longo Prazo | Histórico */}
             <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Ver bilhetes">
               <button
                 type="button"
@@ -903,7 +903,7 @@ export default function App() {
                     : 'bg-transparent border-[rgba(245,243,236,0.2)] text-[rgba(245,243,236,0.6)] hover:text-[#F5F3EC]'
                 }`}
               >
-                HistÃ³rico ({historyTotal})
+                Histórico ({historyTotal})
               </button>
             </div>
 
@@ -911,9 +911,9 @@ export default function App() {
               {scopeDayLabel}
             </p>
 
-            {/* HistÃ³rico: sub-abas por estado */}
+            {/* Histórico: sub-abas por estado */}
             {scope === 'historico' && (
-              <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filtrar histÃ³rico">
+              <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filtrar histórico">
                 {(['andamento', 'ganhas', 'perdidas', 'vencidas'] as HistoryFilter[]).map((f) => {
                   const active = historyFilter === f;
                   return (
@@ -939,8 +939,8 @@ export default function App() {
             <p className="text-xs text-[rgba(245,243,236,0.5)] mb-5 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-[#4FAE73] animate-pulse-subtle shrink-0" />
               <span>
-                Agendador ativo no backend (fuso de Angola) â€” todos os dias Ã  00:00 cria as fichas
-                do dia e repÃµe o estoque. Cada ficha passa a{' '}
+                Agendador ativo no backend (fuso de Angola) — todos os dias à 00:00 cria as fichas
+                do dia e repõe o estoque. Cada ficha passa a{' '}
                 <strong className="text-[#4FAE73] font-semibold">ganha</strong>,{' '}
                 <strong className="text-[#D1594B] font-semibold">perdida</strong> ou{' '}
                 <strong className="text-[#E7B33E] font-semibold">vencida</strong> automaticamente.
@@ -1070,7 +1070,7 @@ export default function App() {
                     <div>
                       <p className="font-medium text-[#F5F3EC]">Nenhuma ficha pendente para este horizonte.</p>
                       <p className="text-xs text-[rgba(245,243,236,0.45)] mt-1 mb-4 max-w-md mx-auto">
-                        O agendador repÃµe o estoque automaticamente. Pode tambÃ©m gerar uma ficha agora.
+                        O agendador repõe o estoque automaticamente. Pode também gerar uma ficha agora.
                       </p>
                       <button
                         type="button"
@@ -1155,14 +1155,14 @@ export default function App() {
           type="button"
           onClick={() => setIsCartOpen(true)}
           className="fixed bottom-6 left-6 z-40 cursor-pointer flex items-center gap-2 px-4 py-3 rounded-full bg-[#173C27] hover:bg-[#20502F] border border-[#E7B33E]/40 text-[#F5F3EC] font-semibold text-sm shadow-2xl active:translate-y-[1px]"
-          title="Abrir carrinho de seleÃ§Ãµes para ficha manual"
+          title="Abrir carrinho de seleções para ficha manual"
         >
           <ShoppingCart className="w-4 h-4 text-[#E7B33E]" />
-          <span>SeleÃ§Ãµes ({cart.length})</span>
+          <span>Seleções ({cart.length})</span>
         </button>
       )}
 
-      {/* AÃ§Ã£o global: gerar ficha a partir de qualquer parte do site */}
+      {/* Ação global: gerar ficha a partir de qualquer parte do site */}
       {activeEngine === 'principal' && (
         <button
           type="button"
@@ -1186,7 +1186,7 @@ export default function App() {
       <footer className="border-t border-[rgba(245,243,236,0.14)] py-7 bg-[#081C13]">
         <div className="max-w-[1180px] mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[rgba(245,243,236,0.45)]">
           <p className="max-w-xl text-center sm:text-left">
-            Aposta com responsabilidade. +18. O motor Bilheteria utiliza o <strong>Jev (TypeSafe AI)</strong> para decisÃµes probabilÃ­sticas nÃ£o-autoregressivas e calibraÃ§Ã£o de risco, integrado com dados reais de confronto direto (H2H) e odds de mercado.
+            Aposta com responsabilidade. +18. O motor Bilheteria utiliza o <strong>Jev (TypeSafe AI)</strong> para decisões probabilísticas não-autoregressivas e calibração de risco, integrado com dados reais de confronto direto (H2H) e odds de mercado.
           </p>
           <div className="flex items-center gap-3 shrink-0">
             <button
@@ -1196,7 +1196,7 @@ export default function App() {
             >
               Configurar Chaves (.env)
             </button>
-            <span>Â·</span>
+            <span>·</span>
             <span>Jev RLCD v1.0</span>
           </div>
         </div>

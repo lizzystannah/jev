@@ -227,9 +227,15 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
           {/* Jev AI Calibrated Prob & Edge */}
           <div className="bg-[#0E2A1C] p-4 sm:p-4.5 border-l border-[rgba(231,179,62,0.15)] bg-gradient-to-b from-[#173C27]/40 to-[#0E2A1C]">
             <div className="font-display text-3xl sm:text-4xl text-[#E7B33E] leading-none flex items-baseline gap-1">
-              <span>{backendStatus?.jevEngine?.metrics?.avgCalibratedProb || 64}%</span>
+              <span>
+                {backendStatus?.jevEngine?.metrics?.avgCalibratedProb != null
+                  ? `${backendStatus.jevEngine.metrics.avgCalibratedProb}%`
+                  : '—'}
+              </span>
               <span className="text-[10px] font-body text-[#4FAE73] font-semibold">
-                +{backendStatus?.jevEngine?.metrics?.avgEdgeEV || '8.4'}% EV
+                {backendStatus?.jevEngine?.metrics?.avgEdgeEV != null
+                  ? `+${backendStatus.jevEngine.metrics.avgEdgeEV}% EV`
+                  : 'EV —'}
               </span>
             </div>
             <div className="mt-1.5 text-xs text-[rgba(245,243,236,0.55)] flex items-center gap-1 font-medium">
@@ -337,17 +343,16 @@ export const HeroStats: React.FC<HeroStatsProps> = ({
                   <Cpu className="w-3 h-3 text-[#E7B33E]" />
                 </div>
                 <div className="space-y-1.5 text-[11px] mt-1.5">
-                  {(backendStatus?.jevEngine?.metrics?.topMarkets || [
-                    { market: '1X (Dupla Chance)', percentage: 45 },
-                    { market: '+1.5 Golos', percentage: 30 },
-                    { market: 'Ambas Marcam', percentage: 15 },
-                    { market: '-3.5 Golos', percentage: 10 },
-                  ]).map((tm, idx) => (
-                    <div key={idx} className="flex justify-between items-center">
-                      <span className="text-[rgba(245,243,236,0.7)] truncate mr-1">{tm.market}</span>
-                      <span className="text-[#E7B33E] font-medium shrink-0">{tm.percentage}%</span>
-                    </div>
-                  ))}
+                  {(backendStatus?.jevEngine?.metrics?.topMarkets ?? []).length === 0 ? (
+                    <div className="text-[rgba(245,243,236,0.4)]">Sem dados ainda</div>
+                  ) : (
+                    backendStatus?.jevEngine?.metrics?.topMarkets?.map((tm, idx) => (
+                      <div key={idx} className="flex justify-between items-center">
+                        <span className="text-[rgba(245,243,236,0.7)] truncate mr-1">{tm.market}</span>
+                        <span className="text-[#E7B33E] font-medium shrink-0">{tm.percentage}%</span>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 

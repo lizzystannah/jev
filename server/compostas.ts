@@ -168,3 +168,20 @@ export function poissonCompostaProbs(
   }
   return out as Record<CompostaMarket, number>;
 }
+
+/** Probabilidades compostas lidas diretamente da matriz de placares final. */
+export function compostaProbsFromMatrix(M: number[][]): Record<CompostaMarket, number> {
+  const out: Record<string, number> = {};
+  for (const market of ALL) out[market] = 0;
+  for (let i = 0; i < M.length; i++) {
+    for (let j = 0; j < M[i].length; j++) {
+      const p = M[i][j];
+      if (p <= 0) continue;
+      for (const market of ALL) {
+        const parts = PARTS.get(market)!;
+        if (partsOutcome(parts, i, j)) out[market] += p;
+      }
+    }
+  }
+  return out as Record<CompostaMarket, number>;
+}

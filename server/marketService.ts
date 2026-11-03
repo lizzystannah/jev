@@ -10,32 +10,32 @@ import {
 } from './aiscoreService.js';
 import { getDayKey } from './time.js';
 
-/** Ligas principais primeiro na ingestÃ£o/seleÃ§Ã£o (peso espelha ticketEngine). */
+/** Ligas principais primeiro na ingestão/seleção (peso espelha ticketEngine). */
 export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: string }> = [
   { test: /champions|liga de campeones|liga dos campeoes/i, exclude: /femen|women|mujer|youth|u ?19|juvenil/i, label: 'Champions League' },
   { test: /europa league|liga europa/i, exclude: /femen|women|mujer|conference|conferencia/i, label: 'Europa League' },
-  // "Premier League del Norte", U21, ButÃ£o, etc. NÃƒO sÃ£o a Premier League inglesa.
+  // "Premier League del Norte", U21, Butão, etc. NÃO são a Premier League inglesa.
   {
     test: /premier league|liga premier de inglaterra|premier league inglesa/i,
-    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer|kenya|kenia|bhutan|but[aÃ£]o|mongol|nigeria|ghana|jamaica|burundi|shillong|mizoram|goa|kerala|calcutt|estonia|irlanda|ireland|wales|gales|scotland|escocia|egip|siria|iraq|catar|qatar|libia|argelia|tunez|jordania|kuwait|bahrein|barein|oman|libano|yemen|sudan|etiopia|uganda|tanzania|zambia|malaui|botsuana|sierra|gana|senegal|mali|niger|burkina|benin|togo|guine|maurit|ruanda|angola|mozambique|zimbabue|camboja|vietnam|indonesia|filipinas|singapur|malasia|myanmar|tailandia|laos|mongolia|nepal|butao|maldivas|sri lanka|bangladesh|india|paquistao|tajiquistao|turcomenistao|uzbequistao|quirguistao|cazaquistao|armenia|azerbaijao|georgia|moldavia|letonia|lituania|finlandia|islandia|noruega|suecia|dinamarca|belgica|holanda|austria|suica|polonia|chequia|eslovaquia|hungria|romenia|bulgaria|servia|croacia|eslovenia|bosnia|macedonia|albania|grecia|turquia|chipre|malta|luxemburgo|andorra|gibraltar|feroe|kosovo|montenegro/i,
+    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer|kenya|kenia|bhutan|but[aã]o|mongol|nigeria|ghana|jamaica|burundi|shillong|mizoram|goa|kerala|calcutt|estonia|irlanda|ireland|wales|gales|scotland|escocia|egip|siria|iraq|catar|qatar|libia|argelia|tunez|jordania|kuwait|bahrein|barein|oman|libano|yemen|sudan|etiopia|uganda|tanzania|zambia|malaui|botsuana|sierra|gana|senegal|mali|niger|burkina|benin|togo|guine|maurit|ruanda|angola|mozambique|zimbabue|camboja|vietnam|indonesia|filipinas|singapur|malasia|myanmar|tailandia|laos|mongolia|nepal|butao|maldivas|sri lanka|bangladesh|india|paquistao|tajiquistao|turcomenistao|uzbequistao|quirguistao|cazaquistao|armenia|azerbaijao|georgia|moldavia|letonia|lituania|finlandia|islandia|noruega|suecia|dinamarca|belgica|holanda|austria|suica|polonia|chequia|eslovaquia|hungria|romenia|bulgaria|servia|croacia|eslovenia|bosnia|macedonia|albania|grecia|turquia|chipre|malta|luxemburgo|andorra|gibraltar|feroe|kosovo|montenegro/i,
     label: 'Premier League',
   },
-  // "Copa de la Liga" (Peru/BolÃ­via/Catar) nÃ£o Ã© a La Liga espanhola.
+  // "Copa de la Liga" (Peru/Bolívia/Catar) não é a La Liga espanhola.
   { test: /la liga|laliga/i, exclude: /copa de la liga/i, label: 'La Liga' },
   { test: /serie a/i, exclude: /serie [bcd]|femen|feminin|women|mujer/i, label: 'Serie A' },
   { test: /bundesliga/i, exclude: /femen|feminin|women|mujer| ii\b| 2\b/i, label: 'Bundesliga' },
   { test: /ligue 1/i, exclude: /femen|feminin|women|mujer/i, label: 'Ligue 1' },
   {
-    test: /brasileir|liga portugal|liga primera de portugal|primeira liga|conference league|liga confer[eÃª]ncia|confer[eÃª]ncia europa|j1 league|j1 de jap[oÃ³]n|s[uÃ¼]per lig|liga profesional saud[iÃ­]|saudi pro league|super ?liga s[eÃ©]rvia|serbian mozzart bet superliga|srbij/i,
-    exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil|j[2-4]|english conference|confer[eÃª]ncia inglesa|conference (north|south)|confer[eÃª]ncia (norte|sur)|liga de f[uÃº]tbol japonesa|divisi[oÃ³]n (1|2)|saudi (first|second) division|prva liga/i,
+    test: /brasileir|liga portugal|liga primera de portugal|primeira liga|conference league|liga confer[eê]ncia|confer[eê]ncia europa|j1 league|j1 de jap[oó]n|s[uü]per lig|liga profesional saud[ií]|saudi pro league|super ?liga s[eé]rvia|serbian mozzart bet superliga|srbij/i,
+    exclude: /femen|feminin|women|mujer|sub ?2\d|u ?2\d|juvenil|j[2-4]|english conference|confer[eê]ncia inglesa|conference (north|south)|confer[eê]ncia (norte|sur)|liga de f[uú]tbol japonesa|divisi[oó]n (1|2)|saudi (first|second) division|prva liga/i,
     label: 'Outras top',
   },
 ];
 
 /**
- * IDs oficiais do AiScore das competiÃ§Ãµes que podem entrar em bilhetes.
+ * IDs oficiais do AiScore das competições que podem entrar em bilhetes.
  * O nome localizado varia ("Premier League", "Liga Premier de Inglaterra",
- * "Premier League egipcia"...) e nÃ£o distingue Catar/Egito/SÃ­ria de Inglaterra;
+ * "Premier League egipcia"...) e não distingue Catar/Egito/Síria de Inglaterra;
  * o ID distingue. Fonte: football/comp/map + day_card.
  */
 export const MAIN_COMPETITION_IDS: Map<string, number> = new Map([
@@ -56,7 +56,7 @@ export const MAIN_COMPETITION_IDS: Map<string, number> = new Map([
   ['yzrkn6i2rcjqle4', 8], // Netherlands Eredivisie
 ]);
 
-/** IDs de divisÃµes inferiores conhecidas (nunca entram em bilhetes). */
+/** IDs de divisões inferiores conhecidas (nunca entram em bilhetes). */
 export const LOWER_COMPETITION_IDS: Set<string> = new Set([
   '8vrqwnin9sjqn2o', // English Championship
   'w34kgmixet1ko92', // 2. Bundesliga
@@ -74,15 +74,15 @@ export const LOWER_COMPETITION_IDS: Set<string> = new Set([
   '8vrqwnioo5ujqn2', // Saudi Youth League
 ]);
 
-/** Penaliza feminino/base/obscuro â€” espelha _COMP_PENALTY_KEYS do bridge. */
+/** Penaliza feminino/base/obscuro — espelha _COMP_PENALTY_KEYS do bridge. */
 const LEAGUE_PENALTY = /femenin|feminin|women|\(w\)|mujeres|ladies|reserva|reserve|reserves|reservas|filial|filiais|u1\d|u2\d|juvenil|sub-?2\d|hong kong|mongol|nigeria|ghana|jamaica|gales|escocia|bielorru|burundi|panam|bhutan|nadeshiko|nepal|mizoram|goa|kerala|calcutt|tanzania|uganda|kenya|zambia/i;
 
-/** Liga obscura (feminino/base/exÃ³tica): excluÃ­da dos bilhetes. */
+/** Liga obscura (feminino/base/exótica): excluída dos bilhetes. */
 export function isObscureLeague(league?: string | null): boolean {
   return LEAGUE_PENALTY.test(league || '');
 }
 
-/** Ligas femininas â€” excluÃ­das dos bilhetes por completo. */
+/** Ligas femininas — excluídas dos bilhetes por completo. */
 const WOMENS_LEAGUE = /femenin|feminin|women|\(w\)|mujeres|ladies|woman|female/i;
 export function isWomensLeague(league?: string | null): boolean {
   return WOMENS_LEAGUE.test(league || '');
@@ -97,9 +97,9 @@ function normalizeLeague(league?: string | null): string {
 }
 
 /**
- * Segunda/terceira divisÃ£o (e ligas de acesso): NUNCA entram em bilhetes.
- * Cobre Serie B/C/D, Segunda DivisiÃ³n, 2. Bundesliga, Ligue 2, Championship,
- * LaLiga Hypermotion, Primera FederaciÃ³n, Liga 3, Regionalliga, etc.
+ * Segunda/terceira divisão (e ligas de acesso): NUNCA entram em bilhetes.
+ * Cobre Serie B/C/D, Segunda División, 2. Bundesliga, Ligue 2, Championship,
+ * LaLiga Hypermotion, Primera Federación, Liga 3, Regionalliga, etc.
  */
 const LOWER_DIVISION =
   /\bserie\s*[b-d]\b|\b(segunda|segundo|intermedia|reserva|reservas|reserve|reserves|filial|filiais)\b|\b(2|ii|2a)\s*\.?\s*(divis|division|divisao|divisione|liga|bundesliga|league)\b|\b(bundesliga|ligue|la ?liga|laliga|league|liga|divisie|division|divisao)\s*(2|ii|3|iii)\b|\b(championship|league one|league two|national league|regionalliga|oberliga|landesliga|verbandsliga|superettan|challenger pro league|eerste divisie|tweede divisie|keuken kampioen|hypermotion|campeonato de portugal|liga portugal 2|primera b|primera c|primera nacional|primera federacion|segunda federacion|tercera federacion|tercera division|tff 1\.\s*lig|1\.\s*lig|liga ii|liga 2|liga 3|division 2|division 3|divisao 2|divisao 3|divisie 2|divisie 3)\b|\bj[2-4]\b|\bliga de futbol japonesa\b|\b(conference|conferencia)\s*(north|south|norte|sur|inglesa|english)\b|\b(arabia saudita|saudi)\s*(division|first|second)\s*(1|2)?\b/;
@@ -109,9 +109,9 @@ export function isLowerDivisionLeague(league?: string | null): boolean {
 }
 
 /**
- * Liga principal para fins de bilhete: masculina, nÃ£o exÃ³tica e nÃ£o divisÃ£o inferior.
- * Com `competitionId` (AiScore), sÃ³ a whitelist oficial conta â€” Ã© o que impede
- * "Premier League egipcia/siria/iraquÃ­" e a "Premier League" do Catar.
+ * Liga principal para fins de bilhete: masculina, não exótica e não divisão inferior.
+ * Com `competitionId` (AiScore), só a whitelist oficial conta — é o que impede
+ * "Premier League egipcia/siria/iraquí" e a "Premier League" do Catar.
  */
 export function isMainLeague(league?: string | null, competitionId?: string | null): boolean {
   if (isWomensLeague(league) || isObscureLeague(league) || isLowerDivisionLeague(league)) {
@@ -123,8 +123,8 @@ export function isMainLeague(league?: string | null, competitionId?: string | nu
 }
 
 /**
- * Liga de fallback: nÃ£o Ã© principal, mas pode entrar nas fichas quando faltam
- * jogos das ligas whitelist. Continua a excluir feminino, obscuro e divisÃµes
+ * Liga de fallback: não é principal, mas pode entrar nas fichas quando faltam
+ * jogos das ligas whitelist. Continua a excluir feminino, obscuro e divisões
  * inferiores.
  */
 export function isFallbackLeague(
@@ -143,10 +143,10 @@ export function leaguePriorityRank(league?: string | null, competitionId?: strin
     const byId = MAIN_COMPETITION_IDS.get(cid);
     if (byId !== undefined) return byId;
     if (LOWER_COMPETITION_IDS.has(cid)) return 120;
-    // CompetiÃ§Ã£o desconhecida no feed: nÃ£o confiar no nome localizado.
+    // Competição desconhecida no feed: não confiar no nome localizado.
     return 99;
   }
-  // DivisÃµes inferiores ficam depois de qualquer liga principal/desconhecida.
+  // Divisões inferiores ficam depois de qualquer liga principal/desconhecida.
   if (isLowerDivisionLeague(s)) return 120;
   const idx = LEAGUE_PRIORITY.findIndex((l) => l.test.test(s) && !(l.exclude && l.exclude.test(s)));
   const rank = idx === -1 ? 99 : idx;
@@ -154,7 +154,7 @@ export function leaguePriorityRank(league?: string | null, competitionId?: strin
   return rank;
 }
 
-/** Assinatura estÃ¡vel das odds/mercados reais (reutilizaÃ§Ã£o da calibraÃ§Ã£o). */
+/** Assinatura estável das odds/mercados reais (reutilização da calibração). */
 export function oddsSignature(odds: MatchOdds): string {
   const rm = [...(odds.realMarkets || [])].sort().join(',');
   const combo = Object.entries(odds.comboOdds || {})
@@ -176,9 +176,9 @@ function impliedProb(odd: number): number {
 }
 
 export const MARKET_LABELS: Record<SimpleMarket, (ctx: { home: string; away: string }) => string> = {
-  home: ({ home }) => `VitÃ³ria ${home} (1)`,
+  home: ({ home }) => `Vitória ${home} (1)`,
   draw: () => 'Empate (X)',
-  away: ({ away }) => `VitÃ³ria ${away} (2)`,
+  away: ({ away }) => `Vitória ${away} (2)`,
   double_chance_1x: ({ home }) => `${home} ou Empate (1X)`,
   double_chance_x2: ({ away }) => `Empate ou ${away} (X2)`,
   double_chance_12: () => 'Qualquer equipa vence (12)',
@@ -187,8 +187,8 @@ export const MARKET_LABELS: Record<SimpleMarket, (ctx: { home: string; away: str
   over35: () => 'Mais de 3.5 golos (+3.5G)',
   under25: () => 'Menos de 2.5 golos (-2.5G)',
   under35: () => 'Menos de 3.5 golos (-3.5G)',
-  btts_yes: () => 'Ambas marcam â€” Sim (BTTS)',
-  btts_no: () => 'Ambas marcam â€” NÃ£o',
+  btts_yes: () => 'Ambas marcam — Sim (BTTS)',
+  btts_no: () => 'Ambas marcam — Não',
   dnb_home: ({ home }) => `Empate Anula: ${home}`,
   dnb_away: ({ away }) => `Empate Anula: ${away}`,
 };
@@ -205,7 +205,7 @@ export function labelForMarket(
 /**
  * Resultado de um mercado para um placar final. Usado tanto no match como
  * por perna de ficha (cada perna pode ter um tip diferente do match).
- * DNB com empate = push (conta como acerto para nÃ£o derrubar o bilhete).
+ * DNB com empate = push (conta como acerto para não derrubar o bilhete).
  */
 export function marketOutcomeFor(
   market: MarketType,
@@ -254,8 +254,8 @@ export function deriveCompleteOdds(odds: MatchOdds): Record<SimpleMarket, number
   const pOver35 = pOver25 * 0.60;
   const pUnder35 = pUnder25 * 1.30;
 
-  // PreÃ§o real fornecido (ex.: odds da Premier Bet injetadas para um mercado
-  // que o feed nÃ£o cobre) tem prioridade sobre o valor derivado.
+  // Preço real fornecido (ex.: odds da Premier Bet injetadas para um mercado
+  // que o feed não cobre) tem prioridade sobre o valor derivado.
   const realOr = (provided: number | undefined, derived: number, lo: number, hi: number): number => {
     if (Number.isFinite(provided) && (provided as number) > 1.01) {
       return Number((provided as number).toFixed(2));
@@ -298,8 +298,8 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
   const pBtts = impliedProb(odds.btts_yes);
 
   const candidates: { market: MarketType; prob: number; odds: number; reason: string }[] = [];
-  // SÃ³ mercados com odds reais entram na dica. Sem `realMarkets` (dados
-  // antigos) assume-se apenas 1X2: nunca usar um preÃ§o sem proveniÃªncia.
+  // Só mercados com odds reais entram na dica. Sem `realMarkets` (dados
+  // antigos) assume-se apenas 1X2: nunca usar um preço sem proveniência.
   const realMarkets = odds.realMarkets;
   const allows = (market: MarketType): boolean =>
     realMarkets
@@ -320,7 +320,7 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
       market: 'draw',
       prob: Math.round(pDraw),
       odds: odds.draw,
-      reason: `EquilÃ­brio no confronto direto favorece o empate.`,
+      reason: `Equilíbrio no confronto direto favorece o empate.`,
     });
   }
   if (allows('away')) {
@@ -332,7 +332,7 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
     });
   }
 
-  // Dupla Chance 1X (mercado derivado: sÃ³ quando nÃ£o hÃ¡ restriÃ§Ã£o de odds reais)
+  // Dupla Chance 1X (mercado derivado: só quando não há restrição de odds reais)
   if (allows('double_chance_1x')) {
     const p1X = pHome + pDraw * 0.55;
     const odds1X = Number(Math.max(1.10, Math.min(1.80, 1 / (p1X / 100) * 1.05)).toFixed(2));
@@ -352,7 +352,7 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
       market: 'double_chance_x2',
       prob: Math.min(85, Math.round(pX2)),
       odds: oddsX2,
-      reason: `Boa consistÃªncia de ${away} fora com seguranÃ§a em caso de empate.`,
+      reason: `Boa consistência de ${away} fora com segurança em caso de empate.`,
     });
   }
 
@@ -376,7 +376,7 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
       market: 'under35',
       prob: Math.min(85, Math.round(pUnder35)),
       odds: oddsUnder35,
-      reason: `Jogo de perfil tÃ¡tico com cobertura elÃ¡stica de menos de 3.5 golos.`,
+      reason: `Jogo de perfil tático com cobertura elástica de menos de 3.5 golos.`,
     });
   }
 
@@ -385,7 +385,7 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
       market: 'over25',
       prob: Math.min(85, Math.round(pOver)),
       odds: odds.over25,
-      reason: `Mercado de golos com preÃ§o real acima de 2.5.`,
+      reason: `Mercado de golos com preço real acima de 2.5.`,
     });
   }
 
@@ -394,22 +394,22 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
       market: 'under25',
       prob: Math.min(85, Math.round(pUnder)),
       odds: odds.under25,
-      reason: `Mercado de golos com preÃ§o real abaixo de 2.5.`,
+      reason: `Mercado de golos com preço real abaixo de 2.5.`,
     });
   }
 
-  // BTTS (sÃ³ com odd real)
+  // BTTS (só com odd real)
   if (allows('btts_yes') && pBtts > 48) {
     candidates.push({
       market: 'btts_yes',
       prob: Math.min(75, Math.round(pBtts)),
       odds: odds.btts_yes,
-      reason: `Ambas as equipas apresentam padrÃ£o ofensivo regular e odds competitivas.`,
+      reason: `Ambas as equipas apresentam padrão ofensivo regular e odds competitivas.`,
     });
   }
 
   if (candidates.length === 0) {
-    // Dados antigos sem realMarkets vÃ¡lidos: usa o favorito 1X2.
+    // Dados antigos sem realMarkets válidos: usa o favorito 1X2.
     candidates.push({
       market: 'home',
       prob: Math.round(pHome),
@@ -418,7 +418,7 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
     });
   }
 
-  // Ordena por maior pontuaÃ§Ã£o de seguranÃ§a
+  // Ordena por maior pontuação de segurança
   candidates.sort((a, b) => {
     const scoreA = a.prob * (a.odds >= 1.20 && a.odds <= 1.85 ? 1.2 : 0.9);
     const scoreB = b.prob * (b.odds >= 1.20 && b.odds <= 1.85 ? 1.2 : 0.9);
@@ -478,7 +478,7 @@ export class MarketService {
   private aiscoreLastSync = 0;
   private aiscoreLastDayKey = '';
   private aiscoreSyncDayKey = '';
-  /** Callbacks chamados quando o backfill +1..+8 termina (o scheduler repÃµe quotas). */
+  /** Callbacks chamados quando o backfill +1..+8 termina (o scheduler repõe quotas). */
   private backfillCallbacks: Array<() => void> = [];
   private readonly AISCORE_TTL_MS = 15 * 60 * 1000;
   private providerStatus: MarketProviderStatus = {
@@ -489,7 +489,7 @@ export class MarketService {
     lastUpdated: new Date().toISOString(),
     totalMatches: 0,
     activeLeagues: [],
-    message: 'A inicializar sincronizaÃ§Ã£o com API de dados desportivos reais...',
+    message: 'A inicializar sincronização com API de dados desportivos reais...',
   };
 
   constructor() {
@@ -503,15 +503,15 @@ export class MarketService {
         const data: PersistedCache = JSON.parse(raw);
         if (data && Array.isArray(data.matches)) {
           const now = Date.now();
-          // SÃ³ restaura partidas futuras da API real (Odds API ou AiScore).
+          // Só restaura partidas futuras da API real (Odds API ou AiScore).
           const validMatches = data.matches.filter(
             (m) =>
               (m.sourceProvider === 'the-odds-api' || m.sourceProvider === 'aiscore') &&
               m.kickoffAt > now - 2 * 60 * 60 * 1000
           );
           if (validMatches.length > 0) {
-            // Frescura pelo mtime do ficheiro: o lastFetchTime sÃ³ Ã© atualizado
-            // pelo caminho da The Odds API, mas o cache tambÃ©m guarda AiScore.
+            // Frescura pelo mtime do ficheiro: o lastFetchTime só é atualizado
+            // pelo caminho da The Odds API, mas o cache também guarda AiScore.
             const ageMs = now - fs.statSync(CACHE_FILE_PATH).mtimeMs;
             if (ageMs < 6 * 60 * 60 * 1000) {
               this.matches = validMatches;
@@ -523,7 +523,7 @@ export class MarketService {
               const calibrated = validMatches.filter((m) => m.calibration).length;
               console.log(
                 `[MarketService] Cache restaurado: ${this.matches.length} jogos` +
-                  (calibrated > 0 ? ` (${calibrated} com calibraÃ§Ã£o persistida)` : '') +
+                  (calibrated > 0 ? ` (${calibrated} com calibração persistida)` : '') +
                   '.'
               );
             }
@@ -537,8 +537,8 @@ export class MarketService {
 
   private saveDiskCache(): void {
     try {
-      // Guarda tambÃ©m o horizonte do AiScore: sem isto, cada restart comeÃ§ava
-      // com ~80 jogos e o longo prazo ficava vazio atÃ© o backfill terminar.
+      // Guarda também o horizonte do AiScore: sem isto, cada restart começava
+      // com ~80 jogos e o longo prazo ficava vazio até o backfill terminar.
       const realMatchesOnly = this.matches.filter(
         (m) => m.sourceProvider === 'the-odds-api' || m.sourceProvider === 'aiscore'
       );
@@ -555,7 +555,7 @@ export class MarketService {
     }
   }
 
-  /** Grava o cache (jogos + calibraÃ§Ã£o) com um intervalo mÃ­nimo entre writes. */
+  /** Grava o cache (jogos + calibração) com um intervalo mínimo entre writes. */
   public saveCacheSoon(minGapMs = 5 * 60 * 1000): void {
     if (Date.now() - this.lastCacheSaveAt < minGapMs) return;
     this.saveDiskCache();
@@ -569,13 +569,13 @@ export class MarketService {
     let providerName = 'The Odds API (Dados Reais ao Vivo)';
     let isExternalApi = true;
     let apiKeyConfigured = Boolean(oddsKey && oddsKey.length > 5);
-    let message = 'SincronizaÃ§Ã£o 100% em tempo real com dados de mercado reais.';
+    let message = 'Sincronização 100% em tempo real com dados de mercado reais.';
 
     if (oddsKey && oddsKey !== 'sua_chave_the_odds_api_aqui' && oddsKey.length > 5) {
       const remaining = this.providerStatus.rateLimitInfo?.requestsRemaining;
       message = remaining !== undefined
-        ? `API Real ativa (Quota restante: ${remaining} requisiÃ§Ãµes). Dados 100% oficiais de mercado.`
-        : 'Chave ODDS_API_KEY ativa no servidor. Apenas dados reais da API sÃ£o exibidos.';
+        ? `API Real ativa (Quota restante: ${remaining} requisições). Dados 100% oficiais de mercado.`
+        : 'Chave ODDS_API_KEY ativa no servidor. Apenas dados reais da API são exibidos.';
     } else if (fbKey && fbKey.length > 5) {
       provider = 'football-data';
       providerName = 'Football-Data.org';
@@ -638,7 +638,7 @@ export class MarketService {
       }
     }
 
-    // Complementa / substitui com AiScore quando nÃ£o hÃ¡ jogos "hoje" (ou sem chave Odds)
+    // Complementa / substitui com AiScore quando não há jogos "hoje" (ou sem chave Odds)
     const todayKey = getDayKey();
     const dayChanged = this.aiscoreLastDayKey !== todayKey;
     const hasToday = this.matches.some(
@@ -658,7 +658,7 @@ export class MarketService {
       m.kickoffInSeconds = Math.max(30, Math.round((m.kickoffAt - refreshedNow) / 1000));
     }
 
-    // Retorna estritamente as partidas com kickoff futuro ou partidas recÃ©m-resolvidas
+    // Retorna estritamente as partidas com kickoff futuro ou partidas recém-resolvidas
     const validMatches = this.matches.filter(
       (m) => m.status === 'resolved' || m.kickoffAt > refreshedNow - 2 * 60 * 60 * 1000
     );
@@ -678,9 +678,9 @@ export class MarketService {
 
   /**
    * Puxa o day card do AiScore (jogos do dia + 1X2) e funde no mercado.
-   * Dia 0 Ã© aguardado (resposta rÃ¡pida); dias 1..7 seguem em background para
-   * alimentar os escopos 2_3_dias/longo â€” com as ligas principais na frente.
-   * Evita duplicar jogos jÃ¡ vindos do The Odds API (match por home/away/data).
+   * Dia 0 é aguardado (resposta rápida); dias 1..7 seguem em background para
+   * alimentar os escopos 2_3_dias/longo — com as ligas principais na frente.
+   * Evita duplicar jogos já vindos do The Odds API (match por home/away/data).
    */
   private async syncFromAiscore(force = false): Promise<void> {
     const dayKey = getDayKey();
@@ -707,9 +707,9 @@ export class MarketService {
         }
 
         // Dia 0: aguardado, com odds reais 1X2 para os primeiros priorizados.
-        // Como jÃ¡ nÃ£o usamos odds sintÃ©ticas, precisamos de mais jogos reais.
-        // A prioridade do bridge inclui Conference, J1, SÃ¼per Lig, Saudi Pro
-        // League, SuperLiga sÃ©rvia e Eredivisie, para que estas ligas nÃ£o sejam
+        // Como já não usamos odds sintéticas, precisamos de mais jogos reais.
+        // A prioridade do bridge inclui Conference, J1, Süper Lig, Saudi Pro
+        // League, SuperLiga sérvia e Eredivisie, para que estas ligas não sejam
         // cortadas pelo odds_limit.
         await this.syncAiscoreDay(0, { limit: 200, oddsLimit: 30 });
         this.aiscoreLastSync = Date.now();
@@ -721,7 +721,7 @@ export class MarketService {
 
         // Dias 1..8 (~1 semana+): background sequencial. Sem odds do AiScore
         // (nos dias futuros quase nunca existem): as odds reais entram depois
-        // na geraÃ§Ã£o, via Premier Bet. Assim cada dia leva segundos e nÃ£o
+        // na geração, via Premier Bet. Assim cada dia leva segundos e não
         // estoura o timeout de 120s do bridge.
         void (async () => {
           for (let d = 1; d <= 8; d++) {
@@ -731,9 +731,9 @@ export class MarketService {
               console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
             }
           }
-          console.log('[MarketService] AiScore multi-dia (+1..+8) concluÃ­do.');
+          console.log('[MarketService] AiScore multi-dia (+1..+8) concluído.');
           this.saveDiskCache();
-          // Avisa o agendador para repor as quotas agora que hÃ¡ jogos futuros.
+          // Avisa o agendador para repor as quotas agora que há jogos futuros.
           this.backfillCallbacks.forEach((cb) => {
             try {
               cb();
@@ -800,15 +800,15 @@ export class MarketService {
         timeZone: timezone,
       });
 
-      // Chave inclui data+liga (formato dia, nÃ£o ms exato): mesmo confronto
-      // em dias diferentes nÃ£o colide; OddsAPI vs AiScore fundem no dia.
+      // Chave inclui data+liga (formato dia, não ms exato): mesmo confronto
+      // em dias diferentes não colide; OddsAPI vs AiScore fundem no dia.
       const dedupeKey = `${home.toLowerCase()}||${away.toLowerCase()}||${dateStr}||${league.toLowerCase()}`;
 
       // O jogo entra SEMPRE no horizonte (mesmo sem odd no feed). Os
-      // placeholders NUNCA sÃ£o marcados como reais (`realMarkets` fica
-      // vazio) â€” as odds reais sÃ£o anexadas depois, na geraÃ§Ã£o, via
+      // placeholders NUNCA são marcados como reais (`realMarkets` fica
+      // vazio) — as odds reais são anexadas depois, na geração, via
       // Premier Bet. Antes, descartar jogos sem odds era o que deixava o
-      // horizonte longo sem mercado (os dias futuros quase nÃ£o tÃªm odds).
+      // horizonte longo sem mercado (os dias futuros quase não têm odds).
       const real = meta.odds;
       const validReal = Boolean(
         real &&
@@ -834,7 +834,7 @@ export class MarketService {
             realMarkets: ['home', 'draw', 'away'],
           }
         : {
-            // Placeholders neutros; realMarkets vazio = sem preÃ§o real.
+            // Placeholders neutros; realMarkets vazio = sem preço real.
             home: 2.60,
             draw: 3.30,
             away: 2.90,
@@ -918,7 +918,7 @@ export class MarketService {
       this.matches = [...this.matches, ...added];
     }
     console.log(
-      `[MarketService] AiScore day_card ${ymd}: ${cardCount} no cartÃ£o, +${added.length} novos, ${updated} atualizados.`
+      `[MarketService] AiScore day_card ${ymd}: ${cardCount} no cartão, +${added.length} novos, ${updated} atualizados.`
     );
     this.updateProviderStatusAfterAiscore(card.oddsCount, added.length);
     return added.length;
@@ -1059,7 +1059,7 @@ export class MarketService {
       soccer_italy_serie_a: 'Serie A',
       soccer_germany_bundesliga: 'Bundesliga',
       soccer_france_ligue_one: 'Ligue 1',
-      soccer_brazil_campeonato: 'BrasileirÃ£o',
+      soccer_brazil_campeonato: 'Brasileirão',
       soccer_uefa_champs_league: 'Champions League',
       soccer_uefa_europa_league: 'Europa League',
       soccer_portugal_primeira_liga: 'Liga Portugal',
@@ -1067,8 +1067,8 @@ export class MarketService {
 
     for (const sport of sports) {
       try {
-        // Janela explÃ­cita de 8 dias: sem commenceTimeTo a The Odds API sÃ³
-        // devolve os prÃ³ximos dias e o longo prazo ficava sem jogos.
+        // Janela explícita de 8 dias: sem commenceTimeTo a The Odds API só
+        // devolve os próximos dias e o longo prazo ficava sem jogos.
         const fromIso = new Date(now - 60 * 60 * 1000).toISOString();
         const toIso = new Date(now + 8 * 24 * 60 * 60 * 1000).toISOString();
         const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${apiKey}&regions=${regions}&markets=${markets}&oddsFormat=decimal&dateFormat=iso&commenceTimeFrom=${encodeURIComponent(fromIso)}&commenceTimeTo=${encodeURIComponent(toIso)}`;
@@ -1157,8 +1157,8 @@ export class MarketService {
     }
 
     if (newMatches.length > 0) {
-      // Merge (nÃ£o overwrite): preserva jogos AiScore e pernas de slips pendentes.
-      // Nunca rebaixa estado: live/resolved existente vence pending recÃ©m-chegado.
+      // Merge (não overwrite): preserva jogos AiScore e pernas de slips pendentes.
+      // Nunca rebaixa estado: live/resolved existente vence pending recém-chegado.
       const matchMap = new Map<string, MatchItem>();
       for (const m of this.matches) {
         matchMap.set(m.id, m);
@@ -1177,10 +1177,97 @@ export class MarketService {
     return this.matches.find((m) => m.id === id);
   }
 
+  /**
+   * Aplica as avaliações do motor local aos jogos do mercado e devolve o mapa
+   * dos jogos atualizados. Centraliza a calibração que antes vivia no
+   * ticketEngine.
+   */
+  public updateCalibrations(
+    evaluations: readonly import('./aiscoreEngine.js').LocalEvaluatedMatch[],
+    latencyMs: number,
+    modelVersion: string
+  ): Map<string, MatchItem> {
+    const byId = new Map(evaluations.map((ev) => [ev.matchId, ev]));
+    const updated = new Map<string, MatchItem>();
+    for (const m of this.matches) {
+      const ev = byId.get(m.id);
+      if (!ev) continue;
+      m.jevInference = {
+        calibratedProb: ev.calibratedProb,
+        expectedValueEdge: ev.expectedValueEdge,
+        recommendedMarket: ev.recommendedMarket,
+        riskTier: ev.riskTier,
+        latencyMs,
+        jevModelVersion: modelVersion,
+      };
+      m.tip = {
+        market: ev.recommendedMarket,
+        label: ev.marketLabel,
+        odds: ev.selectedOdds,
+        prob: ev.calibratedProb,
+      };
+      m.highRiskTip = ev.highRiskTip;
+      m.modelBasis = ev.modelBasis;
+      m.priced = ev.priced;
+      m.forcedApplied = ev.forcedApplied;
+      m.calibration = {
+        tips: ev.tips,
+        recommendedMarket: ev.recommendedMarket,
+        marketLabel: ev.marketLabel,
+        calibratedProb: ev.calibratedProb,
+        expectedValueEdge: ev.expectedValueEdge,
+        highRiskTip: ev.highRiskTip,
+        oddsHash: oddsSignature(m.odds),
+        at: Date.now(),
+      };
+      m.tips = ev.tips;
+      updated.set(m.id, m);
+    }
+    return updated;
+  }
+
+  /**
+   * Anexa odds reais a um jogo do mercado (1X2/mercados simples e compostas)
+   * e invalida a calibração antiga. Devolve quantas odds foram aplicadas.
+   */
+  public applyRealOdds(
+    matchId: string,
+    odds: Record<string, number | null | undefined>
+  ): number {
+    const m = this.getMatchById(matchId);
+    if (!m) return 0;
+    const real = new Set<MarketType>(m.odds.realMarkets || []);
+    let applied = 0;
+    let changed = false;
+    for (const [market, raw] of Object.entries(odds)) {
+      if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 1.01) continue;
+      const value = Number(raw.toFixed(2));
+      if (!real.has(market as MarketType)) changed = true;
+      if (isCompostaMarket(market)) {
+        const prev = m.odds.comboOdds?.[market];
+        if (prev !== value) changed = true;
+        m.odds.comboOdds = {
+          ...(m.odds.comboOdds || {}),
+          [market]: value,
+        };
+      } else {
+        if ((m.odds as any)[market] !== value) changed = true;
+        (m.odds as any)[market] = value;
+      }
+      real.add(market as MarketType);
+      applied += 1;
+    }
+    if (applied > 0) {
+      m.odds.realMarkets = Array.from(real);
+      if (changed) m.calibration = undefined;
+    }
+    return applied;
+  }
+
   /** Cache matchId interno -> aiscore match_id (evita re-resolve por nomes). */
   private aiscoreIdCache = new Map<string, string>();
 
-  /** Falhas de resoluÃ§Ã£o (evita head-of-line blocking no tick). */
+  /** Falhas de resolução (evita head-of-line blocking no tick). */
   private resolveFails = new Map<string, { n: number; at: number }>();
 
   /** Normaliza nomes de equipas para o fallback por nome. */
@@ -1194,11 +1281,11 @@ export class MarketService {
   }
 
   /**
-   * Resolve em MASSA com UMA chamada ao day card (matches?date=), que jÃ¡ traz
-   * statusId + placares empacotados. SÃ³ aplica jogos terminados.
+   * Resolve em MASSA com UMA chamada ao day card (matches?date=), que já traz
+   * statusId + placares empacotados. Só aplica jogos terminados.
    *
-   * `allowIds` permite criar a partida em memÃ³ria quando ela ainda nÃ£o estÃ¡ na
-   * lista mas Ã© perna de uma ficha pendente (ex.: servidor reiniciou depois do
+   * `allowIds` permite criar a partida em memória quando ela ainda não está na
+   * lista mas é perna de uma ficha pendente (ex.: servidor reiniciou depois do
    * jogo ter terminado).
    */
   public async resolveFromDayResults(
@@ -1259,7 +1346,7 @@ export class MarketService {
     return resolved;
   }
 
-  /** Cria um MatchItem mÃ­nimo (sem odds reais) a partir do day card. */
+  /** Cria um MatchItem mínimo (sem odds reais) a partir do day card. */
   private placeholderFromMeta(
     meta: Awaited<ReturnType<typeof aiscoreClient.getMatchesForDate>>[number],
     kickoffAt: number
@@ -1313,14 +1400,14 @@ export class MarketService {
         return meta.match_id;
       }
     } catch {
-      /* sem id real -> sem resoluÃ§Ã£o (nunca inventar) */
+      /* sem id real -> sem resolução (nunca inventar) */
     }
     return null;
   }
 
   /**
-   * Aplica um placar REAL (FT) a uma partida. Puro e sÃ­ncrono.
-   * Ã‰ a ÃšNICA via de resoluÃ§Ã£o â€” nada aqui gera resultado aleatÃ³rio.
+   * Aplica um placar REAL (FT) a uma partida. Puro e síncrono.
+   * É a ÚNICA via de resolução — nada aqui gera resultado aleatório.
    */
   public applyRealResult(id: string, ftHome: number, ftAway: number): MatchItem | null {
     const match = this.matches.find((m) => m.id === id);
@@ -1339,7 +1426,7 @@ export class MarketService {
     const outcomeBtts = homeScore > 0 && awayScore > 0 ? 'btts_yes' : 'btts_no';
 
     // Empate no DNB = push (reembolso). Sem modelo de void no BetSlip, a perna
-    // conta como acerto para nÃ£o derrubar injustamente o bilhete inteiro.
+    // conta como acerto para não derrubar injustamente o bilhete inteiro.
     const tipOutcome = marketOutcomeFor(
       match.tip.market,
       homeScore,
@@ -1363,9 +1450,9 @@ export class MarketService {
 
   /**
    * Tenta resolver UMA partida com o placar real do AiScore (match/data).
-   * - Jogo terminado (statusId 8) com FT vÃ¡lido -> resolved.
-   * - Jogo jÃ¡ iniciado mas sem FT -> marca 'live'.
-   * - Sem dados reais -> nÃ£o toca (retorna null). Nunca inventa placar.
+   * - Jogo terminado (statusId 8) com FT válido -> resolved.
+   * - Jogo já iniciado mas sem FT -> marca 'live'.
+   * - Sem dados reais -> não toca (retorna null). Nunca inventa placar.
    */
   public async resolveMatchLive(id: string): Promise<MatchItem | null> {
     const match = this.matches.find((m) => m.id === id);
@@ -1387,9 +1474,9 @@ export class MarketService {
   }
 
   /**
-   * Varredura periÃ³dica: resolve com placar real apenas jogos terminados.
+   * Varredura periódica: resolve com placar real apenas jogos terminados.
    * Limitado a N partidas por tick (cada consulta ~1.7s de throttle).
-   * Partidas que falham 3x seguidas sÃ£o puladas por 30min (sem head-of-line).
+   * Partidas que falham 3x seguidas são puladas por 30min (sem head-of-line).
    */
   public async resolveDueMatches(
     maxPerTick = 8,
@@ -1403,8 +1490,8 @@ export class MarketService {
       if (fail && fail.n >= 3 && now - fail.at < 30 * 60 * 1000) return false;
       return true;
     });
-    // Pernas de fichas pendentes primeiro; depois os terminados hÃ¡ mais tempo
-    // (bilhetes expiram mais rÃ¡pido).
+    // Pernas de fichas pendentes primeiro; depois os terminados há mais tempo
+    // (bilhetes expiram mais rápido).
     due.sort((a, b) => {
       const pa = priorityIds?.has(a.id) ? 0 : 1;
       const pb = priorityIds?.has(b.id) ? 0 : 1;
@@ -1428,12 +1515,12 @@ export class MarketService {
   }
 
   /**
-   * @deprecated SimulaÃ§Ã£o manual â€” sÃ³ ativa com ALLOW_SIMULATION=true (dev).
-   * Em produÃ§Ã£o retorna null e nunca resolve nada.
+   * @deprecated Simulação manual — só ativa com ALLOW_SIMULATION=true (dev).
+   * Em produção retorna null e nunca resolve nada.
    */
   public resolveMatch(id?: string): MatchItem | null {
     if (process.env.ALLOW_SIMULATION !== 'true') {
-      console.warn('[MarketService] resolveMatch manual bloqueado em produÃ§Ã£o (ALLOW_SIMULATION!=true).');
+      console.warn('[MarketService] resolveMatch manual bloqueado em produção (ALLOW_SIMULATION!=true).');
       return null;
     }
     let match: MatchItem | undefined;
@@ -1443,15 +1530,15 @@ export class MarketService {
       match = this.matches.find((m) => m.status === 'pending');
     }
     if (!match || match.status === 'resolved') return match || null;
-    // Modo dev: placar sintÃ©tico apenas para testes locais.
+    // Modo dev: placar sintético apenas para testes locais.
     const homeScore = 2;
     const awayScore = 1;
     return this.applyRealResult(match.id, homeScore, awayScore);
   }
 
   /**
-   * @deprecated Use resolveDueMatches() (assÃ­ncrono, placar real).
-   * Mantido para compat: sÃ³ marca 'live' jogos iniciados, nunca resolve.
+   * @deprecated Use resolveDueMatches() (assíncrono, placar real).
+   * Mantido para compat: só marca 'live' jogos iniciados, nunca resolve.
    */
   public resolveAllOverdue(): MatchItem[] {
     const now = Date.now();

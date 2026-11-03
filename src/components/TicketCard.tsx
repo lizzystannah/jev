@@ -46,6 +46,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
   const isWon = slip.status === 'ganhou';
   const isLost = slip.status === 'perdeu';
   const isExpired = slip.status === 'expirado';
+  const isAnnulled = slip.status === 'anulada';
   const isPending = slip.status === 'pendente';
   const isJevSlip = (slip.engine ?? 'local') === 'jev';
   const isManualSlip = slip.engine === 'manual';
@@ -59,7 +60,9 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
 
   const totalLegs = slip.legs.length;
   const resolvedLegs = slip.legs.filter((l) => l.status === 'resolved');
-  const wonLegs = slip.legs.filter((l) => l.status === 'resolved' && l.result?.tipWon);
+  const wonLegs = slip.legs.filter(
+    (l) => l.status === 'resolved' && l.result?.tipWon && !l.result.pushed
+  );
   const resolvedCount = resolvedLegs.length;
 
   // Status dinâmico baseado exclusivamente na realização dos jogos
@@ -76,6 +79,13 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
         text: `Bilhete Finalizado (${wonLegs.length}/${totalLegs} acertos)`,
         bg: 'bg-[rgba(209,89,75,0.15)] text-[#D1594B] border-[rgba(209,89,75,0.3)]',
         icon: <XCircle className="w-3.5 h-3.5 text-[#D1594B]" />,
+      };
+    }
+    if (isAnnulled) {
+      return {
+        text: `Anulada / stake devolvida (${wonLegs.length}/${totalLegs} acertos)`,
+        bg: 'bg-[rgba(56,189,248,0.12)] text-[#38BDF8] border-[rgba(56,189,248,0.3)]',
+        icon: <Hourglass className="w-3.5 h-3.5 text-[#38BDF8]" />,
       };
     }
     if (isExpired) {
@@ -303,7 +313,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({ slip, timezone = 'Africa
             Odd combinada
           </div>
           <div className="font-display text-3xl font-bold leading-none text-[#F5F3EC] mt-0.5">
-            {slip.combinedOdds.toFixed(2)}
+            {(slip.effectiveOdds ?? slip.combinedOdds).toFixed(2)}
           </div>
         </div>
 

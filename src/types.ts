@@ -9,7 +9,7 @@
   under35?: number;
   btts_yes: number;
   btts_no: number;
-  /** Mercados com odds reais; os restantes sÃ£o apenas estimativas. */
+  /** Mercados com odds reais; os restantes são apenas estimativas. */
   realMarkets?: MarketType[];
   double_chance_1x?: number;
   double_chance_x2?: number;
@@ -69,9 +69,11 @@ export type MarketType = SimpleMarket | CompostaMarket;
 export interface MatchTip {
   market: string;
   label: string;
-  /** `null` quando o mercado nÃ£o tem odd real disponÃ­vel. */
+  /** `null` quando o mercado não tem odd real disponível. */
   odds: number | null;
   prob: number;
+  /** Probabilidade em 0–1 (aditivo; `prob` continua inteiro 0–100). */
+  p?: number;
 }
 
 export interface TipMarket {
@@ -79,7 +81,7 @@ export interface TipMarket {
   label: string;
 }
 
-/** SeleÃ§Ã£o guardada no carrinho para montar uma ficha manual. */
+/** Seleção guardada no carrinho para montar uma ficha manual. */
 export interface CartLeg {
   matchId: string;
   market: string;
@@ -98,6 +100,8 @@ export interface MatchResult {
   outcomeOU: 'over25' | 'under25';
   outcomeBtts: 'btts_yes' | 'btts_no';
   tipWon: boolean;
+  /** true quando a perna foi reembolsada (push/void); conta como neutra. */
+  pushed?: boolean;
 }
 
 export interface TeamH2H {
@@ -157,6 +161,12 @@ export interface MatchItem {
     /** Confiança da escolha do JEV (0-100), quando a tip veio do JEV. */
     jevConfidence?: number;
   };
+  /** Base do modelo: 'market' = sem scout (p veio só das odds). */
+  modelBasis?: 'model' | 'market' | 'none';
+  /** false quando não há odd real acima do piso para a tip escolhida. */
+  priced?: boolean;
+  /** true quando o mercado forçado foi realmente aplicado. */
+  forcedApplied?: boolean;
   status: 'pending' | 'live' | 'resolved';
   result: MatchResult | null;
   sourceProvider?: string;
@@ -164,7 +174,7 @@ export interface MatchItem {
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo' | 'historico';
 export type SlipTier = 'segura' | 'moderada' | 'ousada' | 'maluca' | 'compostas';
-/** Motor que criou a ficha. `local` Ã© o motor principal. */
+/** Motor que criou a ficha. `local` é o motor principal. */
 export type BetEngine = 'local' | 'manual' | 'jev' | 'progression';
 
 export type ProgressionMode = 'fixo' | 'total' | 'metade' | 'soros';
@@ -230,7 +240,7 @@ export interface JevStatus {
   endpoint: string;
 }
 
-/** Estado da Ãºltima tentativa de subir a ficha para a Premier Bet. */
+/** Estado da última tentativa de subir a ficha para a Premier Bet. */
 export type SlipUploadStatus = 'in_progress' | 'placed' | 'dry_run' | 'failed' | 'unknown';
 
 export interface SlipUpload {
@@ -240,7 +250,7 @@ export interface SlipUpload {
   stake: number;
   betId?: string;
   message?: string;
-  /** Timestamp (ms) da Ãºltima tentativa. */
+  /** Timestamp (ms) da última tentativa. */
   at: number;
 }
 
@@ -279,21 +289,23 @@ export interface BetSlip {
   legs: MatchItem[];
   combinedOdds: number;
   combinedProb: number;
-  expiresAt: number; // timestamp do 1Âº jogo a iniciar
-  status: 'pendente' | 'ganhou' | 'perdeu' | 'expirado';
+  /** Odd efetiva depois de excluir pernas void (pode diferir de combinedOdds). */
+  effectiveOdds?: number;
+  expiresAt: number; // timestamp do 1º jogo a iniciar
+  status: 'pendente' | 'ganhou' | 'perdeu' | 'expirado' | 'anulada';
   createdAt: number;
   resolvedAt: number | null;
   customTitle?: string;
   rationale?: string;
   isAiGenerated?: boolean;
-  /** Data-calendÃ¡rio de Angola (YYYY-MM-DD) em que a ficha foi criada. */
+  /** Data-calendário de Angola (YYYY-MM-DD) em que a ficha foi criada. */
   dayKey?: string;
-  /** Motor que criou a ficha (`local` quando o backend nÃ£o envia o campo). */
+  /** Motor que criou a ficha (`local` quando o backend não envia o campo). */
   engine?: BetEngine;
   /** Progressão que criou esta ficha (quando engine === 'progression'). */
   progressionId?: string;
   progressionLevel?: number;
-  /** Preenchido pela API: Ãºltima tentativa de subir para a Premier Bet. */
+  /** Preenchido pela API: última tentativa de subir para a Premier Bet. */
   upload?: SlipUpload | null;
 }
 
@@ -336,8 +348,12 @@ export interface MarketProviderStatus {
 
 export interface JevMetrics {
   totalInferences: number;
-  avgCalibratedProb: number;
-  avgEdgeEV: number;
+  marketOnlyInferences: number;
+  noDataInferences?: number;
+  modelInferences?: number;
+  nanFallbacks?: number;
+  avgCalibratedProb: number | null;
+  avgEdgeEV: number | null;
   activeTierBreakdown: {
     segura: number;
     moderada: number;
@@ -346,7 +362,7 @@ export interface JevMetrics {
     compostas: number;
   };
   topMarkets: Array<{ market: string; count: number; percentage: number }>;
-  lastInferenceAt: string;
+  lastInferenceAt: string | null;
 }
 
 export interface JevEngineStatus {

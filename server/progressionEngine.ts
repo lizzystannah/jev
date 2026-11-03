@@ -307,8 +307,18 @@ class ProgressionEngine {
     if (upload.betId) run.betId = upload.betId;
     run.resolvedAt = slip.resolvedAt ?? Date.now();
 
-    if (slip.status === 'ganhou') {
-      const profit = round2(run.stake * (run.odds - 1));
+    if (slip.status === 'anulada') {
+      // Perna(s) void: stake devolvida. Não conta como perda nem como ganho.
+      run.status = 'expirado';
+      run.profit = 0;
+      progression.lastProfit = 0;
+      this.resetCycle(progression);
+      console.log(
+        `[Progressões] ${progression.id} N${run.level}: ANULADA (stake devolvida). Ciclo reiniciado.`
+      );
+    } else if (slip.status === 'ganhou') {
+      const effectiveOdds = slip.effectiveOdds ?? run.odds;
+      const profit = round2(run.stake * (effectiveOdds - 1));
       run.status = 'ganhou';
       run.profit = profit;
       progression.lastProfit = profit;

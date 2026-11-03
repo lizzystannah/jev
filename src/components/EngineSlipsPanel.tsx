@@ -35,25 +35,25 @@ const historyFilterLabel: Record<HistoryFilter, string> = {
   andamento: 'Em andamento',
   ganhas: 'Ganhas',
   perdidas: 'Perdidas',
-  vencidas: 'Vencidas',
+  vencidas: 'Vencidas/Anuladas',
 };
 
 const historyEmpty: Record<HistoryFilter, { title: string; hint: string }> = {
   andamento: {
     title: 'Nenhuma ficha em andamento.',
-    hint: 'As fichas pendentes deste motor aparecem aqui atÃ© serem resolvidas.',
+    hint: 'As fichas pendentes deste motor aparecem aqui até serem resolvidas.',
   },
   ganhas: {
-    title: 'Ainda nÃ£o hÃ¡ fichas ganhas.',
+    title: 'Ainda não há fichas ganhas.',
     hint: 'Quando todas as pernas acertarem, a ficha passa para esta vista.',
   },
   perdidas: {
-    title: 'Ainda nÃ£o hÃ¡ fichas perdidas.',
+    title: 'Ainda não há fichas perdidas.',
     hint: 'Uma ficha cai para aqui quando a primeira perna falha.',
   },
   vencidas: {
-    title: 'Ainda nÃ£o hÃ¡ fichas vencidas.',
-    hint: 'Fichas sem resoluÃ§Ã£o dentro do prazo ficam aqui.',
+    title: 'Ainda não há fichas vencidas.',
+    hint: 'Fichas sem resolução dentro do prazo ficam aqui.',
   },
 };
 
@@ -195,7 +195,7 @@ export const EngineSlipsPanel: React.FC<EngineSlipsPanelProps> = ({
         <h3 className="font-display text-xl font-semibold text-[#F5F3EC] mb-3">
           {historyTitle}
         </h3>
-        <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filtrar histÃ³rico do motor">
+        <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filtrar histórico do motor">
           {(['andamento', 'ganhas', 'perdidas', 'vencidas'] as HistoryFilter[]).map((filter) => {
             const active = historyFilter === filter;
             return (

@@ -12,9 +12,10 @@ import {
   isMainLeague,
   isFallbackLeague,
   oddsSignature,
-  marketOutcomeFor,
   getCalendarDayDiff,
 } from './marketService.js';
+import { recomputeLegResult, settleSlip } from './slipSettlement.js';
+import { generationMutex } from './mutex.js';
 import {
   callLocalInferenceEngine,
   type LocalDecisionInput,
@@ -24,6 +25,64 @@ import { aiscoreClient } from './aiscoreService.js';
 import { resolvePremierBetOdds } from './premierbetOdds.js';
 import { bilheteriaDb } from './db.js';
 import { getDayKey } from './time.js';
+import {
+  CFG,
+  COMPOSTA_MAX_LEG_ODD,
+  COMPOSTA_MAX_LEGS,
+  COMPOSTA_MIN_LEG_ODD,
+  COMPOSTA_MIN_LEGS,
+  COMPOSTA_MIN_TIP_PROB,
+  COMPOSTA_TARGET_MAX,
+  COMPOSTA_TARGET_MIN,
+  EXPIRY_GRACE_HOURS,
+  LONGO_MAX_LEGS,
+  LONGO_MIN_LEGS,
+  LONGO_MIN_PROB,
+  MALUCA_IDEAL_LEG_ODD,
+  MALUCA_MAX_LEG_ODD,
+  MALUCA_MIN_LEG_ODD,
+  MALUCA_MIN_PROB,
+  MANUAL_MAX_LEGS,
+  MANUAL_MIN_LEG_ODD,
+  MAX_LEG_ODD,
+  MAX_REUSED_LEGS,
+  MAX_SLIPS_PER_MATCH,
+  MIN_LEG_ODD,
+  NON_MALUCA_MIN_PROB,
+  SCOPE_MAX_PENDING,
+  SCOPE_QUOTAS,
+  TICKET_TARGETS,
+  TIERS_CONFIG,
+} from './config.js';
+
+export {
+  COMPOSTA_MAX_LEG_ODD,
+  COMPOSTA_MAX_LEGS,
+  COMPOSTA_MIN_LEG_ODD,
+  COMPOSTA_MIN_LEGS,
+  COMPOSTA_MIN_TIP_PROB,
+  COMPOSTA_TARGET_MAX,
+  COMPOSTA_TARGET_MIN,
+  EXPIRY_GRACE_HOURS,
+  LONGO_MAX_LEGS,
+  LONGO_MIN_LEGS,
+  LONGO_MIN_PROB,
+  MALUCA_IDEAL_LEG_ODD,
+  MALUCA_MAX_LEG_ODD,
+  MALUCA_MIN_LEG_ODD,
+  MALUCA_MIN_PROB,
+  MANUAL_MAX_LEGS,
+  MANUAL_MIN_LEG_ODD,
+  MAX_LEG_ODD,
+  MAX_REUSED_LEGS,
+  MAX_SLIPS_PER_MATCH,
+  MIN_LEG_ODD,
+  NON_MALUCA_MIN_PROB,
+  SCOPE_MAX_PENDING,
+  SCOPE_QUOTAS,
+  TICKET_TARGETS,
+  TIERS_CONFIG,
+};
 
 /**
  * Peso por liga (jefe prioriza as principais):
@@ -31,17 +90,6 @@ import { getDayKey } from './time.js';
  * Serie A/Bundesliga 1.10 > Ligue 1 1.08 > outras top 1.05 > resto 1.0
  */
 const LEAGUE_WEIGHTS = [1.30, 1.22, 1.18, 1.15, 1.10, 1.10, 1.08, 1.05];
-
-/** Faixa de odds por perna das tips compostas (mesmo jogo). */
-const COMPOSTA_MIN_LEG_ODD = 1.5;
-const COMPOSTA_MAX_LEG_ODD = 3.5;
-/** Odd combinada alvo e tolerancia da ficha Compostas. */
-const COMPOSTA_TARGET_MIN = 5.5;
-const COMPOSTA_TARGET_MAX = 6.5;
-/** Probabilidade minima de cada tip de duas condicoes (nao do produto da ficha). */
-const COMPOSTA_MIN_TIP_PROB = 35;
-const COMPOSTA_MAX_LEGS = 4;
-const COMPOSTA_MIN_LEGS = 2;
 
 export function leagueWeight(league?: string | null, competitionId?: string | null): number {
   const rank = leaguePriorityRank(league, competitionId);
@@ -53,18 +101,18 @@ export function isTopTierLeague(league?: string | null, competitionId?: string |
   return leaguePriorityRank(league, competitionId) < 8;
 }
 
-// Liga obscura (feminino/base/exÃ³tica) vale pouco na ordenaÃ§Ã£o.
+// Liga obscura (feminino/base/exótica) vale pouco na ordenação.
 const OBSCURE_PENALTY = 0.55;
 
-/** Score de ordenaÃ§Ã£o: probabilidade calibrada Ã— peso da liga (obscura penalizada). */
+/** Score de ordenação: probabilidade calibrada × peso da liga (obscura penalizada). */
 function pickScore(m: MatchItem): number {
   return m.tip.prob * leagueWeight(m.league, m.competitionId) * (isObscureLeague(m.league) ? OBSCURE_PENALTY : 1);
 }
 
 /**
- * Ligas principais primeiro: ordena cada grupo pelo critÃ©rio e concatena
+ * Ligas principais primeiro: ordena cada grupo pelo critério e concatena
  * top-tier antes do resto. Bilhetes saem com ligas grandes; as estranhas
- * sÃ³ entram para completar quando faltam jogos principais.
+ * só entram para completar quando faltam jogos principais.
  */
 function orderTopFirst(arr: MatchItem[], sortFn: (a: MatchItem, b: MatchItem) => number): MatchItem[] {
   const top = arr.filter((m) => isTopTierLeague(m.league, m.competitionId)).sort(sortFn);
@@ -73,9 +121,9 @@ function orderTopFirst(arr: MatchItem[], sortFn: (a: MatchItem, b: MatchItem) =>
 }
 
 /**
- * CoerÃªncia de um conjunto de pernas: probabilidades prÃ³ximas, ligas
- * diversificadas, presenÃ§a de ligas principais e odds sem exagero.
- * Serve para escolher bilhetes equilibrados em vez de sÃ³ os de maior score.
+ * Coerência de um conjunto de pernas: probabilidades próximas, ligas
+ * diversificadas, presença de ligas principais e odds sem exagero.
+ * Serve para escolher bilhetes equilibrados em vez de só os de maior score.
  */
 function legsCoherence(legs: MatchItem[]): number {
   if (legs.length === 0) return 0;
@@ -98,9 +146,9 @@ function legsCoherence(legs: MatchItem[]): number {
 }
 
 /**
- * Escolhe tips por ordem de prioridade atÃ© a odd combinada atingir o alvo.
- * A ordem jÃ¡ vem das tips de maior probabilidade; por isso o alvo Ã© alcanÃ§ado
- * com mais jogos e odds individuais mais baixas, nÃ£o com pernas artificiais.
+ * Escolhe tips por ordem de prioridade até a odd combinada atingir o alvo.
+ * A ordem já vem das tips de maior probabilidade; por isso o alvo é alcançado
+ * com mais jogos e odds individuais mais baixas, não com pernas artificiais.
  * Prefere uma liga diferente por perna enquanto houver alternativa.
  */
 function pickUntilTarget(
@@ -145,151 +193,7 @@ function pickUntilTarget(
   return picked.length >= cfg.minLegs && inRange() ? picked : null;
 }
 
-export const TIERS_CONFIG = {
-  segura: { min: 63, max: 101, color: 'var(--green-tier, #4FAE73)', hex: '#4FAE73' },
-  moderada: { min: 48, max: 63, color: 'var(--amber-tier, #E7B33E)', hex: '#E7B33E' },
-  ousada: { min: 28, max: 48, color: 'var(--red-tier, #D1594B)', hex: '#D1594B' },
-  maluca: { min: 0, max: 28, color: 'var(--violet-tier, #C084FC)', hex: '#C084FC' },
-  compostas: { min: 0, max: 101, color: 'var(--blue-tier, #38BDF8)', hex: '#38BDF8' },
-};
-
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  const n = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
-function envFloat(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  const n = raw ? Number.parseFloat(raw) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-/**
- * Alvo de odd combinada ("pontos") por tier. A ficha pega nas tips jÃ¡
- * calculadas para os jogos e acrescenta o nÃºmero de jogos necessÃ¡rio para
- * chegar ao alvo. Nunca inventa uma odd alta sÃ³ para preencher pontos.
- *
- * Exemplos: moderada 15x, ousada 100x, maluca 250x.
- */
-export const TICKET_TARGETS: Record<
-  SlipTier,
-  { targetOdds: number; maxLegs: number; minLegs: number; label: string }
-> = {
-  segura: {
-    targetOdds: envFloat('TICKETS_TARGET_SEGURA', 3),
-    maxLegs: envInt('TICKETS_MAX_LEGS_SEGURA', 12),
-    minLegs: 2,
-    label: 'Segura',
-  },
-  moderada: {
-    targetOdds: envFloat('TICKETS_TARGET_MODERADA', 15),
-    maxLegs: envInt('TICKETS_MAX_LEGS_MODERADA', 18),
-    minLegs: 2,
-    label: 'Moderada',
-  },
-  ousada: {
-    targetOdds: envFloat('TICKETS_TARGET_OUSADA', 100),
-    maxLegs: envInt('TICKETS_MAX_LEGS_OUSADA', 26),
-    minLegs: 2,
-    label: 'Ousada',
-  },
-  maluca: {
-    targetOdds: envFloat('TICKETS_TARGET_MALUCA', 250),
-    maxLegs: envInt('TICKETS_MAX_LEGS_MALUCA', 8),
-    minLegs: 4,
-    label: 'Maluca',
-  },
-  compostas: {
-    targetOdds: envFloat('TICKETS_TARGET_COMPOSTAS', 6),
-    maxLegs: envInt('TICKETS_MAX_LEGS_COMPOSTAS', COMPOSTA_MAX_LEGS),
-    minLegs: COMPOSTA_MIN_LEGS,
-    label: 'Compostas',
-  },
-};
-
-/**
- * Fichas de LONGO PRAZO: mÃ­nimo de 10 e mÃ¡ximo de 22 jogos (configurÃ¡vel).
- * O alvo de odd continua a mandar no momento de parar, mas nunca abaixo do
- * mÃ­nimo â€” por isso as fichas longas acumulam mais jogos em vez de poucas
- * pernas de odd alta. Segura/moderada/ousada variam o mÃ­nimo dentro da faixa.
- */
-export const LONGO_MIN_LEGS = envInt('TICKETS_LONGO_MIN_LEGS', 10);
-export const LONGO_MAX_LEGS = Math.max(
-  LONGO_MIN_LEGS,
-  envInt('TICKETS_LONGO_MAX_LEGS', 22)
-);
-/**
- * Longo prazo Ã© uma seleÃ§Ã£o mais rigorosa: sÃ³ tips com probabilidade >= 55%
- * (default), aproveitando os melhores jogos de HOJE atÃ© +8 dias â€” nÃ£o apenas
- * os que acontecem daqui a 4+ dias.
- */
-export const LONGO_MIN_PROB = Math.min(
-  95,
-  Math.max(0, envInt('TICKETS_LONGO_MIN_PROB', 55))
-);
-
-/**
- * Teto de odd por perna nas fichas Segura/Moderada/Ousada. A pontuaÃ§Ã£o alta
- * desses tiers vem de ACUMULAR jogos de odd baixa, nunca de uma perna de odd
- * alta. SÃ³ a Maluca pode usar odds altas (highRiskTip).
- */
-export const MAX_LEG_ODD = Math.max(1.01, envFloat('TICKETS_MAX_LEG_ODD', 2.2));
-/** Odd minima por perna nos tiers nao-Maluca (evita acumular 1.05/1.10). */
-export const MIN_LEG_ODD = Math.max(1.01, envFloat('TICKETS_MIN_LEG_ODD', 1.25));
-/**
- * Ficha manual com pontuaÃ§Ã£o mÃ­nima: aceita pernas de odd mais baixa (ex.: 1.20)
- * porque a pontuaÃ§Ã£o total Ã© alcanÃ§ada pelo nÃºmero de jogos, nunca por odds altas.
- */
-export const MANUAL_MIN_LEG_ODD = Math.max(
-  1.01,
-  envFloat('TICKETS_MANUAL_MIN_LEG_ODD', 1.2)
-);
-/** Teto de pernas na ficha manual por pontuaÃ§Ã£o mÃ­nima (acumula jogos, sem teto de odd). */
-export const MANUAL_MAX_LEGS = Math.max(
-  2,
-  envInt('TICKETS_MANUAL_MAX_LEGS', 60)
-);
-/** Probabilidade minima por perna nas fichas nao-Maluca (evita escolher alternativas fracas). */
-export const NON_MALUCA_MIN_PROB = Math.min(
-  95,
-  Math.max(0, envInt('TICKETS_NON_MALUCA_MIN_PROB', 40))
-);
-
-/**
- * Maluca grounded: nunca odds extremas (6x-10x com 9-18% de prob). Cada perna
- * tem de ser um mercado real dentro desta faixa e com probabilidade minima.
- */
-export const MALUCA_MIN_LEG_ODD = Math.max(
-  1.01,
-  envFloat('TICKETS_MALUCA_MIN_LEG_ODD', 1.75)
-);
-export const MALUCA_MAX_LEG_ODD = Math.max(
-  MALUCA_MIN_LEG_ODD,
-  envFloat('TICKETS_MALUCA_MAX_LEG_ODD', 3.0)
-);
-export const MALUCA_MIN_PROB = Math.min(
-  95,
-  Math.max(0, envInt('TICKETS_MALUCA_MIN_PROB', 25))
-);
-/**
- * Ponto ideal por perna da Maluca: nem odds baixas (1.75) nem extremas (3.0).
- * Com o alvo de 250x isto produz tipicamente 6-8 pernas de ~2.0x-3.0x.
- */
-export const MALUCA_IDEAL_LEG_ODD = (MALUCA_MIN_LEG_ODD + MALUCA_MAX_LEG_ODD) / 2;
-
-/**
- * Anti-correlação entre fichas: um jogo pode aparecer em no máximo N fichas
- * pendentes. Se tiver de repetir, usa OBRIGATORIAMENTE outro mercado (tip).
- */
-export const MAX_SLIPS_PER_MATCH = Math.max(
-  1,
-  envInt('TICKETS_MAX_SLIPS_PER_MATCH', 2)
-);
-/** Máximo de pernas repetidas (com tip diferente) por ficha. */
-export const MAX_REUSED_LEGS = Math.max(0, envInt('TICKETS_MAX_REUSED_LEGS', 8));
-
-/** Config efetiva de pernas por tier e escopo (longo tem faixa prÃ³pria). */
+/** Config efetiva de pernas por tier e escopo (longo tem faixa própria). */
 function legsConfigFor(
   scope: SlipScope,
   tier: SlipTier
@@ -310,41 +214,20 @@ function legsConfigFor(
   };
 }
 
-/**
- * Estoque mÃ­nimo de fichas PENDENTES por horizonte.
- * O agendador repÃµe automaticamente sempre que uma ficha cai (ganha/perde/expira)
- * ou quando a mudanÃ§a do dia cria a nova fornada de "Hoje".
- */
-export const SCOPE_QUOTAS: Record<SlipScope, number> = {
-  // Cinco vagas = uma ficha de cada tier, incluindo Compostas.
-  dia: envInt('TICKETS_QUOTA_DIA', 5),
-  '2_3_dias': envInt('TICKETS_QUOTA_MED', 5),
-  longo: envInt('TICKETS_QUOTA_LONGO', 5),
-};
-
-/** Teto de seguranÃ§a para o botÃ£o manual "Gerar" nÃ£o inundar o estoque. */
-export const SCOPE_MAX_PENDING: Record<SlipScope, number> = {
-  dia: SCOPE_QUOTAS.dia + 2,
-  '2_3_dias': SCOPE_QUOTAS['2_3_dias'] + 2,
-  longo: SCOPE_QUOTAS.longo + 2,
-};
-
-/** Horas de tolerÃ¢ncia apÃ³s o Ãºltimo pontapÃ© inicial antes de marcar como vencida. */
-export const EXPIRY_GRACE_HOURS = envInt('TICKETS_EXPIRY_GRACE_HOURS', 6);
 
 export interface GenerateOptions {
-  /** MÃ¡ximo de fichas novas a devolver nesta geraÃ§Ã£o (default: 5). */
+  /** Máximo de fichas novas a devolver nesta geração (default: 5). */
   limit?: number;
   /**
-   * Tipo de tip forÃ§ado (ex.: 'over35', 'double_chance_1x'). Quando definido,
+   * Tipo de tip forçado (ex.: 'over35', 'double_chance_1x'). Quando definido,
    * o motor calcula ESSE mercado para todos os jogos do escopo e monta a ficha
-   * sÃ³ com ele. Sem preÃ§o real no feed, tenta obter a odd na Premier Bet.
+   * só com ele. Sem preço real no feed, tenta obter a odd na Premier Bet.
    */
   market?: MarketType;
   /**
-   * Motor que decide as tips: 'local' (padrÃ£o, faixa de probabilidade) ou
-   * 'jev' (o modelo de decisÃ£o escolhe o mercado de cada jogo a partir das
-   * probabilidades jÃ¡ calculadas pelo motor local).
+   * Motor que decide as tips: 'local' (padrão, faixa de probabilidade) ou
+   * 'jev' (o modelo de decisão escolhe o mercado de cada jogo a partir das
+   * probabilidades já calculadas pelo motor local).
    */
   engine?: SlipEngine;
   /**
@@ -361,13 +244,13 @@ export interface GenerateOptions {
   minOdds?: number;
 }
 
-/** Telemetria da geraÃ§Ã£o JEV (chamadas reais vs decisÃµes reaproveitadas). */
+/** Telemetria da geração JEV (chamadas reais vs decisões reaproveitadas). */
 export interface JevGenerationMeta {
   reused: number;
   newPicks: number;
   apiCalls: number;
   costUsd: number;
-  /** DecisÃµes antigas descartadas por o mercado jÃ¡ nÃ£o estar entre as candidatas. */
+  /** Decisões antigas descartadas por o mercado já não estar entre as candidatas. */
   stale: number;
 }
 
@@ -391,26 +274,28 @@ function chunk<T>(arr: T[], size: number): T[][] {
 
 export class TicketEngine {
   private slips: BetSlip[] = [];
+  private slipById = new Map<string, BetSlip>();
   private slipCounter = 100;
   private lastJevLatencyMs = 62;
   private initialized = false;
 
   /**
-   * Carrega as fichas persistidas para memÃ³ria. Deve ser chamado uma Ãºnica vez
+   * Carrega as fichas persistidas para memória. Deve ser chamado uma única vez
    * no arranque, depois de `bilheteriaDb.init()`.
    */
   public async init(): Promise<void> {
     if (this.initialized) return;
-    // As fichas persistidas sÃ£o a fonte de verdade: NÃƒO se apaga nenhuma no
+    // As fichas persistidas são a fonte de verdade: NÃO se apaga nenhuma no
     // arranque (nem por odds antigas, nem por alvo de tier desatualizado).
     // Fichas existentes sobrevivem a restart/redeploy desde que a base de
     // dados esteja num volume (ver docker-compose.yml / MySQL).
     this.slips = await bilheteriaDb.loadSlips();
+    this.slipById = new Map(this.slips.map((slip) => [slip.id, slip]));
     // Corrige resultados antigos calculados com o tip do match em vez do tip
     // da perna (fichas resolveram "Acertou" com mercados diferentes).
     this.repairLegResults();
 
-    // Continua a numeraÃ§Ã£o a partir da Ãºltima ficha persistida (evita IDs repetidos).
+    // Continua a numeração a partir da última ficha persistida (evita IDs repetidos).
     let maxSeq = 100;
     for (const slip of this.slips) {
       const m = /(\d+)$/.exec(slip.id);
@@ -421,11 +306,18 @@ export class TicketEngine {
   }
 
   public getSlips(): BetSlip[] {
-    return this.slips;
+    // Cópia do array: quem consome não altera a coleção interna.
+    return this.slips.slice();
   }
 
   public getSlipById(id: string): BetSlip | undefined {
-    return this.slips.find((s) => s.id === id);
+    return this.slipById.get(id);
+  }
+
+  private remember(slip: BetSlip, front = false): void {
+    if (front) this.slips.unshift(slip);
+    else this.slips.push(slip);
+    this.slipById.set(slip.id, slip);
   }
 
   public getLastJevLatency(): number {
@@ -470,6 +362,7 @@ export class TicketEngine {
       legs: uniqueLegs,
       combinedOdds,
       combinedProb,
+      effectiveOdds: combinedOdds,
       expiresAt,
       status: 'pendente',
       createdAt,
@@ -484,18 +377,35 @@ export class TicketEngine {
   }
 
   /**
-   * Pipeline de criaÃ§Ã£o com o motor LOCAL AiScore (sem Jev, sem OpenRouter):
+   * Pipeline de criação com o motor LOCAL AiScore (sem Jev, sem OpenRouter):
    * 1. Filtra os jogos por janela: dia=hoje; 2_3_dias=hoje..+3; longo=hoje..+8
-   *    (longo Ã© mais rigoroso: sÃ³ tips com prob >= TICKETS_LONGO_MIN_PROB)
+   *    (longo é mais rigoroso: só tips com prob >= TICKETS_LONGO_MIN_PROB)
    * 2. Enriquece com o scout COMPLETO do AiScore (H2H, forma, trends, janelas de golo, odds)
-   * 3. O motor local calcula xG (Poisson) + taxas empÃ­ricas + H2H + mando e
-   *    devolve, para CADA jogo, a melhor tip por faixa de probabilidade â€”
-   *    determinÃ­stico, sem EV na escolha
-   * 4. Todos os jogos avaliados ficam na pool; segura/moderada/ousada sÃ£o
-   *    alvos de odd combinada TOTAL e se diferenciam pelo NÃšMERO de jogos
+   * 3. O motor local calcula xG (Poisson) + taxas empíricas + H2H + mando e
+   *    devolve, para CADA jogo, a melhor tip por faixa de probabilidade —
+   *    determinístico, sem EV na escolha
+   * 4. Todos os jogos avaliados ficam na pool; segura/moderada/ousada são
+   *    alvos de odd combinada TOTAL e se diferenciam pelo NÚMERO de jogos
    *    acumulados (nunca por inventar odds ou trocar tip por jogo)
    */
-  public async generateTicketsForScope(
+  public generateTicketsForScope(
+    scope: SlipScope,
+    activeLeagues?: string[],
+    options?: GenerateOptions
+  ): Promise<{
+    generated: BetSlip[];
+    all: BetSlip[];
+    jevLatencyMs: number;
+    jevMeta?: JevGenerationMeta;
+  }> {
+    // Um único mutex para todos os caminhos (HTTP, scheduler, progressões):
+    // duas gerações nunca leem/gravam o estoque ao mesmo tempo.
+    return generationMutex.run('tickets', () =>
+      this.generateTicketsForScopeUnlocked(scope, activeLeagues, options)
+    );
+  }
+
+  private async generateTicketsForScopeUnlocked(
     scope: SlipScope,
     activeLeagues?: string[],
     options?: GenerateOptions
@@ -507,7 +417,7 @@ export class TicketEngine {
   }> {
     const allMatches = await marketService.getMatches();
 
-    // Filtro estrito do horizonte de longevidade e proteÃ§Ã£o absoluta contra jogos passados
+    // Filtro estrito do horizonte de longevidade e proteção absoluta contra jogos passados
     const now = Date.now();
     const filtered = allMatches.filter((m) => {
       const matchLeague = !activeLeagues || activeLeagues.length === 0 || activeLeagues.includes(m.league);
@@ -519,11 +429,11 @@ export class TicketEngine {
       if (scope === 'dia') {
         matchScopeMatches = dayDiff === 0;
       } else if (scope === '2_3_dias') {
-        // Inclui HOJE e os prÃ³ximos 3 dias (nÃ£o sÃ³ 1..3).
+        // Inclui HOJE e os próximos 3 dias (não só 1..3).
         matchScopeMatches = dayDiff >= 0 && dayDiff <= 3;
       } else {
-        // Longo prazo: os MELHORES jogos de hoje atÃ© +8 dias (janela ~1 semana),
-        // com probabilidade mÃ­nima mais alta. NÃ£o Ã© sÃ³ "daqui a 4+ dias".
+        // Longo prazo: os MELHORES jogos de hoje até +8 dias (janela ~1 semana),
+        // com probabilidade mínima mais alta. Não é só "daqui a 4+ dias".
         matchScopeMatches = dayDiff >= 0 && dayDiff <= 8;
       }
 
@@ -531,7 +441,7 @@ export class TicketEngine {
     });
 
     // O motor calcula uma tip para TODOS os jogos com odds reais do horizonte.
-    // As fichas sÃ£o montadas depois, escolhendo entre essas tips; nunca se
+    // As fichas são montadas depois, escolhendo entre essas tips; nunca se
     // inventa uma odd alta para "completar pontos".
     const mainEligible = filtered.filter((m) => isMainLeague(m.league, m.competitionId));
     // Ligas de fallback: nao sao principais, mas tambem nao sao feminino/obscuro/
@@ -547,9 +457,9 @@ export class TicketEngine {
       return { generated: [], all: this.slips, jevLatencyMs: 0 };
     }
 
-    // Odds reais para os mercados que o feed do AiScore nÃ£o cobre. Isto inclui
-    // o 1X2 dos jogos futuros que vÃªm SEM odds do feed (eram descartados e
-    // deixavam o longo prazo sem mercado). Com tip forÃ§ada, sÃ³ esse mercado.
+    // Odds reais para os mercados que o feed do AiScore não cobre. Isto inclui
+    // o 1X2 dos jogos futuros que vêm SEM odds do feed (eram descartados e
+    // deixavam o longo prazo sem mercado). Com tip forçada, só esse mercado.
     const forcedMarket = options?.market;
     const BASE_MARKETS: MarketType[] = ['home', 'draw', 'away'];
     const EXTRA_MARKETS: MarketType[] = [
@@ -573,8 +483,8 @@ export class TicketEngine {
           (mk) => !m.odds.realMarkets?.includes(mk)
         );
       };
-      // SÃ³ ligas elegiveis (principais + fallback) entram nas fichas; nÃ£o vale
-      // a pena consultar a Premier Bet por ligas que nÃ£o podem ser usadas.
+      // Só ligas elegiveis (principais + fallback) entram nas fichas; não vale
+      // a pena consultar a Premier Bet por ligas que não podem ser usadas.
       // Ordena main primeiro e depois fallback, por rank de liga e kickoff.
       const cap = forcedMarket ? 50 : scope === 'longo' ? 80 : 40;
       const need = [...mainEligible, ...fallbackOnly]
@@ -593,8 +503,8 @@ export class TicketEngine {
         })
         .slice(0, cap);
       if (need.length > 0) {
-        // Em lotes de 25: cada lote Ã© um processo Python com timeout prÃ³prio,
-        // para um dia lento nÃ£o perder o enriquecimento inteiro.
+        // Em lotes de 25: cada lote é um processo Python com timeout próprio,
+        // para um dia lento não perder o enriquecimento inteiro.
         const chunkSize = 25;
         let filled = 0;
         for (let start = 0; start < need.length; start += chunkSize) {
@@ -619,22 +529,9 @@ export class TicketEngine {
                     r.away.trim().toLowerCase() === m.away.trim().toLowerCase()
                 );
               if (!result) return;
-              const real = new Set(m.odds.realMarkets || []);
-              for (const mk of enrichMarkets) {
-                const odd = result.odds?.[mk];
-                if (typeof odd !== 'number' || !Number.isFinite(odd) || odd <= 1.01) continue;
-                if (isCompostaMarket(mk)) {
-                  m.odds.comboOdds = {
-                    ...(m.odds.comboOdds || {}),
-                    [mk]: Number(odd.toFixed(2)),
-                  };
-                } else {
-                  (m.odds as any)[mk] = Number(odd.toFixed(2));
-                }
-                real.add(mk);
-                filled += 1;
-              }
-              m.odds.realMarkets = Array.from(real);
+              const odds: Record<string, number | null | undefined> = {};
+              for (const mk of enrichMarkets) odds[mk] = result.odds?.[mk];
+              filled += marketService.applyRealOdds(m.id, odds);
               if (needCompostas) m.compostaOddsChecked = true;
             });
           } catch (err: any) {
@@ -650,11 +547,11 @@ export class TicketEngine {
       }
     }
 
-    // Enriquece com o scout COMPLETO do AiScore (todas as variÃ¡veis) antes
-    // do motor local â€” falha nÃ£o bloqueia (o motor usa o contexto resumido).
-    // Damos prioridade Ã s ligas que podem entrar nas fichas; o resto recebe
-    // a tip de mercado, sem preÃ§o sintÃ©tico.
-    // includeLineups sÃ³ no dia: escalaÃ§es sÃ³ existem perto do pontapÃ© inicial.
+    // Enriquece com o scout COMPLETO do AiScore (todas as variáveis) antes
+    // do motor local — falha não bloqueia (o motor usa o contexto resumido).
+    // Damos prioridade às ligas que podem entrar nas fichas; o resto recebe
+    // a tip de mercado, sem preço sintético.
+    // includeLineups só no dia: escalaçes só existem perto do pontapé inicial.
     const wantLineups = scope === 'dia';
     // Ligas principais primeiro, fallback depois; dedup por id.
     const enrichmentPool = Array.from(
@@ -673,7 +570,7 @@ export class TicketEngine {
     }
 
     // Prepara a entrada do motor local (scout completo + odds) para todos os
-    // jogos do horizonte. Assim existe uma tip prÃ©-calculada para cada jogo.
+    // jogos do horizonte. Assim existe uma tip pré-calculada para cada jogo.
     const horizonDays = scope === 'dia' ? 0 : scope === '2_3_dias' ? 3 : 7;
     const localInput: LocalDecisionInput = {
       scope,
@@ -694,15 +591,12 @@ export class TicketEngine {
       })),
     };
 
-    // InferÃªncia local determinÃ­stica (sem rede, sem chave)
+    // Inferência local determinística (sem rede, sem chave)
     const localResponse = await callLocalInferenceEngine(localInput);
     this.lastJevLatencyMs = localResponse.latencyMs;
 
-    // Atualiza cada partida no pool com a probabilidade calibrada local
-    const matchEvaluationsMap = new Map(localResponse.evaluations.map((e) => [e.matchId, e]));
-
-    // DecisÃµes JEV persistidas (assinatura de odds ainda vÃ¡lida) tÃªm de ser
-    // capturadas ANTES de a calibraÃ§Ã£o local ser reescrita abaixo.
+    // Decisões JEV persistidas (assinatura de odds ainda válida) têm de ser
+    // capturadas ANTES de a calibração local ser reescrita.
     type StoredJevPick = NonNullable<
       NonNullable<MatchItem['calibration']>['jevPick']
     >;
@@ -716,47 +610,15 @@ export class TicketEngine {
       }
     }
 
-    let evaluatedMatches: MatchItem[] = tipPool.map((m) => {
-      const ev = matchEvaluationsMap.get(m.id);
-      if (!ev) return m;
+    // O marketService centraliza a aplicação da calibração aos jogos.
+    const calibrated = marketService.updateCalibrations(
+      localResponse.evaluations,
+      localResponse.latencyMs,
+      localResponse.modelVersion
+    );
+    let evaluatedMatches: MatchItem[] = tipPool.map((m) => calibrated.get(m.id) ?? m);
 
-      // Anexa a inferÃªncia do motor local
-      m.jevInference = {
-        calibratedProb: ev.calibratedProb,
-        expectedValueEdge: ev.expectedValueEdge,
-        recommendedMarket: ev.recommendedMarket,
-        riskTier: ev.riskTier,
-        latencyMs: localResponse.latencyMs,
-        jevModelVersion: localResponse.modelVersion,
-      };
-
-      // Atualiza a tip recomendada diretamente a partir do motor local
-      m.tip = {
-        market: ev.recommendedMarket,
-        label: ev.marketLabel,
-        odds: ev.selectedOdds,
-        prob: ev.calibratedProb,
-      };
-      m.highRiskTip = ev.highRiskTip;
-
-      // Persiste a calibraÃ§Ã£o (tips por mercado + assinatura de odds) para
-      // sobreviver a restart/redeploy sem recalcular.
-      m.calibration = {
-        tips: ev.tips,
-        recommendedMarket: ev.recommendedMarket,
-        marketLabel: ev.marketLabel,
-        calibratedProb: ev.calibratedProb,
-        expectedValueEdge: ev.expectedValueEdge,
-        highRiskTip: ev.highRiskTip,
-        oddsHash: oddsSignature(m.odds),
-        at: Date.now(),
-      };
-      m.tips = ev.tips;
-
-      return m;
-    });
-
-    // Motor JEV: o LLM recebe sÃ³ o essencial (tips com prob do motor local +
+    // Motor JEV: o LLM recebe só o essencial (tips com prob do motor local +
     // odds reais) e escolhe UM mercado por jogo. As probabilidades continuam
     // a ser as do motor local; o JEV decide a tip.
     let jevMeta: JevGenerationMeta | undefined;
@@ -781,12 +643,15 @@ export class TicketEngine {
 
     const selectionPoolBase = evaluatedMatches.filter(
       (m) =>
+        m.priced === true &&
+        m.modelBasis !== 'none' &&
+        (!CFG.excludeMarketOnly || m.modelBasis !== 'market') &&
         isFallbackLeague(m.league, m.competitionId) &&
         m.tip &&
         m.tip.odds > 1.01 &&
         Number.isFinite(m.tip.prob)
     );
-    // Longo prazo: seleÃ§Ã£o mais criteriosa (probabilidade mÃ­nima mais alta),
+    // Longo prazo: seleção mais criteriosa (probabilidade mínima mais alta),
     // mas continua a incluir ligas de fallback.
     const selectionPool =
       scope === 'longo'
@@ -805,20 +670,20 @@ export class TicketEngine {
       return { generated: [], all: this.slips, jevLatencyMs: localResponse.latencyMs };
     }
 
-    // Os tiers NÃƒO sÃ£o divididos por probabilidade individual do jogo: cada
-    // jogo entra com a MESMA tip (a de maior p na faixa "mÃ©dia" do motor).
-    // Segura/Moderada/Ousada diferem sÃ³ no ALVO de pontuaÃ§Ã£o TOTAL da odd
-    // combinada, alcanÃ§ado com o NÃšMERO de jogos necessÃ¡rio â€” nunca inventando
-    // odds nem forÃ§ando tips de probabilidade diferente por jogo. SÃ³ a Maluca
+    // Os tiers NÃO são divididos por probabilidade individual do jogo: cada
+    // jogo entra com a MESMA tip (a de maior p na faixa "média" do motor).
+    // Segura/Moderada/Ousada diferem só no ALVO de pontuação TOTAL da odd
+    // combinada, alcançado com o NÚMERO de jogos necessário — nunca inventando
+    // odds nem forçando tips de probabilidade diferente por jogo. Só a Maluca
     // usa tips de odd alta por jogo (highRiskTip, sempre mercado real).
 
-    // NÃƒO apagar fichas pendentes existentes: elas persistem atÃ© resolverem ou
-    // expirarem. A geraÃ§Ã£o apenas acrescenta novas oportunidades ao estoque.
+    // NÃO apagar fichas pendentes existentes: elas persistem até resolverem ou
+    // expirarem. A geração apenas acrescenta novas oportunidades ao estoque.
 
     const candidateSlips: BetSlip[] = [];
 
-    // Jogos jÃ¡ usados noutro bilhete: cada construÃ§Ã£o prefere pernas frescas
-    // para os bilhetes nÃ£o saÃ­rem todos iguais.
+    // Jogos já usados noutro bilhete: cada construção prefere pernas frescas
+    // para os bilhetes não saírem todos iguais.
     const usedIds = new Set<string>();
     const matchSlipCount = new Map<string, number>();
     const matchMarkets = new Map<string, Set<MarketType>>();
@@ -842,25 +707,25 @@ export class TicketEngine {
     };
 
     /**
-     * ConstrÃ³i uma ficha de um tier usando as tips jÃ¡ calculadas para os jogos.
-     * A ordem Ã© por probabilidade (com peso da liga); acrescentam-se jogos atÃ©
-     * a odd combinada chegar ao alvo. Se o tier nÃ£o tiver tips suficientes,
-     * devolve null â€” nunca inventa uma perna de odd alta para "completar pontos".
+     * Constrói uma ficha de um tier usando as tips já calculadas para os jogos.
+     * A ordem é por probabilidade (com peso da liga); acrescentam-se jogos até
+     * a odd combinada chegar ao alvo. Se o tier não tiver tips suficientes,
+     * devolve null — nunca inventa uma perna de odd alta para "completar pontos".
      */
     const buildTargetTier = (
       tier: SlipTier,
       overrides?: {
         pool?: MatchItem[];
         sortFn?: (a: MatchItem, b: MatchItem) => number;
-        /** Se false, pode reutilizar jogos jÃ¡ usados noutras fichas desde o inÃ­cio. */
+        /** Se false, pode reutilizar jogos já usados noutras fichas desde o início. */
         preferFresh?: boolean;
-        /** Se false, permite vÃ¡rias pernas da mesma liga (mais jogos na Ousada). */
+        /** Se false, permite várias pernas da mesma liga (mais jogos na Ousada). */
         diversifyLeagues?: boolean;
-        /** Alvo de odd total prÃ³prio (ficha manual com pontuaÃ§Ã£o mÃ­nima). */
+        /** Alvo de odd total próprio (ficha manual com pontuação mínima). */
         targetOdds?: number;
-        /** Teto de pernas prÃ³prio (a ficha manual acumula jogos sem teto de odd). */
+        /** Teto de pernas próprio (a ficha manual acumula jogos sem teto de odd). */
         maxLegs?: number;
-        /** Odd mÃ­nima por perna prÃ³pria (a ficha manual aceita odds mais baixas). */
+        /** Odd mínima por perna própria (a ficha manual aceita odds mais baixas). */
         minLegOdd?: number;
       }
     ): BetSlip | null => {
@@ -910,8 +775,8 @@ export class TicketEngine {
         );
       };
 
-      // Prefere pernas frescas; se nÃ£o chegarem ao alvo, permite reutilizar
-      // um jogo jÃ¡ usado noutra ficha (a tip continua a ser a mesma, real).
+      // Prefere pernas frescas; se não chegarem ao alvo, permite reutilizar
+      // um jogo já usado noutra ficha (a tip continua a ser a mesma, real).
       const fresh = primary.filter((m) => (matchSlipCount.get(m.id) || 0) === 0);
       let legs = fresh.length >= cfg.minLegs ? tryPool(fresh) : null;
 
@@ -1003,15 +868,15 @@ export class TicketEngine {
         (tier === 'maluca'
           ? `Ficha Maluca: ${legs.length} pernas reais com odd entre ${MALUCA_MIN_LEG_ODD.toFixed(2)}x e ${MALUCA_MAX_LEG_ODD.toFixed(2)}x e probabilidade minima de ${MALUCA_MIN_PROB}%, escolhidas por probabilidade/forma, ate ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd media por perna ${avgOdds.toFixed(2)}; sem odds extremas nem pernas inventadas.`
           : tier === 'ousada'
-          ? `Ficha Ousada: ${legs.length} jogos escolhidos entre as tips reais por probabilidade, atÃ© ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd mÃ©dia por perna ${avgOdds.toFixed(2)}; os pontos vÃªm de acumular jogos, nÃ£o de pernas artificiais.`
-          : `Ficha ${cfg.label}: ${legs.length} jogos escolhidos por probabilidade atÃ© ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd mÃ©dia por perna ${avgOdds.toFixed(2)}; todas as odds sÃ£o reais e nenhuma perna foi inventada para completar pontos.`)
+          ? `Ficha Ousada: ${legs.length} jogos escolhidos entre as tips reais por probabilidade, até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; os pontos vêm de acumular jogos, não de pernas artificiais.`
+          : `Ficha ${cfg.label}: ${legs.length} jogos escolhidos por probabilidade até ao alvo de ${cfg.targetOdds.toFixed(0)}x. Odd média por perna ${avgOdds.toFixed(2)}; todas as odds são reais e nenhuma perna foi inventada para completar pontos.`)
         + (scope === 'longo' && tier !== 'maluca'
           ? ` Longo prazo: ${legs.length} jogos (faixa ${LONGO_MIN_LEGS}-${LONGO_MAX_LEGS}).`
           : scope === 'longo' && tier === 'maluca'
           ? ' Longo prazo: mantem a faixa propria de 4 a 8 jogos.'
           : '');
       return this.createSlip(scope, tier, legs, {
-        customTitle: `MÃºltipla ${cfg.label} (${legs.length} jogos â€¢ ${combinedOdds.toFixed(2)}x)`,
+        customTitle: `Múltipla ${cfg.label} (${legs.length} jogos • ${combinedOdds.toFixed(2)}x)`,
         rationale,
         engine: options?.engine ?? 'local',
       });
@@ -1241,7 +1106,7 @@ export class TicketEngine {
         }
         slip.engine = 'progression';
         slip.customTitle = `Progressão · compostas · ${slip.combinedOdds.toFixed(2)}x`;
-        this.slips.push(slip);
+        this.remember(slip);
         bilheteriaDb.upsertSlip(slip);
         return {
           generated: [slip],
@@ -1282,7 +1147,7 @@ export class TicketEngine {
       }
       slip.engine = 'progression';
       slip.customTitle = `Progressão · ${onlyTier} · ${slip.combinedOdds.toFixed(2)}x`;
-      this.slips.push(slip);
+      this.remember(slip);
       bilheteriaDb.upsertSlip(slip);
       console.log(
         `[Progressão] Ficha ${slip.id} criada: ${slip.legs.length} jogos, ` +
@@ -1344,7 +1209,7 @@ export class TicketEngine {
           jevMeta,
         };
       }
-      manualSlips.forEach((slip) => this.slips.push(slip));
+      manualSlips.forEach((slip) => this.remember(slip));
       bilheteriaDb.upsertMany(manualSlips);
       await bilheteriaDb.flush();
       if (evaluatedMatches.length > 0) marketService.saveCacheSoon();
@@ -1410,8 +1275,8 @@ export class TicketEngine {
       );
     }
 
-    // REGRA DE NEGÃ“CIO: reter bilhetes COERENTES (probabilidades prÃ³ximas,
-    // ligas diversificadas), nÃ£o apenas os de maior pontuaÃ§Ã£o/odd.
+    // REGRA DE NEGÓCIO: reter bilhetes COERENTES (probabilidades próximas,
+    // ligas diversificadas), não apenas os de maior pontuação/odd.
     const existingPending = this.slips.filter(
       (s) => s.scope === scope && s.status === 'pendente'
     );
@@ -1449,7 +1314,7 @@ export class TicketEngine {
     });
 
     // Um candidato de cada tier primeiro (priorizando o tier mais em falta),
-    // depois as segundas variaÃ§Ãµes. Assim a quota de 4 rende uma ficha de
+    // depois as segundas variações. Assim a quota de 4 rende uma ficha de
     // cada categoria em vez de duas seguras + uma moderada.
     const finalSlips: BetSlip[] = [];
     tierPriority.forEach((tier) => {
@@ -1459,8 +1324,8 @@ export class TicketEngine {
       for (let i = 1; i < byTier[tier].length; i++) finalSlips.push(byTier[tier][i]);
     });
 
-    // Evita repetir pernas de fichas que jÃ¡ estÃ£o no estoque pendente do mesmo
-    // horizonte. Se nÃ£o houver candidatos totalmente frescos, aceita os que nÃ£o
+    // Evita repetir pernas de fichas que já estão no estoque pendente do mesmo
+    // horizonte. Se não houver candidatos totalmente frescos, aceita os que não
     // sejam exatamente iguais a uma ficha existente (mercado pode estar curto).
     const reservedLegIds = new Set<string>();
     existingPending.forEach((s) => s.legs.forEach((l) => reservedLegIds.add(l.id)));
@@ -1478,7 +1343,7 @@ export class TicketEngine {
     );
 
     // Frescas primeiro, mas completa com as restantes distintas em vez de
-    // descartar tudo sÃ³ porque uma perna jÃ¡ existe noutra ficha pendente.
+    // descartar tudo só porque uma perna já existe noutra ficha pendente.
     const candidatePool = [
       ...freshCandidates,
       ...notIdentical.filter((s) => !freshCandidates.includes(s)),
@@ -1487,14 +1352,14 @@ export class TicketEngine {
     const topSlips = candidatePool.slice(0, wanted);
 
     for (const slip of topSlips) {
-      this.slips.push(slip);
+      this.remember(slip);
     }
     bilheteriaDb.upsertMany(topSlips);
     // Garante que as fichas chegam à BD antes de a API responder. Sem isto,
     // um encerramento abrupto podia perder fichas que já apareciam na UI.
     await bilheteriaDb.flush();
 
-    // CalibraÃ§Ã£o/enriquecimento ficam no cache de jogos (sobrevive a redeploy).
+    // Calibração/enriquecimento ficam no cache de jogos (sobrevive a redeploy).
     if (evaluatedMatches.length > 0) marketService.saveCacheSoon();
     if (topSlips.length > 0) {
       console.log(
@@ -1535,9 +1400,9 @@ export class TicketEngine {
    * Deixa o JEV escolher o mercado de cada jogo. O motor local continua a
    * calcular todas as probabilidades; o JEV recebe apenas as tips candidatas
    * (prob + odd real) e devolve o mercado escolhido. Picks persistidos na
-   * calibraÃ§Ã£o sÃ£o reutilizados enquanto as odds nÃ£o mudarem.
+   * calibração são reutilizados enquanto as odds não mudarem.
    */
-  /** Tips oferecidas ao JEV: top 6 por probabilidade, sÃ³ com odds reais. */
+  /** Tips oferecidas ao JEV: top 6 por probabilidade, só com odds reais. */
   private jevCandidateTips(
     match: MatchItem
   ): Array<{ market: MarketType; label: string; prob: number; odds: number }> {
@@ -1667,9 +1532,9 @@ export class TicketEngine {
     let stale = 0;
     for (const m of pool) {
       const saved = persisted.get(m.id);
-      // SÃ³ reutiliza se o mercado continuar entre as candidatas ATUAIS (top 6
-      // com odds reais). SenÃ£o a decisÃ£o antiga pode escolher uma tip que jÃ¡
-      // nÃ£o seria oferecida hoje (ex.: mercado que saiu do top 6).
+      // Só reutiliza se o mercado continuar entre as candidatas ATUAIS (top 6
+      // com odds reais). Senão a decisão antiga pode escolher uma tip que já
+      // não seria oferecida hoje (ex.: mercado que saiu do top 6).
       const offered = this.jevCandidateTips(m).some(
         (t) => t.market === saved?.market
       );
@@ -1698,7 +1563,7 @@ export class TicketEngine {
       const candidates = need
         .slice(0, 60)
         .map((m) => {
-          // SÃ³ odds com proveniÃªncia real entram para o JEV (nada sintÃ©tico).
+          // Só odds com proveniência real entram para o JEV (nada sintético).
           const real = new Set(m.odds.realMarkets || []);
           const odds: Record<string, number> = {};
           if (real.has('home')) odds.home = m.odds.home;
@@ -1803,7 +1668,9 @@ export class TicketEngine {
       };
       m.tips = ev.tips;
       m.highRiskTip = ev.highRiskTip;
-      // A inferÃªncia exibida no cartÃ£o tem de ser a do mercado ESCOLHIDO pelo
+      // A odd escolhida pode diferir da tip local; reprecifica para o filtro.
+      m.priced = Number.isFinite(m.tip.odds) && m.tip.odds >= CFG.band.oddFloor;
+      // A inferência exibida no cartão tem de ser a do mercado ESCOLHIDO pelo
       // JEV (antes ficava a do pick local anterior: prob/EV de outro mercado).
       m.jevInference = {
         calibratedProb: ev.calibratedProb,
@@ -1833,18 +1700,15 @@ export class TicketEngine {
   public validateSlips(): { updatedSlips: BetSlip[] } {
     const updated: BetSlip[] = [];
     const now = Date.now();
-    const graceMs = EXPIRY_GRACE_HOURS * 60 * 60 * 1000;
 
     for (const slip of this.slips) {
       if (slip.status !== 'pendente') continue;
 
-      let anyLost = false;
-      let allResolved = true;
       let dirty = false;
-
       for (let i = 0; i < slip.legs.length; i++) {
         const currentLeg = slip.legs[i];
-        // Sincroniza em tempo real com o estado mais recente da partida no marketService
+        // Sincroniza com o estado mais recente da partida no marketService,
+        // mantendo a tip fixada no momento da aposta.
         const freshMatch = marketService.getMatchById(currentLeg.id);
         if (freshMatch) {
           if (
@@ -1855,56 +1719,14 @@ export class TicketEngine {
           }
           slip.legs[i] = {
             ...freshMatch,
-            tip: currentLeg.tip, // MantÃ©m o prognÃ³stico fixado no momento da aposta
+            tip: currentLeg.tip,
             jevInference: currentLeg.jevInference,
           };
         }
-
-        const leg = slip.legs[i];
-        // O resultado da PERNA Ã© do mercado da prÃ³pria perna (pode ser
-        // diferente do tip do match, ex.: Maluca/JEV). Sem isto, uma perna
-        // "VitÃ³ria casa" podia ser marcada como acertada por o match ter
-        // ganho noutro mercado.
-        if (leg.result && leg.result.homeScore != null && leg.result.awayScore != null) {
-          const outcome = marketOutcomeFor(
-            leg.tip.market,
-            leg.result.homeScore,
-            leg.result.awayScore
-          );
-          if (leg.result.tipWon !== outcome.won || leg.result.pushed !== outcome.pushed) {
-            leg.result = { ...leg.result, tipWon: outcome.won, pushed: outcome.pushed };
-            dirty = true;
-          }
-        }
-        if (leg.status !== 'resolved') {
-          allResolved = false;
-        } else if (leg.result && !leg.result.tipWon) {
-          // Se qualquer perna errou o prognÃ³stico, o bilhete estÃ¡ matematicamente perdido
-          anyLost = true;
-        }
+        if (recomputeLegResult(slip.legs[i])) dirty = true;
       }
 
-      if (anyLost) {
-        // Vai direto para o HistÃ³rico como PERDEU no momento em que a primeira perna falha
-        slip.status = 'perdeu';
-        slip.resolvedAt = now;
-        dirty = true;
-      } else if (allResolved) {
-        // Se todas as pernas finalizaram e todas acertaram, GANHOU
-        slip.status = 'ganhou';
-        slip.resolvedAt = now;
-        dirty = true;
-      } else {
-        // VENCEU/EXPIROU: passou o Ãºltimo pontapÃ© inicial + tolerÃ¢ncia e ainda nÃ£o
-        // houve resoluÃ§Ã£o completa (jogo adiado/abandonado/sem placar real).
-        const lastKickoff = slip.legs.reduce((max, l) => Math.max(max, l.kickoffAt || 0), 0);
-        const deadline = Math.max(lastKickoff, slip.expiresAt || 0) + graceMs;
-        if (now > deadline) {
-          slip.status = 'expirado';
-          slip.resolvedAt = now;
-          dirty = true;
-        }
-      }
+      if (settleSlip(slip, { graceHours: EXPIRY_GRACE_HOURS, now }).changed) dirty = true;
 
       if (dirty) {
         bilheteriaDb.upsertSlip(slip);
@@ -1917,42 +1739,21 @@ export class TicketEngine {
 
   /**
    * Recalcula tipWon/pushed de cada perna a partir do PLACAR e do mercado da
-   * PRÃ“PRIA perna (nÃ£o do tip do match). Corrige fichas antigas que foram
-   * resolvidas com o mercado do match e voltaram a "Acertou".
+   * PRÓPRIA perna (não do tip do match). Corrige fichas antigas que foram
+   * resolvidas com o mercado do match e voltaram a "Acertou". Também trata
+   * pushes como neutros (void) em vez de perda.
    */
   private repairLegResults(): void {
     const now = Date.now();
     let fixed = 0;
     for (const slip of this.slips) {
       let changed = false;
-      let anyLost = false;
-      let allResolved = true;
-
       for (const leg of slip.legs) {
-        const res = leg.result;
-        if (res && res.homeScore != null && res.awayScore != null) {
-          const outcome = marketOutcomeFor(leg.tip.market, res.homeScore, res.awayScore);
-          if (res.tipWon !== outcome.won || (res.pushed ?? false) !== outcome.pushed) {
-            leg.result = { ...res, tipWon: outcome.won, pushed: outcome.pushed };
-            changed = true;
-          }
-        }
-        if (leg.status !== 'resolved') allResolved = false;
-        else if (leg.result && !leg.result.tipWon) anyLost = true;
+        if (recomputeLegResult(leg)) changed = true;
       }
-
-      if (anyLost) {
-        if (slip.status !== 'perdeu') {
-          slip.status = 'perdeu';
-          slip.resolvedAt = slip.resolvedAt ?? now;
-          changed = true;
-        }
-      } else if (allResolved && slip.status !== 'expirado' && slip.status !== 'ganhou') {
-        slip.status = 'ganhou';
-        slip.resolvedAt = slip.resolvedAt ?? now;
+      if (settleSlip(slip, { graceHours: EXPIRY_GRACE_HOURS, now, allowExpiry: false }).changed) {
         changed = true;
       }
-
       if (changed) {
         bilheteriaDb.upsertSlip(slip);
         fixed += 1;
@@ -1967,26 +1768,28 @@ export class TicketEngine {
 
   public addCustomSlip(slip: BetSlip): BetSlip {
     if (!slip.dayKey) slip.dayKey = getDayKey(slip.createdAt || Date.now());
-    this.slips.unshift(slip);
+    this.remember(slip, true);
     bilheteriaDb.upsertSlip(slip);
     return slip;
   }
 
-  /** Limpa todos os bilhetes (usado no reset â€” pernas antigas ficam Ã³rfÃ£s). */
+  /** Limpa todos os bilhetes (usado no reset — pernas antigas ficam órfãs). */
   /**
-   * Remove uma ficha da memÃ³ria e da base de dados (inclui o registo de
-   * submissÃ£o Premier Bet associado). Devolve false se nÃ£o existir.
+   * Remove uma ficha da memória e da base de dados (inclui o registo de
+   * submissão Premier Bet associado). Devolve false se não existir.
    */
   public deleteSlip(id: string): boolean {
     const index = this.slips.findIndex((slip) => slip.id === id);
     if (index === -1) return false;
     this.slips.splice(index, 1);
+    this.slipById.delete(id);
     bilheteriaDb.deleteSlips([id]);
     return true;
   }
 
   public clearSlips(): void {
     this.slips = [];
+    this.slipById.clear();
     bilheteriaDb.deleteAllSlips();
   }
 }

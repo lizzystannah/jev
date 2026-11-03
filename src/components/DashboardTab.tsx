@@ -96,6 +96,7 @@ const STATUS_OPTIONS: Array<{ id: StatusFilter; label: string }> = [
   { id: 'ganhou', label: 'Ganhas' },
   { id: 'perdeu', label: 'Perdidas' },
   { id: 'expirado', label: 'Vencidas' },
+  { id: 'anulada', label: 'Anuladas' },
 ];
 
 function statsFor(slips: BetSlip[]): Stats {
@@ -115,12 +116,15 @@ function statsFor(slips: BetSlip[]): Stats {
     if (slip.status === 'pendente') pending += 1;
     else if (slip.status === 'ganhou') won += 1;
     else if (slip.status === 'perdeu') lost += 1;
-    else expired += 1;
+    else if (slip.status === 'expirado') expired += 1;
+    // 'anulada' (pernas void) não conta como perda nem como ganho.
 
     if (Number.isFinite(slip.combinedOdds) && slip.combinedOdds > 0) {
       oddsSum += slip.combinedOdds;
       oddsCount += 1;
-      if (slip.status === 'ganhou') returnedUnits += slip.combinedOdds;
+      if (slip.status === 'ganhou') {
+        returnedUnits += slip.effectiveOdds ?? slip.combinedOdds;
+      }
     }
     if (Number.isFinite(slip.combinedProb)) {
       probSum += slip.combinedProb;
@@ -130,7 +134,8 @@ function statsFor(slips: BetSlip[]): Stats {
     for (const leg of slip.legs || []) {
       if (leg.status !== 'resolved') continue;
       legs += 1;
-      if (leg.result?.tipWon) legsWon += 1;
+      // Pushes/void são neutros: não entram na taxa de acerto.
+      if (leg.result?.tipWon && !leg.result.pushed) legsWon += 1;
     }
   }
 
@@ -233,6 +238,13 @@ function statusMeta(status: BetSlip['status']) {
           'bg-[rgba(245,243,236,0.07)] text-[rgba(245,243,236,0.65)] border-[rgba(245,243,236,0.18)]',
         icon: <Hourglass className="w-3 h-3" />,
       };
+    case 'anulada':
+      return {
+        label: 'Anulada',
+        className:
+          'bg-[rgba(56,189,248,0.12)] text-[#38BDF8] border-[rgba(56,189,248,0.3)]',
+        icon: <Hourglass className="w-3 h-3" />,
+      };
     default:
       return {
         label: 'Pendente',
@@ -243,10 +255,12 @@ function statusMeta(status: BetSlip['status']) {
 }
 
 function slipProfit(slip: BetSlip): number | null {
+  const odds = slip.effectiveOdds ?? slip.combinedOdds;
   if (slip.status === 'ganhou') {
-    return Number.isFinite(slip.combinedOdds) ? slip.combinedOdds - 1 : null;
+    return Number.isFinite(odds) ? odds - 1 : null;
   }
   if (slip.status === 'perdeu') return -1;
+  if (slip.status === 'anulada') return 0;
   return null;
 }
 
@@ -878,7 +892,7 @@ export const DashboardTab: React.FC<{ slips: BetSlip[]; timezone: string }> = ({
                         {ENGINE_LABELS[engineOf(slip)]}
                       </td>
                       <td className="text-right px-2 py-2.5 text-[rgba(245,243,236,0.7)]">
-                        {oddsText(slip.combinedOdds)}
+                        {oddsText(slip.effectiveOdds ?? slip.combinedOdds)}
                       </td>
                       <td
                         className={`text-right px-2 py-2.5 font-medium ${

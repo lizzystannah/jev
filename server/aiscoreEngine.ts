@@ -2,48 +2,39 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Motor probabilÃ­stico LOCAL â€” substitui o Jev (OpenRouter/TypeSafe).
+ * Motor probabilístico LOCAL (substitui o Jev/OpenRouter).
+ * Variáveis usadas: ver comentário v4 (scout + advanced + tabelas + escalações).
  *
- * Usa TODAS as variÃ¡veis retornadas pelo AiScore via match/history
- * (entregues em `scout` + `advanced` no MatchItem):
+ * v5:
+ *  - Uma única matriz de placares (Poisson + Dixon-Coles) → todos os mercados coerentes.
+ *  - Taxas empíricas e H2H só escalam λ total (±10%); sem dupla contagem.
+ *  - Ajustes contextuais em log-espaço com teto total.
+ *  - Pesos do blend normalizados.
+ *  - Sem scout: leitura de mercado SEM margem, só com preços reais, marcada
+ *    modelBasis='market' e confiança ≤ 0.3.
  *
- *  Por jogo (home/away/h2h lists): id, date/matchTime, home_id/home,
- *    away_id/away, ft_home/ft_away (homeScores/awayScores packed sint32
- *    zigzag [FT,1H,2H,ET1,ET2,Pens] â€” FT = Ã­ndice 0, nunca somar perÃ­odos),
- *    ht_home/ht_away, periods_home/away, statusId/matchStatus/finished,
- *    result W/D/L, gf/ga, side home/away, comp, roundNum
- *  Agregados last10/all: W/D/L, GF/GA, avg_gf/ga/total, over15/25/35,
- *    btts, clean_sheets, failed_to_score, avg_1h_goals, venue split
- *    home/away, form_last5/10, totals
- *  Trends (home/away + _sc): matches, win/draw/loss, goals/conceded,
- *    avgPossession, avgShots, winStreak, unbeatenRun, overGoals +
- *    overGoalsDots, bothScore + bothScoreDots, underCards + Dots,
- *    underCorners + Dots
- *  GoalDistributions (all/home/away): matches, scored[6 janelas
- *    0-15..76-90+], conceded[6], scored_by_window, conceded_by_window,
- *    scored_total/conceded_total
- *  H2H: n_finished, over15/25/35, btts, clean_sheets_focal, focal_wdl,
- *    unbeaten_run_longest + span, lista focal completa
- *  Meta: competition, kickoff, statusId (+ standings opcional)
- *  Odds de mercado: apenas para REPORTAR EV e para o piso de odd 1.10 â€”
- *    nunca como critÃ©rio de escolha nem Ãºnica fonte de probabilidade.
+ * Seleção da tip: por FAIXA de probabilidade [0.55, 0.75], piso de odd 1.10.
+ * A odd de mercado só serve para o piso e para REPORTAR EV; nunca decide.
+ * Determinístico, síncrono, sem rede, sem LLM.
  *
- * SeleÃ§Ã£o da tip: por FAIXA de probabilidade â€” dentre os mercados com preÃ§o
- * real (â‰¥ 1.10), escolhe o de MAIOR p dentro da faixa [0.55, 0.75]
- * ("probabilidade mÃ©dia": nem quase-certo de 1.05, nem outrÃ£o). A escolha da
- * ficha (segura/moderada/ousada) NÃƒO acontece aqui: cada jogo sai com a sua
- * melhor tip de probabilidade mÃ©dia e as fichas acumulam jogos atÃ© atingir o
- * alvo de pontuaÃ§Ã£o TOTAL (ver ticketEngine TICKET_TARGETS).
- *
- * DeterminÃ­stico, sÃ­ncrono, sem rede, sem chave, sem LLM.
- * Espelha motor_aiscore.py do workspace Scraping (port fiel).
+ * ATENÇÃO: já NÃO é port fiel do motor_aiscore.py. Se precisas de paridade
+ * com o Python, a divergência é intencional a partir da v5.
  */
 
 import type { MarketType, MatchOdds, MatchTip, SimpleMarket, SlipScope, SlipTier, TipOption } from './types.js';
 import { deriveCompleteOdds, labelForMarket } from './marketService.js';
-import { isCompostaMarket, poissonCompostaProbs } from './compostas.js';
+import { compostaProbsFromMatrix, isCompostaMarket } from './compostas.js';
+import { CFG, tierFromProb } from './config.js';
+import {
+  type Adjustment, applyAdjustments, betaShrink, blend, devigPower,
+  fitMatrix, fitTotalScale, marketsFromMatrix, scoreMatrix, shiftLogit,
+} from './scoreModel.js';
 
-export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v4';
+export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v5';
+
+const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
+
+let nanFallbacks = 0;
 
 export interface LocalDecisionInput {
   scope: SlipScope;
@@ -68,17 +59,21 @@ export interface LocalDecisionInput {
 export interface LocalEvaluatedMatch {
   matchId: string;
   calibratedProb: number;
+  calibratedP: number;
   expectedValueEdge: number;
   recommendedMarket: MarketType;
   marketLabel: string;
   selectedOdds: number;
   riskTier: SlipTier;
-  /** Tip alternativa de odd alta para a ficha Maluca (mercado real). */
   highRiskTip?: MatchTip;
-  /** Todas as tips calculadas para o jogo (todas as variÃ¡veis â†’ p por mercado). */
   tips: TipOption[];
   confidence: number;
-  localScore: number;
+  /** 'market' = sem scout; 'none' = sem dados suficientes. */
+  modelBasis: 'model' | 'market' | 'none';
+  /** true quando a tip escolhida tem odd real acima do piso. */
+  priced: boolean;
+  /** true quando o mercado forçado foi realmente aplicado. */
+  forcedApplied: boolean;
 }
 
 export interface LocalInferenceResponse {
@@ -90,37 +85,6 @@ export interface LocalInferenceResponse {
 }
 
 // ---------------------------------------------------------------- helpers ---
-
-function clamp(x: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, x));
-}
-
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  const n = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
-function envFloat(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  const n = raw ? Number.parseFloat(raw) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-// Mesmos nomes usados no ticketEngine (helper local para nao criar ciclo).
-const MALUCA_MIN_LEG_ODD = Math.max(
-  1.01,
-  envFloat('TICKETS_MALUCA_MIN_LEG_ODD', 1.75)
-);
-const MALUCA_MAX_LEG_ODD = Math.max(
-  MALUCA_MIN_LEG_ODD,
-  envFloat('TICKETS_MALUCA_MAX_LEG_ODD', 3.0)
-);
-const MALUCA_MIN_PROB = Math.min(
-  95,
-  Math.max(0, envInt('TICKETS_MALUCA_MIN_PROB', 25))
-);
-const MALUCA_IDEAL_LEG_ODD = (MALUCA_MIN_LEG_ODD + MALUCA_MAX_LEG_ODD) / 2;
 
 function num(v: unknown, fb = 0): number {
   const f = Number(v);
@@ -151,29 +115,6 @@ function streakBonus(form: string): number {
   return clamp(s / 3, -1, 1) * 0.12;
 }
 
-function poissonPmf(lam: number, k: number): number {
-  let fact = 1;
-  for (let i = 2; i <= k; i++) fact *= i;
-  return Math.exp(-lam) * Math.pow(lam, k) / fact;
-}
-
-function poissonMarkets(lamH: number, lamA: number): Record<string, number> {
-  let pH = 0, pD = 0, pA = 0, o15 = 0, o25 = 0, o35 = 0, btts = 0;
-  for (let i = 0; i <= 8; i++) {
-    for (let j = 0; j <= 8; j++) {
-      const p = poissonPmf(lamH, i) * poissonPmf(lamA, j);
-      const tot = i + j;
-      if (i > j) pH += p; else if (i === j) pD += p; else pA += p;
-      if (tot >= 2) o15 += p;
-      if (tot >= 3) o25 += p;
-      if (tot >= 4) o35 += p;
-      if (i > 0 && j > 0) btts += p;
-    }
-  }
-  return { home: pH, draw: pD, away: pA, over15: o15, over25: o25, over35: o35,
-    under25: 1 - o25, under35: 1 - o35, btts_yes: btts, btts_no: 1 - btts };
-}
-
 function sanitizeOdd(v: unknown, fb = 1.85): number {
   const f = Number(v);
   if (!Number.isFinite(f) || f <= 1.01) return fb;
@@ -194,7 +135,7 @@ interface TeamBlock {
 }
 
 function deriveFromMatches(matches: any, venueSide: 'home' | 'away') {
-  // O scout_one nÃ£o traz over25/btts/clean-sheets/GF-GA-de-mando agregados â€”
+  // O scout_one não traz over25/btts/clean-sheets/GF-GA-de-mando agregados —
   // deriva-se da mesma fonte: os ~10 jogos finalizados (ft/ht/gf/ga/side).
   const fin: any[] = Array.isArray(matches) ? matches.filter(
     (r) => r && r.finished && r.ft_home != null && r.ft_away != null) : [];
@@ -205,6 +146,11 @@ function deriveFromMatches(matches: any, venueSide: 'home' | 'away') {
   const v = fin.filter((r) => r.side === venueSide);
   return {
     n,
+    GF: fin.reduce((a, r) => a + num(r.gf), 0),
+    GA: fin.reduce((a, r) => a + num(r.ga), 0),
+    W: fin.filter((r) => r.result === 'W').length,
+    D: fin.filter((r) => r.result === 'D').length,
+    L: fin.filter((r) => r.result === 'L').length,
     over25Rate: n ? totals.filter((t) => t >= 3).length / n : 0.5,
     bttsRate: n ? fin.filter((r) => num(r.ft_home) > 0 && num(r.ft_away) > 0).length / n : 0.4,
     cleanSheets: fin.filter((r) => num(r.ga) === 0).length,
@@ -228,32 +174,43 @@ function aggRate(A: any, F: any, key: string): number | null {
   return null;
 }
 
-function teamBlock(form: any, trend: any, venueSide: 'home' | 'away', advLast10?: any): TeamBlock {
-  // PrecedÃªncia: advanced team_stats last10 (mais rico) > agregados do form >
+export function teamBlock(form: any, trend: any, venueSide: 'home' | 'away', advLast10?: any): TeamBlock {
+  // Precedência: advanced team_stats last10 (mais rico) > agregados do form >
   // derivado da lista de jogos. venueSide: 'home' p/ mandante, 'away' p/ visitante.
   const F = form || {};
   const t = trend || {};
   const A = advLast10 || {};
-  const n = num(F.n ?? A.n ?? t.matches, 0);
   const der = deriveFromMatches(F.matches || A.matches, venueSide);
+
+  // G1: n, golos e W/D/L têm de vir da MESMA fonte. Preferimos advanced
+  // (10 jogos), depois o agregado do form; só no fim derivamos da lista.
+  const S = [A, F].find((s) => num(s?.n) > 0 && s?.GF != null && s?.GA != null);
+  const n = S ? num(S.n) : der.n;
+  const GF = S ? num(S.GF) : der.GF;
+  const GA = S ? num(S.GA) : der.GA;
+  const W = S ? num(S.W) : der.W;
+  const D = S ? num(S.D) : der.D;
+  const L = S ? num(S.L) : der.L;
 
   const vAdv = (A.venue || {})[venueSide] || {};
   const vSco = F[venueSide] || {};
+  const V = [vAdv, vSco].find((v) => num(v?.n) > 0 && v?.GF != null && v?.GA != null);
+  const venueN = V ? num(V.n) : der.venueN;
+  const venueGf = V ? num(V.GF) : der.venueGf;
+  const venueGa = V ? num(V.GA) : der.venueGa;
+  const venueW = V ? num(V.W) : der.venueW;
+  const venueD = V ? num(V.D) : der.venueD;
+  const venueL = V ? num(V.L) : der.venueL;
+
   const o25 = aggRate(A, F, 'over25') ?? der.over25Rate;
   const bt = aggRate(A, F, 'btts') ?? der.bttsRate;
   const cs = A.clean_sheets ?? F.clean_sheets ?? der.cleanSheets;
   const fts = A.failed_to_score ?? F.failed_to_score ?? der.failedToScore;
   const avg1h = A.avg_1h_goals ?? F.avg_1h_goals ?? der.avg1h;
   return {
-    n, W: num(A.W ?? F.W), D: num(A.D ?? F.D), L: num(A.L ?? F.L),
-    GF: num(A.GF ?? F.GF), GA: num(A.GA ?? F.GA),
+    n, W, D, L, GF, GA,
     form: String(A.form_last10 ?? F.form ?? ''),
-    venueN: num(vAdv.n || vSco.n || der.venueN),
-    venueGf: num(vAdv.GF ?? der.venueGf),
-    venueGa: num(vAdv.GA ?? der.venueGa),
-    venueW: num(vAdv.W ?? vSco.W ?? der.venueW),
-    venueD: num(vAdv.D ?? vSco.D ?? der.venueD),
-    venueL: num(vAdv.L ?? vSco.L ?? der.venueL),
+    venueN, venueGf, venueGa, venueW, venueD, venueL,
     avg1h: typeof avg1h === 'number' ? avg1h : null,
     cleanSheets: num(cs),
     failedToScore: num(fts),
@@ -292,23 +249,7 @@ function h2hBlock(scout: any, advanced: any): H2HBlock {
   };
 }
 
-function lateBoost(advanced: any, homeId: string | null, awayId: string | null): number {
-  let late = 0, tot = 0;
-  const gds: any[] = Array.isArray(advanced?.goal_distributions)
-    ? advanced.goal_distributions : [];
-  for (const gd of gds) {
-    if (teamKey(gd?.team_id) !== teamKey(homeId) && teamKey(gd?.team_id) !== teamKey(awayId)) continue;
-    const it = gd?.all || {};
-    const sbw = it.scored_by_window || {};
-    const cbw = it.conceded_by_window || {};
-    late += num(sbw['61-75']) + num(sbw['76-90+']) + num(cbw['61-75']) + num(cbw['76-90+']);
-    tot += num(it.scored_total) + num(it.conceded_total);
-  }
-  if (!tot) return 0;
-  return clamp((late / tot - 0.3) * 0.25, -0.03, 0.05);
-}
-
-// ----------------------------------------------------------------- nÃºcleo ---
+// ----------------------------------------------------------------- núcleo ---
 
 export interface EngineExtra {
   tables?: any;
@@ -375,9 +316,10 @@ function tableInfo(row: any, rows: any[]): TableInfo | null {
  * um pouco. Devolve um score pequeno; o ajuste final e limitado a +-4%.
  */
 function motivationScore(info: TableInfo | null): number {
-  if (!info || !info.groupSize) return 0;
+  if (!info || info.groupSize < 8) return 0; // grupos/mini-ligas: sem motivação
   const n = info.groupSize;
-  const late = info.played >= 20;
+  const progress = info.played / Math.max(1, (n - 1) * 2);
+  const late = progress >= 0.55;
   let score = 0;
   if (info.pos <= 3) score += 1;
   if (info.pos >= n - 2) score += 0.9;
@@ -398,7 +340,7 @@ function lineupSide(lineups: any, side: 'home' | 'away'): {
   };
 }
 
-/** Peso por posiÃ§Ã£o: F/M tira golos prÃ³prios; D/G dÃ¡ golos ao adversÃ¡rio. */
+/** Peso por posição: F/M tira golos próprios; D/G dá golos ao adversário. */
 function posHit(positions: string[]): [number, number] {
   let own = 0, opp = 0;
   for (const p of positions) {
@@ -412,23 +354,57 @@ function posHit(positions: string[]): [number, number] {
   return [Math.min(0.10, own), Math.min(0.10, opp)];
 }
 
-function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: number; xgA: number;
-  H: TeamBlock; A: TeamBlock; H2: H2HBlock; boost: number; htAdj: number } {
+function findTeamRows(scout: any, ctx: any, trows: any[]): { rh: any | null; ra: any | null } {
+  const ids = (...v: any[]) => new Set(v.map(teamKey).filter(Boolean));
+  const names = (...v: any[]) => new Set(v.map(normTeamName).filter(Boolean));
+  const homeIds = ids(scout?.home?.id, scout?.home_team_id, ctx.homeTeamId, ctx.home_team_id, ctx.home?.id);
+  const awayIds = ids(scout?.away?.id, scout?.away_team_id, ctx.awayTeamId, ctx.away_team_id, ctx.away?.id);
+  const homeNames = names(scout?.home?.name, scout?.home_team, ctx.homeTeam, ctx.home);
+  const awayNames = names(scout?.away?.name, scout?.away_team, ctx.awayTeam, ctx.away);
+  const find = (idSet: Set<string>, nameSet: Set<string>) => {
+    for (const r of trows) {
+      const id = teamKey(r?.team_id ?? r?.teamId ?? r?.id);
+      if (id && idSet.has(id)) return r;
+    }
+    for (const r of trows) if (nameSet.has(normTeamName(r?.team))) return r;
+    return null;
+  };
+  return { rh: find(homeIds, homeNames), ra: find(awayIds, awayNames) };
+}
+
+function tableStrength(r: any): number | null {
+  const tot = num(r?.total);
+  if (!tot || tot < 3 || r?.points == null) return null;
+  const gd = num(r?.goalDiff);
+  return (num(r.points) / tot) / 3 * 0.7 + clamp(gd / tot / 2, -1, 1) * 0.3;
+}
+
+interface XgResult {
+  xgH: number; xgA: number;
+  H: TeamBlock; A: TeamBlock; H2: H2HBlock;
+  htAdj: number;
+  explain: { home: Adjustment[]; away: Adjustment[] };
+}
+
+function estimateXg(scout: any, advanced: any, extra?: EngineExtra): XgResult {
   const adv = { ...(advanced || {}), ...(scout?.advanced || {}) };
   const ex: EngineExtra = { ...(extra || {}) };
   if (ex.tables == null && adv.tables != null) ex.tables = adv.tables;
   if (ex.lineups == null && adv.lineups != null) ex.lineups = adv.lineups;
   if (ex.context == null && adv.context != null) ex.context = adv.context;
+
   const hs = adv.home_stats || adv.home?.stats || {};
   const as_ = adv.away_stats || adv.away?.stats || {};
   const H = teamBlock(scout?.home_form, scout?.home_trend, 'home', hs.last10);
   const A = teamBlock(scout?.away_form, scout?.away_trend, 'away', as_.last10);
   const H2 = h2hBlock(scout, adv);
-  const homeId = scout?.home?.id ?? scout?.home_team_id ?? null;
-  const awayId = scout?.away?.id ?? scout?.away_team_id ?? null;
-  const boost = lateBoost(adv, homeId, awayId);
 
-  const perGame = (b: TeamBlock): [number, number] => {
+  // G2: equipa sem dados não vale 0 golos. Priors provisórios até M2.
+  const LG = { homeGf: 1.45, awayGf: 1.15 };
+  const perGame = (b: TeamBlock, side: 'home' | 'away'): [number, number] => {
+    if (b.n <= 0) {
+      return side === 'home' ? [LG.homeGf, LG.awayGf] : [LG.awayGf, LG.homeGf];
+    }
     const n = Math.max(1, b.n || 1);
     if (b.venueN >= 2) {
       return [0.55 * (b.venueGf / b.venueN) + 0.45 * (b.GF / n),
@@ -436,454 +412,510 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): { xgH: numb
     }
     return [b.GF / n, b.GA / n];
   };
-  const [hGf, hGa] = perGame(H);
-  const [aGf, aGa] = perGame(A);
+  const [hGf, hGa] = perGame(H, 'home');
+  const [aGf, aGa] = perGame(A, 'away');
 
+  // Base. H2H deixou de entrar aqui (entra uma só vez, no alvo de over 2.5/BTTS).
   let xgH = (hGf + aGa) / 2;
   let xgA = (aGf + hGa) / 2;
 
-  if (H2.n >= 2) {
-    const half = H2.recentAvg / 2;
-    xgH = 0.85 * xgH + 0.15 * half;
-    xgA = 0.85 * xgA + 0.15 * half;
-  }
+  // Segunda amostra _sc: regularizador suave, aplicado à base.
+  const hts = scout?.home_trend_sc || adv?.home_trend_sc;
+  const ats = scout?.away_trend_sc || adv?.away_trend_sc;
+  if (num(hts?.matches) > 0) xgH = 0.9 * xgH + 0.1 * (num(hts.goals) / num(hts.matches) + aGa) / 2;
+  if (num(ats?.matches) > 0) xgA = 0.9 * xgA + 0.1 * (num(ats.goals) / num(ats.matches) + hGa) / 2;
 
-  const momH = streakBonus(H.form) + Math.min(0.06, 0.02 * (H.unbeaten || 0));
-  const momA = streakBonus(A.form) + Math.min(0.06, 0.02 * (A.unbeaten || 0));
-  xgH *= 1 + momH;
-  xgA *= 1 + momA;
+  // Ajustes: recolhidos e combinados no fim, em log-espaço, com teto.
+  const adjH: Adjustment[] = [];
+  const adjA: Adjustment[] = [];
+  const sym = (key: string, x: number) => {
+    if (!x) return;
+    adjH.push({ key, pct: x });
+    adjA.push({ key, pct: -x });
+  };
 
-  const shotEdge = clamp(((H.shots || 0) - (A.shots || 0)) / 10, -0.08, 0.08);
-  xgH *= 1 + shotEdge;
-  xgA *= 1 - shotEdge;
-  xgH *= 1.03; // resÃ­duo de mando
+  adjH.push({ key: 'momentum', pct: streakBonus(H.form) + Math.min(0.06, 0.02 * (H.unbeaten || 0)) });
+  adjA.push({ key: 'momentum', pct: streakBonus(A.form) + Math.min(0.06, 0.02 * (A.unbeaten || 0)) });
+  sym('remates', clamp(((H.shots || 0) - (A.shots || 0)) / 10, -0.08, 0.08));
+  adjH.push({ key: 'residuo_mando', pct: 0.03 });
 
-  // vitÃ³rias em casa/fora: aproveitamento no mando vs geral (+-5% max)
   const venueEdge = (b: TeamBlock): number => {
     if (!b.venueN || b.venueN < 2) return 0;
     const vwr = b.venueW / Math.max(1, b.venueN);
     const owr = b.W / Math.max(1, b.n || 1);
     return clamp((vwr - owr) * 0.3, -0.05, 0.05);
   };
-  xgH *= 1 + venueEdge(H);
-  xgA *= 1 + venueEdge(A);
+  adjH.push({ key: 'mando_vitorias', pct: venueEdge(H) });
+  adjA.push({ key: 'mando_vitorias', pct: venueEdge(A) });
 
-  // classificação: PPG + saldo-de-golos por jogo (vale p/ grupos e ligas)
   const trows = tableRows(ex.tables);
   if (trows.length) {
-    const ctx0 = ex.context || {};
-    const homeIds = new Set(
-      [scout?.home?.id, scout?.home_team_id, ctx0.homeTeamId, ctx0.home_team_id,
-        ctx0.home?.id].map(teamKey).filter(Boolean)
-    );
-    const awayIds = new Set(
-      [scout?.away?.id, scout?.away_team_id, ctx0.awayTeamId, ctx0.away_team_id,
-        ctx0.away?.id].map(teamKey).filter(Boolean)
-    );
-    const homeNames = new Set(
-      [scout?.home?.name, scout?.home_team, ctx0.homeTeam, ctx0.home].map(normTeamName).filter(Boolean)
-    );
-    const awayNames = new Set(
-      [scout?.away?.name, scout?.away_team, ctx0.awayTeam, ctx0.away].map(normTeamName).filter(Boolean)
-    );
-    const findRow = (ids: Set<string>, names: Set<string>): any | null => {
-      for (const r of trows) {
-        const id = teamKey(r?.team_id ?? r?.teamId ?? r?.id);
-        if (id && ids.has(id)) return r;
-      }
-      for (const r of trows) {
-        if (names.has(normTeamName(r?.team))) return r;
-      }
-      return null;
-    };
-    const rh = findRow(homeIds, homeNames);
-    const ra = findRow(awayIds, awayNames);
-    const strength = (r: any): number | null => {
-      const tot = num(r?.total);
-      if (!tot || tot < 3 || r?.points == null) return null;
-      const gd = num(r?.goalDiff);
-      return (num(r.points) / tot) / 3 * 0.7 + clamp(gd / tot / 2, -1, 1) * 0.3;
-    };
-    const sH = rh ? strength(rh) : null;
-    const sA = ra ? strength(ra) : null;
-    if (sH != null && sA != null) {
-      const adj = clamp((sH - sA) * 0.12, -0.06, 0.06);
-      xgH *= 1 + adj;
-      xgA *= 1 - adj;
-    }
+    const { rh, ra } = findTeamRows(scout, ex.context || {}, trows);
+    const sH = rh ? tableStrength(rh) : null;
+    const sA = ra ? tableStrength(ra) : null;
+    if (sH != null && sA != null) sym('tabela_ppg', clamp((sH - sA) * 0.12, -0.06, 0.06));
 
-    // Posicao + motivacao: no maximo +-4% no total (nao substitui o PPG).
     const tiH = tableInfo(rh, trows);
     const tiA = tableInfo(ra, trows);
     if (tiH && tiA) {
       const n = Math.max(tiH.groupSize, tiA.groupSize, 1);
       const posAdj = clamp(((tiA.pos - tiH.pos) / Math.max(1, n - 1)) * 0.02, -0.02, 0.02);
       const motAdj = clamp((motivationScore(tiH) - motivationScore(tiA)) * 0.01, -0.02, 0.02);
-      const adj = clamp(posAdj + motAdj, -0.04, 0.04);
-      if (adj) {
-        xgH *= 1 + adj;
-        xgA *= 1 - adj;
-      }
+      sym('posicao_motivacao', clamp(posAdj + motAdj, -0.04, 0.04));
     }
   }
 
-  // escalaÃ§Ãµes: nota dos titulares, capitÃ£o e desfalques
   const lin = ex.lineups;
   if (lin && typeof lin === 'object' && lin.available) {
     const lh = lineupSide(lin, 'home');
     const la = lineupSide(lin, 'away');
-    if (lh.avg != null && la.avg != null) {
-      const redge = clamp((lh.avg - la.avg) * 0.04, -0.04, 0.04);
-      xgH *= 1 + redge;
-      xgA *= 1 - redge;
-    }
-    if (lh.captainOut) xgH *= 0.98;
-    if (la.captainOut) xgA *= 0.98;
+    if (lh.avg != null && la.avg != null) sym('rating_titulares', clamp((lh.avg - la.avg) * 0.04, -0.04, 0.04));
+    if (lh.captainOut) adjH.push({ key: 'capitao_fora', pct: -0.02 });
+    if (la.captainOut) adjA.push({ key: 'capitao_fora', pct: -0.02 });
     const [ownH, oppH] = posHit(lh.unavailable);
     const [ownA, oppA] = posHit(la.unavailable);
-    if (ownH || oppA) xgH *= (1 - ownH) * (1 + oppA);
-    if (ownA || oppH) xgA *= (1 - ownA) * (1 + oppH);
+    if (ownH || oppA) adjH.push({ key: 'desfalques', pct: (1 - ownH) * (1 + oppA) - 1 });
+    if (ownA || oppH) adjA.push({ key: 'desfalques', pct: (1 - ownA) * (1 + oppH) - 1 });
   }
 
-  // descanso: diferença de dias desde o último jogo (+-4% max)
   const ctx = ex.context || {};
   if (typeof ctx.restDaysHome === 'number' && typeof ctx.restDaysAway === 'number') {
-    const adj = clamp((ctx.restDaysHome - ctx.restDaysAway) * 0.008, -0.04, 0.04);
-    xgH *= 1 + adj;
-    xgA *= 1 - adj;
+    sym('descanso', clamp((ctx.restDaysHome - ctx.restDaysAway) * 0.008, -0.04, 0.04));
   }
 
-  // ritmo de 1a parte: mÃ©dia de golos HT dos dois lados
   let htAdj = 0;
   if (H.avg1h != null && A.avg1h != null) {
     htAdj = clamp((H.avg1h + A.avg1h - 1.1) * 0.05, -0.03, 0.03);
   }
 
-  // segunda amostra _sc como regularizador suave (quando o scout a traz)
-  const hts = scout?.home_trend_sc || adv?.home_trend_sc;
-  const ats = scout?.away_trend_sc || adv?.away_trend_sc;
-  if (hts?.matches) xgH = 0.9 * xgH + 0.1 * (hts.goals / hts.matches + aGa) / 2;
-  if (ats?.matches) xgA = 0.9 * xgA + 0.1 * (ats.goals / ats.matches + hGa) / 2;
+  xgH = applyAdjustments(xgH, adjH, CFG.model.adjustCap).value;
+  xgA = applyAdjustments(xgA, adjA, CFG.model.adjustCap).value;
+  const fin = (x: number, fb: number, side: 'xgH' | 'xgA') => {
+    if (!Number.isFinite(x) || x <= 0) {
+      nanFallbacks++;
+      console.warn(`[AiScore] ${side} inválido; a usar fallback ${fb}`);
+      return fb;
+    }
+    return x;
+  };
 
-  return { xgH: clamp(xgH || 1.2, 0.05, 4.5), xgA: clamp(xgA || 1.0, 0.05, 4.5), H, A, H2, boost, htAdj };
+  return {
+    xgH: clamp(fin(xgH, 1.2, 'xgH'), 0.05, 4.5),
+    xgA: clamp(fin(xgA, 1.0, 'xgA'), 0.05, 4.5),
+    H, A, H2, htAdj,
+    explain: { home: adjH.filter((a) => a.pct), away: adjA.filter((a) => a.pct) },
+  };
 }
 
-export function localProbabilities(scout: any, advanced: any, extra?: EngineExtra): Record<MarketType, number> {
-  const { xgH, xgA, H, A, H2, boost, htAdj } = estimateXg(scout, advanced, extra);
+export interface LocalModelOutput {
+  probs: Record<MarketType, number>;
+  xgH: number;
+  xgA: number;
+  scale: number;
+  explain: {
+    home: Adjustment[]; away: Adjustment[];
+    overShifts: Array<{ key: string; logit: number }>;
+  };
+}
+
+/** Média das taxas das duas equipas, cada uma encolhida para o prior. */
+function pairRate(rH: number, nH: number, rA: number, nA: number, prior: number, k: number): number {
+  return (betaShrink(rH * nH, nH, prior, k) + betaShrink(rA * nA, nA, prior, k)) / 2;
+}
+
+export function localModel(scout: any, advanced: any, extra?: EngineExtra): LocalModelOutput {
+  const x = estimateXg(scout, advanced, extra);
+  const { H, A, H2 } = x;
   const ctx = extra?.context || (advanced || {}).context || {};
-  const pois = poissonMarkets(xgH, xgA);
+  const { rho, shrinkK, scaleMin, scaleMax, empWeight, resultCap } = CFG.model;
 
-  const empO25 = (H.n + A.n) > 0 ? (H.over25Rate + A.over25Rate) / 2 : 0.5;
-  const empBtts = (H.n + A.n) > 0 ? (H.bttsRate + A.bttsRate) / 2 : 0.4;
-  const empO15 = clamp(empO25 * 1.45, 0, 0.97);
-  const h2hW = Math.min(0.12, 0.03 * H2.n);
+  const base = marketsFromMatrix(scoreMatrix(x.xgH, x.xgA, rho, CFG.model.maxGoals));
+  const h2hW = H2.n >= 2 ? Math.min(0.12, 0.03 * H2.n) : 0;
+  const modelW = 1 - empWeight;
 
-  let pO25 = clamp(0.6 * pois.over25 + 0.28 * empO25 + h2hW * H2.over25Rate + boost + htAdj, 0.02, 0.97);
-  const pO15 = clamp(0.6 * pois.over15 + 0.28 * empO15 + h2hW * H2.over25Rate, 0.05, 0.98);
-  const pO35 = clamp(0.65 * pois.over35 + 0.25 * clamp(empO25 * 0.55, 0, 1) + h2hW * H2.over25Rate * 0.5, 0.01, 0.9);
-  let pBtts = clamp(0.6 * pois.btts_yes + 0.28 * empBtts + h2hW * H2.bttsRate, 0.02, 0.95);
+  const empO25 = pairRate(H.over25Rate, H.n, A.over25Rate, A.n, base.over25, shrinkK);
+  const empBtts = pairRate(H.bttsRate, H.n, A.bttsRate, A.n, base.btts_yes, shrinkK);
 
-  const csRate = (H.cleanSheets + A.cleanSheets) / Math.max(2, (H.n || 0) + (A.n || 0));
-  const ftsRate = (H.failedToScore + A.failedToScore) / Math.max(2, (H.n || 0) + (A.n || 0));
-  pBtts = clamp(pBtts * (1 - 0.5 * csRate) * (1 - 0.4 * ftsRate), 0.02, 0.95);
+  // Deslocamentos em logit sobre o alvo de over 2.5.
+  const overShifts: Array<{ key: string; logit: number }> = [];
+  const underGame = (Math.min(1, (H.underCards + H.underCorners) / 20)
+    + Math.min(1, (A.underCards + A.underCorners) / 20)) / 2;
+  if (underGame > 0.85) overShifts.push({ key: 'jogo_travado', logit: -0.07 });
+  const closed = ctx.importance === 'derby' || ctx.importance === 'decisiva';
+  if (closed) overShifts.push({ key: 'jogo_fechado', logit: -0.09 });
+  if (CFG.flags.htAdj && x.htAdj) overShifts.push({ key: 'ritmo_1a_parte', logit: 4 * x.htAdj });
 
+  const tgtO25 = shiftLogit(
+    blend([[modelW, base.over25], [empWeight, empO25], [h2hW, H2.over25Rate]]),
+    overShifts.reduce((a, s) => a + s.logit, 0)
+  );
+  const scale = fitTotalScale(x.xgH, x.xgA, rho, tgtO25, scaleMin, scaleMax);
+  const lh = x.xgH * scale;
+  const la = x.xgA * scale;
+  const M = scoreMatrix(lh, la, rho, CFG.model.maxGoals);
+  const mk = marketsFromMatrix(M);
+
+  // BTTS: mesmo tratamento; limitado por over15 (BTTS implica ≥ 2 golos).
+  let btts = blend([[modelW, mk.btts_yes], [empWeight, empBtts], [h2hW, H2.bttsRate]]);
+  if (closed) btts = shiftLogit(btts, -0.06);
+  btts = clamp(btts, 0.02, Math.min(0.95, mk.over15 - 0.01));
+
+  // 1X2: forma e H2H como ajustes em log-espaço com teto.
   const [pfH] = formPoints(H.form);
   const [pfA] = formPoints(A.form);
   const formEdge = clamp((pfH - pfA) * 0.35, -0.12, 0.12);
   let h2hEdge = 0;
   const totH2 = H2.W + H2.D + H2.L;
   if (totH2 >= 2) h2hEdge = clamp(((H2.W + 0.5 * H2.D) / totH2 - 0.5) * 0.5, -0.1, 0.1);
-  // sequÃªncia invicta no confronto direto reforÃ§a o mandante focal
   if (H2.unbeatenLongest >= 3 && totH2 >= 2) {
     h2hEdge = clamp(h2hEdge + Math.min(0.05, 0.015 * (H2.unbeatenLongest - 2)), -0.1, 0.1);
   }
+  let pH = clamp(applyAdjustments(mk.home,
+    [{ key: 'forma', pct: formEdge }, { key: 'h2h', pct: h2hEdge }], resultCap).value, 0.02, 0.93);
+  let pA = clamp(applyAdjustments(mk.away,
+    [{ key: 'forma', pct: -formEdge }, { key: 'h2h', pct: -h2hEdge }], resultCap).value, 0.02, 0.93);
+  const s = pH + mk.draw + pA;
+  pH /= s; pA /= s;
+  const pD = mk.draw / s;
 
-  let pH = clamp(pois.home * (1 + formEdge + h2hEdge), 0.02, 0.93);
-  let pA = clamp(pois.away * (1 - formEdge - h2hEdge), 0.02, 0.93);
-  const s = pH + pois.draw + pA;
-  pH /= s; const pD = pois.draw / s; pA /= s;
+  // V6: a matriz final tem de respeitar 1X2, over 2.5 e BTTS ao mesmo tempo.
+  // IPF reescala as células; todos os mercados (incluindo compostas) saem de F.
+  const F = fitMatrix(M, { home: pH, draw: pD, away: pA, over25: tgtO25, btts });
+  const fm = marketsFromMatrix(F);
 
-  const underGame = (Math.min(1, (H.underCards + H.underCorners) / 20)
-    + Math.min(1, (A.underCards + A.underCorners) / 20)) / 2;
-  let pU25 = 1 - pO25;
-  let pU35 = 1 - pO35;
-  if (underGame > 0.85) {
-    // jogo travado (cards/corners under altos): reforÃ§a unders
-    pU35 = clamp(pU35 + 0.02, 0, 0.98);
-    pU25 = clamp(pU25 + 0.015, 0, 0.97);
-  }
-
-  // importÃ¢ncia: clÃ¡ssico/decisÃ£o tende a jogo fechado
-  const imp = ctx.importance;
-  if (imp === 'derby' || imp === 'decisiva') {
-    pO25 = clamp(pO25 - 0.02, 0.02, 0.97);
-    pU25 = clamp(pU25 + 0.02, 0, 0.97);
-    pU35 = clamp(pU35 + 0.02, 0, 0.98);
-    pBtts = clamp(pBtts - 0.015, 0.02, 0.95);
-  }
+  const o15 = clamp(fm.over15, 0.01, 0.99);
+  const o25 = clamp(fm.over25, 0.01, 0.99);
+  const o35 = clamp(fm.over35, 0.01, 0.99);
+  const bttsFinal = clamp(fm.btts_yes, 0.02, 0.95);
 
   const probs: Record<string, number> = {
-    home: pH, draw: pD, away: pA,
-    double_chance_1x: 1 - pA, double_chance_x2: 1 - pH, double_chance_12: 1 - pD,
-    over15: pO15, over25: pO25, over35: pO35,
-    under25: pU25, under35: pU35,
-    btts_yes: pBtts, btts_no: 1 - pBtts,
-    // DNB: empate devolve a stake -> probabilidade condicionada a NAO empate.
-    dnb_home: clamp(pH / Math.max(0.05, pH + pA), 0.05, 0.97),
-    dnb_away: clamp(pA / Math.max(0.05, pH + pA), 0.05, 0.97),
+    home: fm.home, draw: fm.draw, away: fm.away,
+    double_chance_1x: 1 - fm.away, double_chance_x2: 1 - fm.home, double_chance_12: 1 - fm.draw,
+    over15: o15, over25: o25, over35: o35,
+    under25: 1 - o25, under35: 1 - o35,
+    btts_yes: bttsFinal, btts_no: 1 - bttsFinal,
+    dnb_home: clamp(fm.home / Math.max(0.05, fm.home + fm.away), 0.05, 0.97),
+    dnb_away: clamp(fm.away / Math.max(0.05, fm.home + fm.away), 0.05, 0.97),
   };
-  Object.assign(probs, poissonCompostaProbs(xgH, xgA));
-  return probs as Record<MarketType, number>;
+  Object.assign(probs, compostaProbsFromMatrix(F));
+
+  return {
+    probs: probs as Record<MarketType, number>,
+    xgH: lh, xgA: la, scale,
+    explain: { home: x.explain.home, away: x.explain.away, overShifts },
+  };
+}
+
+/** Compatibilidade com o código existente. */
+export function localProbabilities(
+  scout: any, advanced: any, extra?: EngineExtra
+): Record<MarketType, number> {
+  return localModel(scout, advanced, extra).probs;
 }
 
 function essentialsFromContext(ctx: any): any {
-  // Fallback quando o scout completo ainda nÃ£o foi anexado: reconstrÃ³i um
-  // scout mÃ­nimo a partir do MatchContext reduzido (recentForm/gols/H2H).
+  // Fallback quando o scout completo ainda não foi anexado: reconstrói um
+  // scout mínimo a partir do MatchContext reduzido (recentForm/gols/H2H).
+  // G8: não inventar golos, taxas, cartões ou posse quando não há dados.
   if (!ctx || typeof ctx !== 'object') return null;
-  const mk = (tf: any, n = 5) => {
+  const mk = (tf: any) => {
     const rf: string[] = Array.isArray(tf?.recentForm) ? tf.recentForm : [];
-    const gf = num(tf?.goalsScoredAvg5, 1.2);
-    const ga = num(tf?.goalsConcededAvg5, 1.2);
-    const csPct = num(tf?.cleanSheetPct, 20);
+    if (!rf.length) return null;
+    const n = rf.length;
+    const gf = Number(tf?.goalsScoredAvg5);
+    const ga = Number(tf?.goalsConcededAvg5);
+    const csPct = Number(tf?.cleanSheetPct);
     const W = rf.filter((r) => r === 'W').length;
     const D = rf.filter((r) => r === 'D').length;
     const L = rf.filter((r) => r === 'L').length;
-    return {
-      n: rf.length || n, W, D, L, GF: +(gf * (rf.length || n)).toFixed(1),
-      GA: +(ga * (rf.length || n)).toFixed(1), form: [...rf].reverse().join(''),
-      clean_sheets: Math.round(((rf.length || n) * csPct) / 100),
-      failed_to_score: 0,
-      over25: { count: Math.round((rf.length || n) * 0.4), n: rf.length || n },
-      btts: { count: Math.round((rf.length || n) * 0.4), n: rf.length || n },
-      venue: { n: 0, GF: 0, GA: 0 },
+    const out: Record<string, unknown> = {
+      n, W, D, L,
+      // recentForm já vem do mais antigo para o mais recente (toTeamForm),
+      // a mesma convenção de formPoints/streakBonus.
+      form: rf.join(''),
     };
+    if (Number.isFinite(gf)) out.GF = +(gf * n).toFixed(1);
+    if (Number.isFinite(ga)) out.GA = +(ga * n).toFixed(1);
+    if (Number.isFinite(csPct)) out.clean_sheets = Math.round((n * csPct) / 100);
+    return out;
   };
+  const homeForm = mk(ctx.homeForm);
+  const awayForm = mk(ctx.awayForm);
   const h2h = ctx.h2h || {};
   const total = num(h2h.homeWins) + num(h2h.draws) + num(h2h.awayWins);
+  if (!homeForm && !awayForm && total === 0) return null;
   return {
-    home_form: mk(ctx.homeForm),
-    away_form: mk(ctx.awayForm),
+    home_form: homeForm,
+    away_form: awayForm,
     h2h: [],
-    h2h_summary: { W: num(h2h.homeWins), D: num(h2h.draws), L: num(h2h.awayWins) },
-    home_trend: { matches: 5, win: 0, draw: 0, loss: 0, goals: 0, conceded: 0,
-      avgPossession: 45, avgShots: '6.0', unbeatenRun: 0, overGoals: 0,
-      bothScore: Math.round(total * (num(h2h.bothScoredPct) / 100)) || 0,
-      underCards: 8, underCorners: 8 },
-    away_trend: { matches: 5, win: 0, draw: 0, loss: 0, goals: 0, conceded: 0,
-      avgPossession: 45, avgShots: '6.0', unbeatenRun: 0, overGoals: 0,
-      bothScore: 0, underCards: 8, underCorners: 8 },
+    h2h_summary: total > 0
+      ? { W: num(h2h.homeWins), D: num(h2h.draws), L: num(h2h.awayWins) }
+      : undefined,
     _fromContext: true,
+  };
+}
+
+// ---------------------------------------------------------- fallback/tips ---
+
+/**
+ * Sem scout: p vem das odds REAIS sem margem. Mercados sem preço real
+ * ficam de fora (nada de constantes inventadas como 0.75 ou 0.3).
+ */
+function marketOnlyProbs(
+  compOdds: Record<string, number>, real?: readonly string[]
+): Record<string, number> {
+  const o1 = [compOdds.home, compOdds.draw, compOdds.away];
+  if (!o1.every((o) => Number.isFinite(o) && o > 1.01)) return {};
+  const [pH, pD, pA] = devigPower(o1);
+  const P: Record<string, number> = {
+    home: pH, draw: pD, away: pA,
+    double_chance_1x: pH + pD, double_chance_x2: pD + pA, double_chance_12: pH + pA,
+    dnb_home: pH / (pH + pA), dnb_away: pA / (pH + pA),
+  };
+  const twoWay = (yes: string, no: string) => {
+    if (!real?.includes(yes) || !real.includes(no)) return;
+    const a = compOdds[yes], b = compOdds[no];
+    if (!(a > 1.01 && b > 1.01)) return;
+    const [py, pn] = devigPower([a, b]);
+    P[yes] = py; P[no] = pn;
+  };
+  twoWay('over25', 'under25');
+  twoWay('btts_yes', 'btts_no');
+  twoWay('over35', 'under35');
+  return P;
+}
+
+interface Cand { m: MarketType; p: number; odd: number }
+
+/** Maior p dentro da faixa; sem candidato na faixa segue CFG.band.noBandFallback. */
+function pickInBand(cands: Cand[]): Cand | undefined {
+  if (!cands.length) return undefined;
+  const { lo, hi, tieEps, noBandFallback } = CFG.band;
+  const inBand = cands.filter((x) => x.p >= lo && x.p <= hi);
+  if (inBand.length) {
+    const best = Math.max(...inBand.map((x) => x.p));
+    // tieEps = 0 (defeito): só empates exatos desempatam por EV → a odd nunca decide.
+    return inBand
+      .filter((x) => best - x.p <= tieEps)
+      .sort((a, b) => b.p * b.odd - a.p * a.odd || b.p - a.p)[0];
+  }
+  if (noBandFallback === 'closest') {
+    const dist = (x: Cand) => (x.p < lo ? lo - x.p : x.p - hi);
+    return [...cands].sort((a, b) => dist(a) - dist(b) || b.p - a.p)[0];
+  }
+  return [...cands].sort((a, b) => b.p - a.p)[0];
+}
+
+function noDataEvaluation(matchId: string): LocalEvaluatedMatch {
+  return {
+    matchId, calibratedProb: 0, calibratedP: 0, expectedValueEdge: 0,
+    recommendedMarket: 'home', marketLabel: '', selectedOdds: 0,
+    riskTier: 'maluca', tips: [], confidence: 0,
+    modelBasis: 'none', priced: false, forcedApplied: false,
   };
 }
 
 export function evaluateOne(match: LocalDecisionInput['matches'][number]): LocalEvaluatedMatch {
   const compOdds = deriveCompleteOdds(match.odds);
+  const realMarkets = match.odds.realMarkets;
   const scout = match.scout || essentialsFromContext(match.context);
-  const advanced = match.advanced || (match.scout as any)?.advanced || null;
+  const advanced = match.advanced || match.scout?.advanced || null;
   const extra: EngineExtra = {
-    tables: (match as any).tables ?? null,
-    lineups: (match as any).lineups ?? null,
+    tables: match.tables ?? null,
+    lineups: match.lineups ?? null,
     context: match.context ?? null,
   };
-  const probs = scout ? localProbabilities(scout, advanced, extra) : null;
 
-  // Sem scout nem contexto: cai para a leitura de mercado (nunca ideal,
-  // mas mantÃ©m o pipeline a gerar em vez de falhar).
-  const fallbackProbs = (() => {
-    const pH = (1 / compOdds.home) * 100;
-    const pD = (1 / compOdds.draw) * 100;
-    const pA = (1 / compOdds.away) * 100;
-    const s = pH + pD + pA;
-    return {
-      home: pH / s, draw: pD / s, away: pA / s,
-      double_chance_1x: 1 - pA / s, double_chance_x2: 1 - pH / s,
-      double_chance_12: 1 - pD / s,
-      over15: 0.75, over25: (1 / compOdds.over25) * 0.95, over35: 0.3,
-      under25: 1 - (1 / compOdds.over25) * 0.95, under35: 0.7,
-      btts_yes: (1 / compOdds.btts_yes) * 0.95, btts_no: 1 - (1 / compOdds.btts_yes) * 0.95,
-      dnb_home: 0.55, dnb_away: 0.45,
-    } as Record<string, number>;
-  })();
-  const P: Record<string, number> = probs || fallbackProbs;
+  const model = scout ? localModel(scout, advanced, extra) : null;
+  const modelBasis: LocalEvaluatedMatch['modelBasis'] = model ? 'model' : 'market';
+  const P: Record<string, number> = model
+    ? model.probs
+    : marketOnlyProbs(compOdds as unknown as Record<string, number>, realMarkets);
 
-  const realMarkets = match.odds.realMarkets;
-  const allMarkets = Object.keys(P) as MarketType[];
-  // Sem realMarkets (dados antigos) sÃ³ 1X2 tem preÃ§o; o resto Ã© null em tips.
+  const allMarkets = (Object.keys(P) as MarketType[]).filter((m) => Number.isFinite(P[m]));
+  if (allMarkets.length === 0) return noDataEvaluation(match.id);
 
-  // SeleÃ§Ã£o da tip por FAIXA de probabilidade â€” Todas as variÃ¡veis (forma, H2H,
-  // mando, posiÃ§Ã£o, escalaÃ§Ã£o) existem para produzir p; a escolha pega o mercado
-  // de MAIOR p dentre os que caibam na faixa [0.55, 0.75] ("probabilidade mÃ©dia"
-  // â€” nem quase-certo ~1.05, nem outrÃ£o). Sem candidato na faixa, vence o de
-  // maior p. Piso de odd 1.10: nunca recomendar tip abaixo disso.
-  const BAND_LO = 0.55;
-  const BAND_HI = 0.75;
-  const ODD_FLOOR = 1.10;
-  const forced = (match as any).forcedMarket as MarketType | undefined;
+  const names = { home: match.home, away: match.away };
+  const forced = match.forcedMarket;
 
-  // Odd real do mercado; 0 = sem preco real (nunca fallback sintetico).
+  // Odd real do mercado; 0 = sem preço real (nunca sintético).
   const realOddOf = (m: MarketType): number => {
     if (isCompostaMarket(m)) {
       const odd = match.odds.comboOdds?.[m];
-      return Number.isFinite(odd) && (odd as number) > 1.01
-        ? Number((odd as number).toFixed(2))
-        : 0;
+      return Number.isFinite(odd) && (odd as number) > 1.01 ? Number((odd as number).toFixed(2)) : 0;
     }
     if (realMarkets && !realMarkets.includes(m)) return 0;
     if (!realMarkets && m !== 'home' && m !== 'draw' && m !== 'away') return 0;
     return sanitizeOdd(compOdds[m as SimpleMarket], 0);
   };
 
-  // TODAS as tips do jogo (probabilidade por mercado). `odds` fica null quando
-  // nÃ£o hÃ¡ preÃ§o real â€” a UI mostra a probabilidade e desativa a seleÃ§Ã£o.
-  const allTips: TipOption[] = allMarkets
-    .map((m) => {
-      const odd = realOddOf(m);
-      return {
-        market: m,
-        label: labelForMarket(m, { home: match.home, away: match.away }),
-        odds: odd > 1.01 ? odd : null,
-        prob: Math.round(clamp(P[m] ?? 0, 0.01, 0.99) * 100),
-      } as TipOption;
-    })
-    .filter((t) => t.prob > 0);
+  const allTips: TipOption[] = allMarkets.map((m) => {
+    const odd = realOddOf(m);
+    const p = clamp(P[m], 0.01, 0.99);
+    return {
+      market: m,
+      label: labelForMarket(m, names),
+      odds: odd > 1.01 ? odd : null,
+      prob: Math.round(p * 100),
+      p: Math.round(p * 10000) / 10000,
+    } as TipOption;
+  });
 
-  const cands = allMarkets
+  const cands: Cand[] = allMarkets
     .filter((m) => !isCompostaMarket(m))
-    .map((m) => ({ m, p: P[m] ?? 0, odd: realOddOf(m) }))
+    .map((m) => ({ m, p: P[m], odd: realOddOf(m) }))
     .filter((x) => x.p > 0.01);
 
-  let b: { m: MarketType; p: number; odd: number };
-  if (forced && P[forced] !== undefined) {
-    // Mercado forÃ§ado pelo utilizador (seletor de tip / ficha manual).
+  const forcedApplied = !!forced && P[forced] !== undefined;
+  let b: Cand;
+  if (forcedApplied && forced) {
     b = { m: forced, p: P[forced], odd: realOddOf(forced) };
   } else {
-    const valid = cands.filter((x) => x.odd >= ODD_FLOOR);
-    const pool = valid.length > 0 ? valid : cands;
-    const byProb = [...pool].sort((a, bb) => bb.p - a.p);
-    const inBand = byProb.filter((x) => x.p >= BAND_LO && x.p <= BAND_HI);
-    b = inBand[0] ?? byProb[0] ?? { m: 'home' as MarketType, p: 0, odd: 0 };
+    const valid = cands.filter((x) => x.odd >= CFG.band.oddFloor);
+    b = pickInBand(valid.length ? valid : cands) ?? { m: 'home' as MarketType, p: 0, odd: 0 };
   }
+  const priced = b.odd >= CFG.band.oddFloor;
 
-  // EV continua a ser REPORTADO, mas nÃ£o seleciona: Ã© sÃ³ p Ã— odd âˆ’ 1 do mercado
-  // escolhido, informaÃ§Ã£o de precificaÃ§Ã£o, nunca critÃ©rio de escolha.
-  const edge = b.odd > 1.01 ? b.p * b.odd - 1 : 0;
+  // V1: EV só faz sentido com modelo; em market-only p×odd−1 é ≈ −margem.
+  const edge = modelBasis === 'model' && b.odd > 1.01 ? b.p * b.odd - 1 : 0;
 
-  // Tip alternativa de odd alta para a Maluca. Usa o mesmo modelo e apenas
-  // mercados com preÃ§o real; nÃ£o Ã© uma odd inventada, Ã© outro mercado do jogo.
-  const highRiskPool = allMarkets
-    .filter((m) => !isCompostaMarket(m))
-    .map((m) => ({
-      m,
-      p: P[m] ?? 0,
-      odd: realOddOf(m),
-    }))
-    .filter((x) => Number.isFinite(x.odd) && x.odd > 1.01 && x.p > 0.01);
-  const preferredHighRisk = (() => {
-    const grounded = highRiskPool.filter(
-      (x) =>
-        x.p * 100 >= MALUCA_MIN_PROB &&
-        x.odd >= MALUCA_MIN_LEG_ODD &&
-        x.odd <= MALUCA_MAX_LEG_ODD
-    );
-    if (grounded.length > 0) return grounded;
-    // Fallback: ainda com alguma base, mas nunca odds extremas (6x-10x).
-    return highRiskPool.filter((x) => x.p >= 0.2 && x.odd >= 1.5 && x.odd <= 3.25);
-  })();
-  const highRisk = preferredHighRisk.sort(
-    (a, b) =>
-      Math.abs(a.odd - MALUCA_IDEAL_LEG_ODD) -
-        Math.abs(b.odd - MALUCA_IDEAL_LEG_ODD) ||
-      b.p - a.p ||
-      b.odd - a.odd
+  // Tip de odd alta para a Maluca: outro mercado do mesmo jogo, preço real.
+  const mc = CFG.maluca;
+  const pool = cands.filter((x) => x.odd > 1.01);
+  const grounded = pool.filter(
+    (x) => x.p * 100 >= mc.minProb && x.odd >= mc.minLegOdd && x.odd <= mc.maxLegOdd
+  );
+  const hrCands = grounded.length
+    ? grounded
+    : pool.filter((x) => x.p >= mc.fallback.minP && x.odd >= mc.fallback.minOdd && x.odd <= mc.fallback.maxOdd);
+  const hr = [...hrCands].sort(
+    (a, c) => Math.abs(a.odd - mc.idealLegOdd) - Math.abs(c.odd - mc.idealLegOdd)
+      || c.p - a.p || c.odd - a.odd
   )[0];
-  const highRiskTip: MatchTip | undefined = highRisk
+  const highRiskTip: MatchTip | undefined = hr
     ? {
-        market: highRisk.m,
-        label: labelForMarket(highRisk.m, { home: match.home, away: match.away }),
-        odds: highRisk.odd,
-        prob: Math.round(clamp(highRisk.p, 0.01, 0.99) * 100),
+        market: hr.m,
+        label: labelForMarket(hr.m, names),
+        odds: hr.odd,
+        prob: Math.round(clamp(hr.p, 0.01, 0.99) * 100),
+        p: Math.round(clamp(hr.p, 0.01, 0.99) * 10000) / 10000,
       }
     : undefined;
 
-  const calib = Math.round(clamp(b.p, 0.1, 0.95) * 100);
-  const edgePct = Math.round(edge * 100 * 10) / 10;
-  const riskTier: SlipTier =
-    calib >= 63 ? 'segura' : calib >= 48 ? 'moderada' : calib >= 28 ? 'ousada' : 'maluca';
-  let confidence = scout?._fromContext ? 0.55 : 0.8;
-  const lin = (match as any).lineups;
+  const pSel = clamp(b.p, 0.01, 0.99);
+  const calib = Math.round(pSel * 100);
+
+  let confidence = modelBasis === 'market' ? 0.3 : scout?._fromContext ? 0.55 : 0.8;
+  const lin = match.lineups;
   if (lin && lin.available && lin.confirmed !== 1) confidence = Math.max(0.1, confidence - 0.05);
+  if (modelBasis === 'market') confidence = Math.min(0.3, confidence);
+
   return {
     matchId: match.id,
     calibratedProb: calib,
-    expectedValueEdge: edgePct,
+    calibratedP: Math.round(pSel * 10000) / 10000,
+    expectedValueEdge: Math.round(edge * 1000) / 10,
     recommendedMarket: b.m,
-    marketLabel: labelForMarket(b.m, { home: match.home, away: match.away }),
+    marketLabel: labelForMarket(b.m, names),
     selectedOdds: b.odd,
-    riskTier,
+    riskTier: tierFromProb(calib),
     highRiskTip,
     tips: allTips,
     confidence: Math.round(confidence * 1000) / 1000,
-    // PontuaÃ§Ã£o do jogo = probabilidade calibrada. Puramente o modelo;
-    // nada de EV aqui â€” a odd entra sÃ³ na fase de precificar/apostar.
-    localScore: calib,
+    modelBasis,
+    priced,
+    forcedApplied,
   };
 }
 
-// ---------------------------------------------------------------- mÃ©tricas ---
+// ---------------------------------------------------------------- métricas ---
 
-interface AccStats {
-  total: number; probSum: number; edgeSum: number;
-  tiers: Record<SlipTier, number>; markets: Record<string, number>;
-  at: string;
+class EngineMetrics {
+  private total = 0;
+  private marketOnly = 0;
+  private none = 0;
+  private modelCount = 0;
+  private probSum = 0;
+  private edgeSum = 0;
+  private tiers: Record<SlipTier, number> =
+    { segura: 0, moderada: 0, ousada: 0, maluca: 0, compostas: 0 };
+  private markets = new Map<string, number>();
+  private at: string | null = null;
+
+  record(ev: LocalEvaluatedMatch) {
+    this.total++;
+    this.at = new Date().toISOString();
+    if (ev.modelBasis === 'none') {
+      this.none++;
+      return;
+    }
+    if (ev.modelBasis === 'market') this.marketOnly++;
+    if (ev.modelBasis === 'model') {
+      this.modelCount++;
+      // V1: EV só é significativo quando p veio do modelo.
+      this.edgeSum += ev.expectedValueEdge;
+    }
+    this.probSum += ev.calibratedProb;
+    this.tiers[ev.riskTier]++;
+    this.markets.set(ev.recommendedMarket, (this.markets.get(ev.recommendedMarket) ?? 0) + 1);
+  }
+
+  snapshot() {
+    const total = this.total;
+    const scored = total - this.none;
+    const topMarkets = [...this.markets.entries()]
+      .sort((a, b) => b[1] - a[1]).slice(0, 4)
+      .map(([market, count]) => ({
+        market: labelForMarket(market as MarketType, { home: 'Casa', away: 'Fora' }),
+        count,
+        percentage: scored ? Math.round((count / scored) * 100) : 0,
+      }));
+    return {
+      totalInferences: total,
+      marketOnlyInferences: this.marketOnly,
+      noDataInferences: this.none,
+      modelInferences: this.modelCount,
+      nanFallbacks,
+      avgCalibratedProb: scored ? Math.round(this.probSum / scored) : null,
+      avgEdgeEV: this.modelCount
+        ? Number((this.edgeSum / this.modelCount).toFixed(1))
+        : null,
+      activeTierBreakdown: { ...this.tiers },
+      topMarkets,
+      lastInferenceAt: this.at,
+    };
+  }
 }
 
-const ACC: AccStats = { total: 0, probSum: 0, edgeSum: 0,
-  tiers: { segura: 0, moderada: 0, ousada: 0, maluca: 0, compostas: 0 }, markets: {}, at: new Date().toISOString() };
-
-export function getLocalCumulativeMetrics() {
-  const total = ACC.total;
-  const topMarkets = Object.entries(ACC.markets)
-    .sort((a, b) => b[1] - a[1]).slice(0, 4)
-    .map(([market, count]) => ({
-      market: labelForMarket(market as MarketType, { home: 'Casa', away: 'Fora' }),
-      count, percentage: total > 0 ? Math.round((count / total) * 100) : 0,
-    }));
-  return {
-    totalInferences: total,
-    avgCalibratedProb: total > 0 ? Math.round(ACC.probSum / total) : 64,
-    avgEdgeEV: total > 0 ? Number((ACC.edgeSum / total).toFixed(1)) : 8.4,
-    activeTierBreakdown: { ...ACC.tiers },
-    topMarkets: topMarkets.length > 0 ? topMarkets : [
-      { market: '1X (Dupla Chance)', count: 0, percentage: 0 },
-      { market: '+1.5 Golos', count: 0, percentage: 0 },
-      { market: 'Ambas Marcam (BTTS)', count: 0, percentage: 0 },
-      { market: '-3.5 Golos', count: 0, percentage: 0 },
-    ],
-    lastInferenceAt: ACC.at,
-  };
-}
+const metrics = new EngineMetrics();
+export const getLocalCumulativeMetrics = () => metrics.snapshot();
 
 /**
- * Substituto direto de callJevInferenceEngine â€” mesma forma de resposta,
- * sem OpenRouter, sem chave, sem rede. SÃ­ncrono por dentro, async por fora
- * para nÃ£o mexer na assinatura do ticketEngine.
+ * Async por compatibilidade com a assinatura do motor antigo; o cálculo é
+ * síncrono e não faz await a nada.
  */
 export async function callLocalInferenceEngine(
   input: LocalDecisionInput
 ): Promise<LocalInferenceResponse> {
-  const start = Date.now();
-  const evaluations = input.matches.map(evaluateOne);
-  for (const ev of evaluations) {
-    ACC.total++;
-    ACC.probSum += ev.calibratedProb;
-    ACC.edgeSum += ev.expectedValueEdge;
-    ACC.tiers[ev.riskTier]++;
-    ACC.markets[ev.recommendedMarket] = (ACC.markets[ev.recommendedMarket] || 0) + 1;
+  const t0 = performance.now();
+  const evaluations = input.matches.map((m) => {
+    try {
+      return evaluateOne(m);
+    } catch (err) {
+      console.error('[AiScore] evaluateOne falhou', m.id, err);
+      return noDataEvaluation(m.id);
+    }
+  });
+  for (const ev of evaluations) metrics.record(ev);
+  const latencyMs = Math.round((performance.now() - t0) * 100) / 100;
+  if (CFG.log) {
+    const mo = evaluations.filter((e) => e.modelBasis === 'market').length;
+    const none = evaluations.filter((e) => e.modelBasis === 'none').length;
+    console.log(
+      `[AiScore Engine] ${evaluations.length} partida(s) em ${latencyMs}ms ` +
+      `(${AISCORE_ENGINE_VERSION}; ${mo} só-mercado, ${none} sem dados).`
+    );
   }
-  ACC.at = new Date().toISOString();
-  const latencyMs = Math.max(1, Date.now() - start);
-  console.log(`[AiScore Engine] ${evaluations.length} partida(s) calibradas localmente em ${latencyMs}ms (${AISCORE_ENGINE_VERSION}).`);
-  return { modelVersion: AISCORE_ENGINE_VERSION, latencyMs,
-    scope: input.scope, provider: 'local', evaluations };
+  return { modelVersion: AISCORE_ENGINE_VERSION, latencyMs, scope: input.scope,
+    provider: 'local', evaluations };
 }
-

@@ -81,7 +81,7 @@ export const ManualTab: React.FC<ManualTabProps> = ({
         </h1>
         <p className="mt-1.5 text-sm text-[rgba(245,243,236,0.6)] max-w-2xl">
           Escolhe o horizonte para explorar os jogos, adiciona as tips ao carrinho e define
-          o escopo e o tier na criaÃ§Ã£o da ficha. O carrinho mantÃ©m as seleÃ§Ãµes entre escopos.
+          o escopo e o tier na criação da ficha. O carrinho mantém as seleções entre escopos.
         </p>
       </div>
 
@@ -192,9 +192,9 @@ export const ManualTab: React.FC<ManualTabProps> = ({
           timezone={timezone}
           title="Fichas manuais"
           subtitle="Fichas criadas a partir das tips que escolheste, agrupadas por escopo e tier."
-          emptyTitle="Ainda nÃ£o criaste fichas manuais."
+          emptyTitle="Ainda não criaste fichas manuais."
           emptyHint="Adiciona tips ao carrinho na lista de jogos ao lado e cria a primeira ficha manual."
-          historyTitle="HistÃ³rico manual"
+          historyTitle="Histórico manual"
           onUpload={onUpload}
           onDelete={onDelete}
         />

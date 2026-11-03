@@ -46,6 +46,12 @@ function statusMeta(status: BetSlip['status']) {
         bg: 'bg-[rgba(245,243,236,0.07)] text-[rgba(245,243,236,0.65)] border-[rgba(245,243,236,0.18)]',
         icon: <Hourglass className="w-3 h-3" />,
       };
+    case 'anulada':
+      return {
+        label: 'Anulada',
+        bg: 'bg-[rgba(56,189,248,0.12)] text-[#38BDF8] border-[rgba(56,189,248,0.3)]',
+        icon: <Hourglass className="w-3 h-3" />,
+      };
     default:
       return {
         label: 'Em andamento',
@@ -164,14 +170,14 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                         <span>Fechada em {formatDateTimeInTz(slip.resolvedAt, timezone)}</span>
                       )}
                       <span>{slip.legs.length} jogos</span>
-                      <span>Odd {slip.combinedOdds.toFixed(2)}x</span>
+                      <span>Odd {(slip.effectiveOdds ?? slip.combinedOdds).toFixed(2)}x</span>
                       <span>Prob. {slip.combinedProb}%</span>
                       {slip.upload?.status === 'in_progress' && (
                         <span className="text-[#E7B33E] font-medium">Em curso na Premier Bet</span>
                       )}
                       {slip.upload?.status === 'placed' && (
                         <span className="text-[#4FAE73] font-medium">
-                          No ar Â· {formatKzShort(slip.upload.stake)}
+                          No ar · {formatKzShort(slip.upload.stake)}
                         </span>
                       )}
                       {slip.upload?.status === 'unknown' && (
@@ -238,25 +244,25 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                               <span className="text-[#F5F3EC]">
                                 {formatMatchSchedule(leg.kickoffAt, timezone, leg.daysFromNow)}
                               </span>
-                              <span className="text-[rgba(245,243,236,0.25)]">Â·</span>
+                              <span className="text-[rgba(245,243,236,0.25)]">·</span>
                               <span className="truncate">{leg.league}</span>
                             </div>
                             <div className="text-[12.5px] font-medium text-[#F5F3EC] truncate">
-                              {leg.home} Ã— {leg.away}
+                              {leg.home} × {leg.away}
                             </div>
                             <div className="text-[11.5px] text-[#E7B33E] truncate">
-                              {leg.tip.label} Â· odd{' '}
-                              {leg.tip.odds != null ? leg.tip.odds.toFixed(2) : 'â€”'} Â· {leg.tip.prob}%
+                              {leg.tip.label} · odd{' '}
+                              {leg.tip.odds != null ? leg.tip.odds.toFixed(2) : '—'} · {leg.tip.prob}%
                             </div>
                             <div className="text-[10.5px] mt-0.5">
                               {resolved ? (
                                 won ? (
                                   <span className="text-[#4FAE73] font-medium">
-                                    âœ“ Acertou ({leg.result?.homeScore}-{leg.result?.awayScore})
+                                    ✓ Acertou ({leg.result?.homeScore}-{leg.result?.awayScore})
                                   </span>
                                 ) : (
                                   <span className="text-[#D1594B] font-medium">
-                                    âœ• Falhou ({leg.result?.homeScore}-{leg.result?.awayScore})
+                                    ✕ Falhou ({leg.result?.homeScore}-{leg.result?.awayScore})
                                   </span>
                                 )
                               ) : (

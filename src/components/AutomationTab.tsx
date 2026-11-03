@@ -149,7 +149,7 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({
       return;
     }
     if (!Number.isFinite(level) || level < 1) {
-      onToast('Indique o n��vel mǭximo da progressǜo.');
+      onToast('Indique o nível máximo da progressão.');
       return;
     }
     const minOdds = Number(oddsMin);
