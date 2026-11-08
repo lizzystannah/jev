@@ -10,13 +10,15 @@ a partir de jogos reais (AiScore + odds de mercado).
 ## Fichas automáticas e persistentes
 
 - **Fichas do dia**: todos os dias às **00:00 de Angola** (`Africa/Luanda`), o
-  agendador cria automaticamente a fornada de fichas de "Hoje" (default: 4).
+  agendador cria automaticamente a fornada de fichas de "Hoje" (default: 5).
 - **Estoque por horizonte**: mantém um mínimo de fichas pendentes —
-  Hoje = 4, 2 a 3 dias = 4, Longo prazo = 4 (configurável em `.env`).
+  Hoje = 5, 2 a 3 dias = 5, Longo prazo = 5 (configurável em `.env`).
   Sempre que uma ficha cai (ganha/perde/expira), o agendador **repõe** o estoque.
-- **Só odds reais**: jogos sem odds 1X2 do fornecedor não entram no mercado.
-  Não há preenchimento com odds fixas "inventadas"; mercados derivados
-  (dupla chance, DNB, etc.) ficam marcados e não são usados para montar fichas.
+- **Só odds reais**: jogos sem odds 1X2 do fornecedor podem entrar no horizonte
+  para receber preços da Premier Bet, mas não geram tips nem fichas até existir
+  preço real. Não há preenchimento com odds fixas "inventadas"; mercados
+  derivados (dupla chance, DNB, etc.) ficam marcados e não são usados para
+  montar fichas.
 - **Persistência na base de dados**: as fichas vivem numa base de dados **MySQL**
   configurada por variáveis de ambiente (`MYSQL_HOST`, `MYSQL_PORT`,
   `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`) ou, quando não há MySQL,
@@ -170,7 +172,7 @@ Todas as pernas usam apenas mercados com odds reais (`odds.realMarkets`). O moto
 - **Liquidação central** (`server/slipSettlement.ts`): push/void passam a ser neutros. Uma ficha com todas as pernas anuladas fica `anulada` (stake devolvida) e não conta como perda nas progressões. A odd efetiva (`effectiveOdds`) exclui as pernas void.
 - **Mutual exclusion global** (`server/mutex.ts`): geração de fichas serializada entre rotas HTTP, agendador e progressões.
 - **Avaliações puras**: `evaluateOne` não muta o `MatchItem`; cada chamada recalcula as probabilidades de raiz.
-- **Compostas**: continuam a usar probabilidades conjuntas por Poisson cru; a calibração dedicada fica para o marco M1.
+- **Compostas**: lidas diretamente da matriz final (`compostaProbsFromMatrix`), depois do ajuste IPF de 1X2/over 2.5/BTTS, para não haver dupla contagem nem incoerência entre mercados.
 - **Qualidade**: `npm test` (Vitest) e `npm run check:encoding` (deteta mojibake).
 
 ## Motores e abas (Principal, Manual, JEV)

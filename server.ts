@@ -5,6 +5,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import { envInt } from './server/config.js';
 import { marketService, labelForMarket, oddsSignature } from './server/marketService.js';
 import { COMPOSTA_MARKETS, isCompostaMarket } from './server/compostas.js';
 import { ticketEngine } from './server/ticketEngine.js';
@@ -60,8 +61,10 @@ async function startServer() {
   //    a meia-noite).
   // 2) A cada minuto, um passe prioritário resolve as pernas das FICHAS
   //    pendentes via match/data, sem esperar a varredura.
-  const RESULT_SWEEP_MS =
-    Math.max(1, Number(process.env.RESULTS_SWEEP_MINUTES || 15)) * 60_000;
+  const RESULT_SWEEP_MS = Math.max(1, envInt('RESULTS_SWEEP_MINUTES', 15)) * 60_000;
+  // Ciclo que resolve as pernas das fichas pendentes (match/data). Configurável
+  // para poupar CPU na VPS; mínimo 10s.
+  const RESULT_CYCLE_MS = Math.max(10, envInt('RESULT_CHECK_INTERVAL_SECONDS', 60)) * 1_000;
   let lastResultSweepAt = 0;
   let resolving = false;
 
@@ -110,7 +113,7 @@ async function startServer() {
   };
 
   void runResultsCycle();
-  setInterval(() => void runResultsCycle(), 60_000);
+  setInterval(() => void runResultsCycle(), RESULT_CYCLE_MS);
 
   // ==========================================
   // API ROUTES
@@ -221,6 +224,9 @@ async function startServer() {
               odds: chosen?.odds ?? ev.selectedOdds,
               prob: ev.calibratedProb,
             };
+            m.modelBasis = ev.modelBasis;
+            m.priced = ev.priced;
+            m.forcedApplied = ev.forcedApplied;
           }
           marketService.saveCacheSoon();
         }

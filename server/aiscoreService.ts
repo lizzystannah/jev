@@ -50,10 +50,34 @@ function resolvePythonBin(): string {
 
 const PYTHON_BIN = resolvePythonBin();
 
+function envInt(name: string, fb: number, min = 0): number {
+  const raw = process.env[name]?.trim();
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n >= min ? Math.trunc(n) : fb;
+}
+
+function envBool(name: string, fb: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw ? ['1', 'true', 'yes', 'on'].includes(raw) : fb;
+}
+
 const CACHE_FILE = path.join(PROJECT_ROOT, '.aiscore_context_cache.json');
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
-const BRIDGE_TIMEOUT_MS = 120_000;
-const SPAWN_GAP_MS = 1700; // >= 1.6s between bridge processes
+const CACHE_TTL_MS = Math.max(60_000, envInt('AISCORE_CACHE_TTL_MINUTES', 360) * 60_000);
+/** Gravação do cache em disco é agrupada: no máximo 1x por este intervalo. */
+const CACHE_SAVE_DEBOUNCE_MS = Math.max(1_000, envInt('AISCORE_CACHE_SAVE_DEBOUNCE_MS', 15_000));
+const BRIDGE_TIMEOUT_MS = Math.max(10_000, envInt('AISCORE_BRIDGE_TIMEOUT_MS', 120_000));
+const SPAWN_GAP_MS = Math.max(0, envInt('AISCORE_SPAWN_GAP_MS', 1700)); // >= 1.6s between bridge processes
+
+/** Enriquecimento síncrono (cabe na geração de fichas). */
+const ENRICH_MAX_MATCHES = Math.max(0, envInt('AISCORE_ENRICH_MAX_MATCHES', 6));
+const ENRICH_DEADLINE_MS = Math.max(1_000, envInt('AISCORE_ENRICH_DEADLINE_MS', 18_000));
+/** Enriquecimento em background (não bloqueia a geração). */
+const ENRICH_BACKGROUND_ENABLED = envBool('AISCORE_BACKGROUND_ENRICH', true);
+const ENRICH_BACKGROUND_MAX = Math.max(0, envInt('AISCORE_ENRICH_BACKGROUND_MAX', 40));
+const ENRICH_BACKGROUND_DEADLINE_MS = Math.max(
+  1_000,
+  envInt('AISCORE_ENRICH_BACKGROUND_DEADLINE_MS', 90_000)
+);
 
 // ---------------------------------------------------------------- zigzag ---
 
@@ -297,6 +321,7 @@ interface CacheEntry {
 type ContextCache = Record<string, CacheEntry>;
 
 let memoryCache: ContextCache | null = null;
+let cacheSaveTimer: NodeJS.Timeout | null = null;
 
 function loadCache(): ContextCache {
   if (memoryCache) return memoryCache;
@@ -312,13 +337,54 @@ function loadCache(): ContextCache {
   return memoryCache!;
 }
 
-function saveCache(): void {
+/** Remove entradas expiradas para o cache não crescer indefinidamente. */
+function pruneCache(cache: ContextCache): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const key of Object.keys(cache)) {
+    const entry = cache[key];
+    if (!entry || now - entry.at >= CACHE_TTL_MS) {
+      delete cache[key];
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+function flushCacheNow(): void {
+  cacheSaveTimer = null;
   try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(loadCache(), null, 2), 'utf-8');
+    const cache = loadCache();
+    const removed = pruneCache(cache);
+    // Compacto (sem indentação): o ficheiro pode ter dezenas de MB.
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), 'utf-8');
+    if (removed > 0) {
+      console.log(
+        `[AiScore] Cache podado: ${removed} entrada(s) expirada(s); ` +
+          `${Object.keys(cache).length} mantida(s).`
+      );
+    }
   } catch {
     /* non-fatal */
   }
 }
+
+/**
+ * Marca o cache como alterado. A escrita física é agrupada (debounce) para
+ * não reescrever o ficheiro inteiro a cada jogo enriquecido.
+ */
+function saveCache(): void {
+  if (cacheSaveTimer) return;
+  cacheSaveTimer = setTimeout(flushCacheNow, CACHE_SAVE_DEBOUNCE_MS);
+  cacheSaveTimer.unref?.();
+}
+
+process.once('exit', () => {
+  if (cacheSaveTimer) {
+    clearTimeout(cacheSaveTimer);
+    flushCacheNow();
+  }
+});
 
 function cacheKey(home: string, away: string, dateStr: string): string {
   return `${home.trim().toLowerCase()}||${away.trim().toLowerCase()}||${dateStr}`;
@@ -468,6 +534,9 @@ export function scoutToMatchContext(scout: ScoutPayload, kickoffMs?: number): Ma
 // ----------------------------------------------------------- public API ------
 
 export class AiscoreService {
+  /** Um único enriquecimento em background de cada vez (evita fila infinita). */
+  private backgroundEnrich: Promise<number> | null = null;
+
   public async status(): Promise<Record<string, unknown>> {
     const res = await runBridge({ action: 'status' });
     return {
@@ -693,6 +762,34 @@ export class AiscoreService {
   }
 
   /**
+   * Dispara o enriquecimento em background SEM empilhar: se já houver um
+   * a correr, ignora o novo pedido (o próximo ciclo volta a tentar). Isto
+   * impede que vários passes de 40 jogos se acumulem na fila do bridge
+   * Python, que era o que mantinha o CPU permanentemente ocupado.
+   */
+  public enrichInBackground(
+    matches: MatchItem[],
+    opts?: { maxMatches?: number; deadlineMs?: number; includeLineups?: boolean }
+  ): void {
+    if (!ENRICH_BACKGROUND_ENABLED) return;
+    if (this.backgroundEnrich) return;
+    this.backgroundEnrich = this.enrichMatches(matches, {
+      maxMatches: opts?.maxMatches ?? ENRICH_BACKGROUND_MAX,
+      deadlineMs: opts?.deadlineMs ?? ENRICH_BACKGROUND_DEADLINE_MS,
+      includeLineups: opts?.includeLineups ?? false,
+    })
+      .catch(() => 0)
+      .finally(() => {
+        this.backgroundEnrich = null;
+      });
+  }
+
+  /** true enquanto um enriquecimento em background está a decorrer. */
+  public isEnrichingInBackground(): boolean {
+    return this.backgroundEnrich !== null;
+  }
+
+  /**
    * Attach full AiScore scout (ALL variables) + MatchContext to matches
    * with context=null (serialized). Budgeted so ticket generation never
    * waits on 40× bridge spawns. When budget remains, a second pass pulls
@@ -703,8 +800,8 @@ export class AiscoreService {
     matches: MatchItem[],
     opts?: { maxMatches?: number; deadlineMs?: number; includeLineups?: boolean }
   ): Promise<number> {
-    const maxMatches = opts?.maxMatches ?? 8;
-    const deadlineMs = opts?.deadlineMs ?? 22_000;
+    const maxMatches = opts?.maxMatches ?? ENRICH_MAX_MATCHES;
+    const deadlineMs = opts?.deadlineMs ?? ENRICH_DEADLINE_MS;
     const includeLineups = opts?.includeLineups ?? false;
     const startedAt = Date.now();
     // Prefer day_card matches (known id → single scout call) over resolve+scout.

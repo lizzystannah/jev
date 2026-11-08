@@ -175,7 +175,7 @@ export default function App() {
   useEffect(() => {
     const interval = setInterval(() => {
       void refreshProgressions();
-    }, 5000);
+    }, 15000);
     return () => clearInterval(interval);
   }, [refreshProgressions]);
 

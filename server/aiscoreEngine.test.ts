@@ -53,6 +53,21 @@ describe('localModel / evaluateOne', () => {
   it('é determinístico', () => {
     expect(localModel(scout, null).probs).toEqual(localModel(scout, null).probs);
   });
+  it('advanced h2h alimenta o H2H quando o scout nao traz h2h', () => {
+    const base = localModel(scout, null).probs;
+    const advanced = {
+      h2h: {
+        n_finished: 4,
+        over25: { pct: 75 },
+        btts: { pct: 75 },
+        focal_wdl: { W: 4, D: 0, L: 0 },
+        focal_unbeaten_run_longest: 4,
+      },
+    };
+    const withH2H = localModel(scout, advanced).probs;
+    expect(withH2H.over25).not.toBeCloseTo(base.over25, 5);
+    expect(withH2H.home).toBeGreaterThan(base.home);
+  });
   it('equipa sem dados usa priors em vez de λ=0', () => {
     const { probs: p } = localModel({}, null);
     expect(Number.isFinite(p.over25)).toBe(true);
@@ -85,6 +100,31 @@ describe('localModel / evaluateOne', () => {
     expect(ev.priced).toBe(false);
     expect(ev.tips).toEqual([]);
     expect(ev.selectedOdds).toBe(0);
+  });
+  it('placeholders sem realMarkets não viram probabilidades de mercado', () => {
+    const ev = evaluateOne({ id: 'ph', league: 'L', home: 'A', away: 'B', daysFromNow: 0,
+      odds: { home: 2.6, draw: 3.3, away: 2.9, over25: 1.9, under25: 1.9,
+        btts_yes: 1.85, btts_no: 1.9, realMarkets: [] } as any,
+      context: null });
+    expect(ev.modelBasis).toBe('none');
+    expect(ev.priced).toBe(false);
+    expect(ev.tips).toEqual([]);
+  });
+  it('só over/under reais não inventa 1X2 sintético', () => {
+    const ev = evaluateOne({ id: 'ou', league: 'L', home: 'A', away: 'B', daysFromNow: 0,
+      odds: { home: 2.6, draw: 3.3, away: 2.9, over25: 1.8, under25: 2.0,
+        btts_yes: 1.85, btts_no: 1.9, realMarkets: ['over25', 'under25'] } as any,
+      context: null });
+    expect(ev.modelBasis).toBe('market');
+    expect(ev.priced).toBe(true);
+    expect(ev.recommendedMarket === 'over25' || ev.recommendedMarket === 'under25').toBe(true);
+    expect(ev.tips.some((t) => ['home', 'draw', 'away'].includes(t.market))).toBe(false);
+  });
+  it('scout vazio não é tratado como modelo', () => {
+    const ev = evaluateOne({ id: 'empty', league: 'L', home: 'A', away: 'B', daysFromNow: 0,
+      odds: { home: 2.1, draw: 3.4, away: 3.6, realMarkets: ['home', 'draw', 'away'] } as any,
+      context: null, scout: {} });
+    expect(ev.modelBasis).toBe('market');
   });
   it('um jogo mau não derruba o lote', async () => {
     const res = await callLocalInferenceEngine({

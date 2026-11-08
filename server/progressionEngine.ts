@@ -18,6 +18,7 @@
  */
 
 import { bilheteriaDb } from './db.js';
+import { envInt } from './config.js';
 import { ticketEngine } from './ticketEngine.js';
 import {
   premierBetStatus,
@@ -33,7 +34,7 @@ import type {
   SlipTier,
 } from './types.js';
 
-const TICK_MS = Math.max(10_000, Number(process.env.PROGRESSION_TICK_MS || 20_000));
+const TICK_MS = Math.max(10_000, envInt('PROGRESSION_TICK_MS', 20_000));
 const MAX_RUNS_KEPT = 500;
 
 const TIERS_AUTOMATION: Array<Exclude<SlipTier, 'maluca'>> = [
@@ -249,6 +250,8 @@ class ProgressionEngine {
    * 2. Se estiver ativa e não houver ficha pendente, gera e coloca a próxima.
    */
   private async process(progression: Progression): Promise<void> {
+    // Pausadas/erro/prontas não têm nada a liquidar: evita trabalho por tick.
+    if (progression.status !== 'ativa') return;
     try {
       await this.settlePending(progression);
       if (progression.status !== 'ativa') return;

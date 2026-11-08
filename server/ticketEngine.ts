@@ -558,13 +558,12 @@ export class TicketEngine {
       new Map([...mainEligible, ...fallbackOnly].map((m) => [m.id, m])).values()
     );
     try {
-      const n = await aiscoreClient.enrichMatches(enrichmentPool, { maxMatches: 6, deadlineMs: 18_000, includeLineups: wantLineups });
+      const n = await aiscoreClient.enrichMatches(enrichmentPool, { includeLineups: wantLineups });
       if (n > 0) {
         console.log(`[AiScore] ${n} partida(s) com scout completo anexado ao motor local.`);
       }
-      void aiscoreClient
-        .enrichMatches(enrichmentPool, { maxMatches: 40, deadlineMs: 90_000, includeLineups: wantLineups })
-        .catch(() => undefined);
+      // Background com single-flight: nunca acumula passes de 40 jogos.
+      aiscoreClient.enrichInBackground(enrichmentPool, { includeLineups: wantLineups });
     } catch (err: any) {
       console.warn('[AiScore] Enriquecimento de contexto falhou (motor local segue com odds):', err?.message);
     }
@@ -995,7 +994,8 @@ export class TicketEngine {
 
     // Compostas: cada perna e uma tip de DUAS condicoes no mesmo jogo. A odd
     // tem de vir da Premier Bet (mercados pre-combinados) e a probabilidade
-    // conjunta e calculada por Poisson, nao pelo produto das marginais.
+    // conjunta vem da matriz final (compostaProbsFromMatrix), nao do produto
+    // das marginais.
     const compostaPicksFor = (
       m: MatchItem
     ): Array<{ market: CompostaMarket; label: string; odds: number; prob: number }> => {
@@ -1668,8 +1668,10 @@ export class TicketEngine {
       };
       m.tips = ev.tips;
       m.highRiskTip = ev.highRiskTip;
+      m.modelBasis = ev.modelBasis;
+      m.forcedApplied = ev.forcedApplied;
       // A odd escolhida pode diferir da tip local; reprecifica para o filtro.
-      m.priced = Number.isFinite(m.tip.odds) && m.tip.odds >= CFG.band.oddFloor;
+      m.priced = ev.priced;
       // A inferência exibida no cartão tem de ser a do mercado ESCOLHIDO pelo
       // JEV (antes ficava a do pick local anterior: prob/EV de outro mercado).
       m.jevInference = {

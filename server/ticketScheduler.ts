@@ -17,6 +17,7 @@ import {
   EXPIRY_GRACE_HOURS,
   SCOPE_MAX_PENDING,
   SCOPE_QUOTAS,
+  envInt,
 } from './config.js';
 import { ticketEngine, type JevGenerationMeta } from './ticketEngine.js';
 import { marketService } from './marketService.js';
@@ -28,7 +29,9 @@ import type { BetSlip, MarketType, SlipEngine, SlipScope, TicketStockStatus } fr
 
 const SCOPES: SlipScope[] = ['dia', '2_3_dias', 'longo'];
 const RETRY_THROTTLE_MS = 90 * 1000;
-const MATCH_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const MATCH_REFRESH_INTERVAL_MS =
+  Math.max(1, envInt('MATCH_REFRESH_INTERVAL_MINUTES', 10)) * 60_000;
+const SCHEDULER_TICK_MS = Math.max(10, envInt('SCHEDULER_TICK_SECONDS', 60)) * 1_000;
 const MIN_TODAY_MATCHES = (() => {
   const parsed = Number(process.env.MIN_TODAY_MATCHES);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 10;
@@ -79,7 +82,7 @@ export class TicketScheduler {
     );
 
     // Tick de segurança a cada minuto (também cobre relógios/event loop atrasados).
-    this.tickTimer = setInterval(() => void this.tick('interval'), 60_000);
+    this.tickTimer = setInterval(() => void this.tick('interval'), SCHEDULER_TICK_MS);
     this.tickTimer.unref?.();
 
     this.scheduleMidnight();

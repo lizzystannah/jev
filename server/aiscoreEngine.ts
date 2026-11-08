@@ -227,24 +227,45 @@ interface H2HBlock { n: number; W: number; D: number; L: number;
   unbeatenLongest: number; }
 
 function h2hBlock(scout: any, advanced: any): H2HBlock {
-  const rows: any[] = Array.isArray(scout?.h2h) ? scout.h2h : [];
-  const fin = rows.filter((r) => r && r.finished && r.ft_home != null && r.ft_away != null);
-  const summ = scout?.h2h_summary || {};
-  const totals = fin.map((r) => num(r.ft_home) + num(r.ft_away));
+  const adv = advanced || {};
+  const hs = adv.h2h_stats || adv.h2h || {};
+  const rate = (v: any): number | null =>
+    typeof v === 'number' ? v :
+      v && Number.isFinite(v.pct) ? num(v.pct) / 100 : null;
+  const scoreOf = (r: any): [number, number] | null => {
+    if (r?.finished === false) return null;
+    if (r?.ft_home != null && r?.ft_away != null) return [num(r.ft_home), num(r.ft_away)];
+    // Advanced stats guardam os golos da equipa focal em gf/ga.
+    if (r?.gf != null && r?.ga != null) return [num(r.gf), num(r.ga)];
+    return null;
+  };
+  const parsed = (rows: any[]): Array<{ r: any; s: [number, number] }> =>
+    rows
+      .map((r) => ({ r, s: scoreOf(r) }))
+      .filter((x): x is { r: any; s: [number, number] } => x.s != null);
+  // O scout manda; se não tiver jogos válidos, usa o h2h do bridge advanced.
+  let fin = parsed(Array.isArray(scout?.h2h) ? scout.h2h : []);
+  if (!fin.length && Array.isArray(hs.matches)) fin = parsed(hs.matches);
+  const totals = fin.map(({ s }) => s[0] + s[1]);
   const avg = totals.length ? totals.reduce((a, b) => a + b, 0) / totals.length : 2.5;
   const recent = fin.slice(0, 3);
   const recAvg = recent.length
-    ? recent.reduce((a, r) => a + num(r.ft_home) + num(r.ft_away), 0) / recent.length
+    ? recent.reduce((a, { s }) => a + s[0] + s[1], 0) / recent.length
     : avg;
-  const n = fin.length;
-  const btts = fin.filter((r) => num(r.ft_home) > 0 && num(r.ft_away) > 0).length;
-  const adv = advanced || {};
-  const hs = adv.h2h_stats || adv.h2h || {};
+  const n = fin.length || num(hs.n_finished);
+  const btts = fin.filter(({ s }) => s[0] > 0 && s[1] > 0).length;
+  const summ = scout?.h2h_summary || {};
+  const fw = hs.focal_wdl || {};
   return {
-    n, W: num(summ.W), D: num(summ.D), L: num(summ.L),
+    n,
+    W: num(summ.W ?? fw.W),
+    D: num(summ.D ?? fw.D),
+    L: num(summ.L ?? fw.L),
     avgTotal: avg, recentAvg: recAvg,
-    over25Rate: n ? totals.filter((t) => t >= 3).length / n : avg / 5,
-    bttsRate: n ? btts / n : 0.3,
+    over25Rate: totals.length
+      ? totals.filter((t) => t >= 3).length / totals.length
+      : rate(hs.over25) ?? avg / 5,
+    bttsRate: fin.length ? btts / fin.length : rate(hs.btts) ?? 0.3,
     unbeatenLongest: num(hs.focal_unbeaten_run_longest),
   };
 }
@@ -664,16 +685,26 @@ function essentialsFromContext(ctx: any): any {
 function marketOnlyProbs(
   compOdds: Record<string, number>, real?: readonly string[]
 ): Record<string, number> {
-  const o1 = [compOdds.home, compOdds.draw, compOdds.away];
-  if (!o1.every((o) => Number.isFinite(o) && o > 1.01)) return {};
-  const [pH, pD, pA] = devigPower(o1);
-  const P: Record<string, number> = {
-    home: pH, draw: pD, away: pA,
-    double_chance_1x: pH + pD, double_chance_x2: pD + pA, double_chance_12: pH + pA,
-    dnb_home: pH / (pH + pA), dnb_away: pA / (pH + pA),
-  };
+  const realSet = real ? new Set(real) : null;
+  const P: Record<string, number> = {};
+  // Sem `realMarkets` (dados antigos) assume-se 1X2. Com lista vazia, ou só
+  // mercados parciais, não se inventam os restantes a partir de placeholders.
+  const has1x2 = !realSet || (
+    realSet.has('home') && realSet.has('draw') && realSet.has('away')
+  );
+  if (has1x2) {
+    const o1 = [compOdds.home, compOdds.draw, compOdds.away];
+    if (o1.every((o) => Number.isFinite(o) && o > 1.01)) {
+      const [pH, pD, pA] = devigPower(o1);
+      Object.assign(P, {
+        home: pH, draw: pD, away: pA,
+        double_chance_1x: pH + pD, double_chance_x2: pD + pA, double_chance_12: pH + pA,
+        dnb_home: pH / (pH + pA), dnb_away: pA / (pH + pA),
+      });
+    }
+  }
   const twoWay = (yes: string, no: string) => {
-    if (!real?.includes(yes) || !real.includes(no)) return;
+    if (!realSet?.has(yes) || !realSet.has(no)) return;
     const a = compOdds[yes], b = compOdds[no];
     if (!(a > 1.01 && b > 1.01)) return;
     const [py, pn] = devigPower([a, b]);
@@ -715,18 +746,46 @@ function noDataEvaluation(matchId: string): LocalEvaluatedMatch {
   };
 }
 
+/** Há sinal suficiente para o modelo, apesar de `scout` poder ser um objeto vazio. */
+function hasModelData(scout: any, advanced: any): boolean {
+  if (!scout && !advanced) return false;
+  if (scout?._fromContext) return true;
+  const adv = advanced || scout?.advanced || {};
+  const hasForm = (f: any): boolean =>
+    num(f?.n) > 0 ||
+    (Array.isArray(f?.matches) && f.matches.length > 0) ||
+    String(f?.form || '').length > 0;
+  const hasTrend = (t: any): boolean => num(t?.matches) > 0;
+  return hasForm(scout?.home_form) ||
+    hasForm(scout?.away_form) ||
+    (Array.isArray(scout?.h2h) && scout.h2h.length > 0) ||
+    num(scout?.h2h_summary?.W) + num(scout?.h2h_summary?.D) + num(scout?.h2h_summary?.L) > 0 ||
+    hasTrend(scout?.home_trend) ||
+    hasTrend(scout?.away_trend) ||
+    hasTrend(scout?.home_trend_sc) ||
+    hasTrend(scout?.away_trend_sc) ||
+    hasForm(adv?.home_stats?.last10) ||
+    hasForm(adv?.away_stats?.last10);
+}
+
 export function evaluateOne(match: LocalDecisionInput['matches'][number]): LocalEvaluatedMatch {
   const compOdds = deriveCompleteOdds(match.odds);
   const realMarkets = match.odds.realMarkets;
-  const scout = match.scout || essentialsFromContext(match.context);
+  const rawScout = match.scout || null;
   const advanced = match.advanced || match.scout?.advanced || null;
+  // Scout vazio não deve esconder o contexto reduzido disponível.
+  const scout = rawScout && hasModelData(rawScout, advanced)
+    ? rawScout
+    : essentialsFromContext(match.context) ?? rawScout;
   const extra: EngineExtra = {
     tables: match.tables ?? null,
     lineups: match.lineups ?? null,
     context: match.context ?? null,
   };
 
-  const model = scout ? localModel(scout, advanced, extra) : null;
+  const model = hasModelData(scout, advanced)
+    ? localModel(scout || {}, advanced, extra)
+    : null;
   const modelBasis: LocalEvaluatedMatch['modelBasis'] = model ? 'model' : 'market';
   const P: Record<string, number> = model
     ? model.probs

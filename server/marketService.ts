@@ -9,6 +9,7 @@ import {
   parseKickoffMs,
 } from './aiscoreService.js';
 import { getDayKey } from './time.js';
+import { envInt } from './config.js';
 
 /** Ligas principais primeiro na ingestão/seleção (peso espelha ticketEngine). */
 export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: string }> = [
@@ -480,7 +481,7 @@ export class MarketService {
   private aiscoreSyncDayKey = '';
   /** Callbacks chamados quando o backfill +1..+8 termina (o scheduler repõe quotas). */
   private backfillCallbacks: Array<() => void> = [];
-  private readonly AISCORE_TTL_MS = 15 * 60 * 1000;
+  private readonly AISCORE_TTL_MS = Math.max(1, envInt('AISCORE_SYNC_INTERVAL_MINUTES', 15)) * 60_000;
   private providerStatus: MarketProviderStatus = {
     provider: 'the-odds-api',
     isExternalApi: true,
@@ -548,7 +549,7 @@ export class MarketService {
         matches: realMatchesOnly,
       };
       fs.mkdirSync(path.dirname(CACHE_FILE_PATH), { recursive: true });
-      fs.writeFileSync(CACHE_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+      fs.writeFileSync(CACHE_FILE_PATH, JSON.stringify(data), 'utf-8');
       this.lastCacheSaveAt = Date.now();
     } catch (e: any) {
       console.warn('[MarketService] Erro ao gravar cache em disco:', e?.message);
@@ -617,7 +618,7 @@ export class MarketService {
   public async getMatches(forceRefresh = false): Promise<MatchItem[]> {
     const oddsKey = process.env.ODDS_API_KEY?.trim();
     const now = Date.now();
-    const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos
+    const CACHE_TTL_MS = Math.max(1, envInt('AISCORE_SYNC_INTERVAL_MINUTES', 15)) * 60_000;
 
     if (oddsKey && oddsKey !== 'sua_chave_the_odds_api_aqui' && oddsKey.length > 5) {
       if (forceRefresh || now - this.lastFetchTime > CACHE_TTL_MS || this.matches.length === 0) {
