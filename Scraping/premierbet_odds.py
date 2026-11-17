@@ -1,9 +1,10 @@
 """Odds reais da Premier Bet por mercado — SÓ API (sem browser).
 
-Entrada (argv[1] ou stdin): JSON
+Entrada (stdin com `--stdin`, ou argv[1] em modo legado): JSON
   {
     "legs": [
-      {"home": "Equipa A", "away": "Equipa B",
+      {"idx": 0,                        # índice da perna no pedido (ecoado)
+       "home": "Equipa A", "away": "Equipa B",
        "kickoffAt": 1770000000000,
        "date": "2026-10-28",              # opcional (YYYY-MM-DD)
        "markets": ["over35", "double_chance_1x", ...]}
@@ -12,13 +13,14 @@ Entrada (argv[1] ou stdin): JSON
 
 Saída JSON:
   {"ok": true, "results": [
-    {"home": ..., "away": ..., "event_id": "...", "event": "A v B",
-     "odds": {"over35": 2.35, "double_chance_1x": null, ...}}
+    {"idx": 0, "home": ..., "away": ..., "event_id": "...", "event": "A v B",
+      "odds": {"over35": 2.35, "double_chance_1x": null, ...}}
   ]}
 
 Serve para dar preço real aos mercados que o feed do AiScore não traz
 (DC, over/under 1.5/3.5, DNB) antes de montar uma ficha. Nunca inventa odds:
-o que não existir no evento volta null.
+o que não existir no evento volta null. O `idx` permite ao cliente alinhar
+cada resultado com a perna correspondente sem depender da ordem.
 """
 from __future__ import annotations
 
@@ -50,8 +52,22 @@ def _ymd(leg: dict) -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _read_payload() -> str:
+    """Payload por stdin (`--stdin`) ou por argv (retrocompatibilidade).
+
+    O stdin evita o limite de ~32 KB da linha de comandos no Windows: um
+    lote de 80 pernas × 90 mercados não cabe em argv.
+    """
+    args = sys.argv[1:]
+    if "--stdin" in args:
+        return sys.stdin.read()
+    if args:
+        return " ".join(args)
+    return sys.stdin.read()
+
+
 def main() -> int:
-    raw = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
+    raw = _read_payload()
     try:
         payload = json.loads(raw or "{}")
     except json.JSONDecodeError as exc:
@@ -69,9 +85,11 @@ def main() -> int:
         home = str(leg.get("home") or "").strip()
         away = str(leg.get("away") or "").strip()
         wanted = [m for m in (leg.get("markets") or MARKETS) if m in MARKETS]
-        entry = {"home": home, "away": away, "event_id": None,
-                 "event": None, "odds": {m: None for m in wanted},
-                 "error": None}
+        # `idx` é o índice da perna no pedido: viaja para o cliente para que a
+        # associação das odds NÃO dependa da ordem nem do nome das equipas.
+        entry = {"idx": leg.get("idx"), "home": home, "away": away,
+                 "event_id": None, "event": None,
+                 "odds": {m: None for m in wanted}, "error": None}
         if not home or not away:
             entry["error"] = "home/away required"
             results.append(entry)

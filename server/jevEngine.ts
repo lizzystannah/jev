@@ -166,16 +166,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** [#14] Tecto global de uma ronda de decisões JEV (ms). */
+const JEV_TOTAL_DEADLINE_MS = 3 * 60 * 1000;
+
+/**
+ * [#15] Erro NÃO recuperável (credenciais/pedido inválido): insistir só gasta
+ * tempo e quota. Os lotes já pagos mantêm-se.
+ */
+class FatalJevError extends Error {}
+
 /** POST /alpha/decisions com timeout e um retry em 429/5xx. */
 async function postDecisions(
   config: JevConfig,
   body: Record<string, unknown>,
-  timeoutMs: number
+  timeoutMs: number,
+  deadlineAt: number
 ): Promise<DecisionsResponse> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    // [#14] Deadline global: um pedido nunca passa do fim da ronda, mesmo
+    // que o timeout por pedido seja grande.
+    const left = deadlineAt - Date.now();
+    if (left <= 0) throw new Error('JEV: deadline global excedido.');
+    const budget = Math.min(timeoutMs, left);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), budget);
     try {
       const res = await fetch(config.endpoint, {
         method: 'POST',
@@ -186,10 +201,11 @@ async function postDecisions(
       const text = await res.text();
       if (!res.ok) {
         const retryable = res.status === 429 || res.status >= 500;
-        lastError = new Error(
-          `JEV Decisions HTTP ${res.status}: ${text.slice(0, 500)}`
-        );
-        if (retryable && attempt === 0) {
+        const msg = `JEV Decisions HTTP ${res.status}: ${text.slice(0, 500)}`;
+        // [#15] 400/401/403/422 → credenciais ou pedido inválido: sem retry.
+        if (!retryable) throw new FatalJevError(msg);
+        lastError = new Error(msg);
+        if (attempt === 0) {
           await sleep(800);
           continue;
         }
@@ -206,8 +222,9 @@ async function postDecisions(
       }
       return parsed;
     } catch (err: any) {
+      if (err instanceof FatalJevError) throw err;
       if (err?.name === 'AbortError') {
-        lastError = new Error(`JEV: tempo esgotado (${timeoutMs}ms).`);
+        lastError = new Error(`JEV: tempo esgotado (${budget}ms).`);
       } else {
         lastError = err instanceof Error ? err : new Error(String(err));
       }
@@ -258,7 +275,7 @@ function shortReason(pick: string, confidence: number): string {
  */
 export async function jevChooseMarkets(
   candidates: JevCandidate[],
-  opts?: { timeoutMs?: number }
+  opts?: { timeoutMs?: number; deadlineMs?: number }
 ): Promise<JevChoiceResult> {
   const config = resolveConfig();
   if (!config.apiKey) {
@@ -273,6 +290,9 @@ export async function jevChooseMarkets(
   }
 
   const timeoutMs = opts?.timeoutMs ?? config.timeoutMs;
+  // [#14] Tecto global da ronda: com o `generationMutex` preso, 8 minutos
+  // de JEV bloqueiam todas as fichas. Máximo 3 minutos.
+  const deadlineAt = Date.now() + (opts?.deadlineMs ?? JEV_TOTAL_DEADLINE_MS);
   const picks = new Map<string, JevPick>();
   let totalCost = 0;
   let apiCalls = 0;
@@ -323,7 +343,17 @@ export async function jevChooseMarkets(
     });
 
     const body = { model: config.model, state, questions };
-    const response = await postDecisions(config, body, timeoutMs);
+    let response: DecisionsResponse;
+    try {
+      response = await postDecisions(config, body, timeoutMs, deadlineAt);
+    } catch (err: any) {
+      // [#14]/[#15] Um lote que falha não invalida os anteriores: devolve-se
+      // o que já se pagou.
+      console.warn(`[jev] lote falhou:`, err?.message);
+      if (err instanceof FatalJevError) break; // credenciais/pedido inválido
+      if (Date.now() >= deadlineAt) break;
+      continue;
+    }
     totalCost += Number(response.usage?.cost ?? 0);
 
     batch.forEach((candidate, index) => {

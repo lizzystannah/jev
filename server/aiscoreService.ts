@@ -13,14 +13,13 @@
  * [FT, 1H, 2H, ...]; FT = scores[0]; nunca somar períodos.
  */
 
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { MatchContext, MatchItem, TeamForm, TeamH2H } from './types.js';
-
-const execFileAsync = promisify(execFile);
+import { writeJsonAtomic, writeJsonAtomicSync } from './atomicFile.js';
+import { resolvePythonBin, runPythonJson } from './pythonBridge.js';
+import { aiscoreDayKey, aiscoreDatesCovering } from './time.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,26 +28,7 @@ const WORKSPACE_ROOT = path.resolve(PROJECT_ROOT, '..');
 
 const BRIDGE_SCRIPT = path.join(PROJECT_ROOT, 'Scraping', 'aiscore_bridge.py');
 
-function resolvePythonBin(): string {
-  const configured = process.env.AISCORE_PYTHON?.trim();
-  if (configured) return configured;
-  const candidates = [
-    path.join(WORKSPACE_ROOT, '.venv312', 'Scripts', 'python.exe'),
-    path.join(WORKSPACE_ROOT, '.venv', 'Scripts', 'python.exe'),
-    path.join(PROJECT_ROOT, '.venv312', 'Scripts', 'python.exe'),
-  ];
-  for (const c of candidates) {
-    try {
-      if (fs.existsSync(c)) return c;
-    } catch {
-      /* try next */
-    }
-  }
-  // Último recurso: resolve via PATH (execFile não precisa de caminho absoluto).
-  return 'python3';
-}
-
-const PYTHON_BIN = resolvePythonBin();
+const PYTHON_BIN = resolvePythonBin(['AISCORE_PYTHON'], [WORKSPACE_ROOT, PROJECT_ROOT]);
 
 function envInt(name: string, fb: number, min = 0): number {
   const raw = process.env[name]?.trim();
@@ -87,13 +67,24 @@ export function decodePackedSint32(buffer: Uint8Array): number[] {
   while (i < buffer.length) {
     let shift = 0;
     let v = 0;
+    // [AS-7] `shift` sem limite e um varint truncado empurravam um valor
+    // parcial para o resultado (placar errado).
+    let truncated = false;
     while (true) {
-      if (i >= buffer.length) break;
+      if (i >= buffer.length) {
+        truncated = true;
+        break;
+      }
       const x = buffer[i++];
       v |= (x & 0x7f) << shift;
       if (!(x & 0x80)) break;
       shift += 7;
+      if (shift > 28) {
+        truncated = true;
+        break;
+      }
     }
+    if (truncated) break;
     out.push((v >>> 1) ^ -(v & 1));
   }
   return out;
@@ -155,7 +146,6 @@ async function runBridge<T>(payload: Record<string, unknown>): Promise<BridgeRes
     if (wait > 0) {
       await new Promise((r) => setTimeout(r, wait));
     }
-    lastSpawnAt = Date.now();
 
     if (!fs.existsSync(BRIDGE_SCRIPT)) {
       return { ok: false, error: `bridge not found: ${BRIDGE_SCRIPT}` };
@@ -166,32 +156,26 @@ async function runBridge<T>(payload: Record<string, unknown>): Promise<BridgeRes
     }
 
     try {
-      const { stdout } = await execFileAsync(
+      // Payload por stdin (evita o limite de argv no Windows) e leitura do
+      // JSON mesmo com exit code != 0.
+      const data = await runPythonJson<BridgeResult<T>>(
         PYTHON_BIN,
-        ['-X', 'utf8', BRIDGE_SCRIPT, JSON.stringify(payload)],
+        BRIDGE_SCRIPT,
+        payload,
         {
           cwd: WORKSPACE_ROOT,
-          timeout: BRIDGE_TIMEOUT_MS,
-          maxBuffer: 8 * 1024 * 1024,
-          windowsHide: true,
-          env: { ...process.env, PYTHONUTF8: '1', AISCORE_PAYLOAD: JSON.stringify(payload) },
+          timeoutMs: BRIDGE_TIMEOUT_MS,
+          maxBytes: 8 * 1024 * 1024,
         }
       );
-      const text = (stdout || '').trim();
-      if (!text) {
-        return { ok: false, error: 'bridge returned empty stdout' };
-      }
-      return JSON.parse(text) as BridgeResult<T>;
+      return data;
     } catch (err: any) {
-      const out = typeof err?.stdout === 'string' ? err.stdout.trim() : '';
-      if (out) {
-        try {
-          return JSON.parse(out) as BridgeResult<T>;
-        } catch {
-          /* fall through */
-        }
-      }
       return { ok: false, error: err?.message || 'bridge execution failed' };
+    } finally {
+      // [AS-4] O espaçamento mede-se no FIM da chamada: medindo no início,
+      // uma chamada lenta (day_card com 30 odds) colava a seguinte e o
+      // intervalo de 1,6 s deixava de existir.
+      lastSpawnAt = Date.now();
     }
   };
 
@@ -323,6 +307,12 @@ type ContextCache = Record<string, CacheEntry>;
 let memoryCache: ContextCache | null = null;
 let cacheSaveTimer: NodeJS.Timeout | null = null;
 
+/** [AS-3] Pedidos de scout em voo (chave → promessa). */
+const inflightScout = new Map<string, Promise<ScoutPayload | null>>();
+/** [AS-3] Cache negativa: chave → válido até (ms). */
+const negativeScout = new Map<string, number>();
+const NEGATIVE_TTL_MS = Math.max(60_000, envInt('AISCORE_NEGATIVE_TTL_MINUTES', 30) * 60_000);
+
 function loadCache(): ContextCache {
   if (memoryCache) return memoryCache;
   try {
@@ -351,13 +341,46 @@ function pruneCache(cache: ContextCache): number {
   return removed;
 }
 
-function flushCacheNow(): void {
+function compactCache(cache: ContextCache): ContextCache {
+  // [AS-6] O contexto é DERIVADO do scout: não se guarda duplicado (o
+  // ficheiro pode ter dezenas de MB).
+  const compact: ContextCache = {};
+  for (const [key, entry] of Object.entries(cache)) {
+    compact[key] = { ...entry, context: undefined };
+  }
+  return compact;
+}
+
+/** Escrita síncrona (só para o shutdown). */
+export function flushCacheNow(): void {
   cacheSaveTimer = null;
   try {
     const cache = loadCache();
     const removed = pruneCache(cache);
-    // Compacto (sem indentação): o ficheiro pode ter dezenas de MB.
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), 'utf-8');
+    // Compacto (sem indentação) e atómico: um ficheiro truncado fazia o
+    // cache ser ignorado em silêncio (e perdia-se todo o enriquecimento).
+    writeJsonAtomicSync(CACHE_FILE, compactCache(cache));
+    if (removed > 0) {
+      console.log(
+        `[AiScore] Cache podado: ${removed} entrada(s) expirada(s); ` +
+          `${Object.keys(cache).length} mantida(s).`
+      );
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/**
+ * Escrita assíncrona (debounce normal): um ficheiro de dezenas de MB não
+ * pode bloquear o event loop.
+ */
+async function flushCacheAsync(): Promise<void> {
+  cacheSaveTimer = null;
+  try {
+    const cache = loadCache();
+    const removed = pruneCache(cache);
+    await writeJsonAtomic(CACHE_FILE, compactCache(cache));
     if (removed > 0) {
       console.log(
         `[AiScore] Cache podado: ${removed} entrada(s) expirada(s); ` +
@@ -375,7 +398,9 @@ function flushCacheNow(): void {
  */
 function saveCache(): void {
   if (cacheSaveTimer) return;
-  cacheSaveTimer = setTimeout(flushCacheNow, CACHE_SAVE_DEBOUNCE_MS);
+  cacheSaveTimer = setTimeout(() => {
+    void flushCacheAsync().catch(() => undefined);
+  }, CACHE_SAVE_DEBOUNCE_MS);
   cacheSaveTimer.unref?.();
 }
 
@@ -386,23 +411,24 @@ process.once('exit', () => {
   }
 });
 
+// [AS-6] O 'exit' não corre em SIGINT/SIGTERM: garante-se a escrita.
+let shuttingDown = false;
+const onSignal = (): void => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  flushCacheNow();
+};
+process.once('SIGINT', onSignal);
+process.once('SIGTERM', onSignal);
+
 function cacheKey(home: string, away: string, dateStr: string): string {
   return `${home.trim().toLowerCase()}||${away.trim().toLowerCase()}||${dateStr}`;
 }
 
-/** Calendar day of kickoff in UTC-3 (AiScore tz), format YYYY-MM-DD. */
-export function aiscoreDateKey(kickoffMs: number): string {
-  const d = new Date(kickoffMs - 3 * 60 * 60 * 1000);
-  return d.toISOString().slice(0, 10);
-}
-
-/** YYYYMMDD for AiScore `matches?date=` (client tz=-03:00). */
-export function aiscoreYmd(offsetDays = 0, fromMs = Date.now()): string {
-  // O app opera em Africa/Luanda (UTC+1). Usar UTC-3 fazia o "dia 0" cair no
-  // dia anterior durante a madrugada (0 jogos e 0 odds), atrasando o horizonte.
-  const d = new Date(fromMs + offsetDays * 24 * 60 * 60 * 1000 + 60 * 60 * 1000);
-  return d.toISOString().slice(0, 10).replace(/-/g, '');
-}
+// [X-3] A data do AiScore (UTC−3) vem de `time.ts` — uma única fonte de
+// verdade. `aiscoreDateKey`/`aiscoreYmd` viveram aqui com convenções
+// diferentes (UTC−3 e UTC+1) e o mesmo jogo recebia duas datas.
+export { aiscoreDayKey as aiscoreDateKey, aiscoreDatesCovering };
 
 function fresh(entry?: CacheEntry): entry is CacheEntry {
   return Boolean(entry && Date.now() - entry.at < CACHE_TTL_MS);
@@ -456,6 +482,9 @@ function toTeamForm(form?: ScoutForm): TeamForm {
     goalsScoredAvg5: Number((scored / n).toFixed(2)),
     goalsConcededAvg5: Number((conceded / n).toFixed(2)),
     cleanSheetPct: Math.round((cleanSheets / n) * 100),
+    // [TY-4/AS-5] O motor precisa de saber se "0 gols médios" é real ou
+    // apenas falta de amostra.
+    sample: rows.length,
   };
 }
 
@@ -472,16 +501,24 @@ function toTeamH2H(scout: ScoutPayload): TeamH2H {
   const both = finished.filter((r) => (r.ft_home || 0) > 0 && (r.ft_away || 0) > 0).length;
   const bothScoredPct = finished.length ? Math.round((both / finished.length) * 100) : 0;
 
+  // [AS-5] `winner` é relativo à EQUIPA FOCAL (a que estamos a avaliar), não
+  // ao mandante do confronto antigo: quando as equipas trocaram de campo,
+  // "home" como mandante de então dá a leitura errada.
+  const focalId = scout.home?.id ?? null;
   const lastEncounters = finished.slice(0, 5).map((r) => {
-    const winner: 'home' | 'away' | 'draw' =
-      (r.ft_home || 0) > (r.ft_away || 0)
-        ? 'home'
-        : (r.ft_home || 0) < (r.ft_away || 0)
-          ? 'away'
-          : 'draw';
+    const fh = r.ft_home || 0;
+    const fa = r.ft_away || 0;
+    let winner: 'home' | 'away' | 'draw';
+    if (fh === fa) {
+      winner = 'draw';
+    } else {
+      const focalIsHome = focalId != null && r.home_id === focalId;
+      const homeWon = fh > fa;
+      winner = homeWon === focalIsHome ? 'home' : 'away';
+    }
     return {
       date: (r.date || '').slice(0, 10),
-      score: r.score || `${r.ft_home}-${r.ft_away}`,
+      score: r.score || `${fh}-${fa}`,
       winner,
     };
   });
@@ -492,6 +529,7 @@ function toTeamH2H(scout: ScoutPayload): TeamH2H {
     awayWins: summary.L || 0,
     avgGoals,
     bothScoredPct,
+    sample: finished.length,
     lastEncounters,
   };
 }
@@ -666,16 +704,49 @@ export class AiscoreService {
    * Resolve AiScore match_id for a market match (team names + calendar date)
    * and return the FULL scout payload (all AiScore variables).
    * Cached 6h on disk + memory.
+   *
+   * [AS-3] Deduplicação de pedidos em voo + cache negativa: o mesmo jogo
+   * pedido em simultâneo pela passagem síncrona e pela de background gerava
+   * dois spawns do bridge; e um jogo sem scout (liga menor) era repedido em
+   * TODOS os ciclos, consumindo o orçamento (1,7 s por tentativa).
    */
   public async getScoutForMatch(match: MatchItem): Promise<ScoutPayload | null> {
     // dateStr from marketService is pt-PT (dd/mm/yyyy) — bridge needs YYYY-MM-DD.
-    const dateKey = aiscoreDateKey(match.kickoffAt);
+    const dateKey = aiscoreDayKey(match.kickoffAt);
     const key = cacheKey(match.home, match.away, dateKey);
     const cache = loadCache();
     const hit = cache[key];
     if (fresh(hit) && hit.scout) {
+      // [AS-6] O contexto é derivado do scout: não se guarda duplicado.
+      const kickoffMs = match.kickoffAt || parseKickoffMs((hit.scout as ScoutPayload).kickoff);
+      hit.context = scoutToMatchContext(hit.scout as ScoutPayload, kickoffMs);
       return hit.scout as ScoutPayload;
     }
+
+    // [AS-3] Cache negativa: este jogo já falhourecentemente.
+    if ((negativeScout.get(key) ?? 0) > Date.now()) return null;
+    // [AS-3] Pedido em voo: devolve a mesma promessa.
+    const running = inflightScout.get(key);
+    if (running) return running;
+
+    const p = this.fetchScoutForMatch(match, key).then((scout) => {
+      if (!scout) negativeScout.set(key, Date.now() + NEGATIVE_TTL_MS);
+      return scout;
+    }).finally(() => {
+      inflightScout.delete(key);
+    });
+    inflightScout.set(key, p);
+    return p;
+  }
+
+  /** Corpo de `getScoutForMatch` (sem dedup: quem chama é o dono do pedido). */
+  private async fetchScoutForMatch(
+    match: MatchItem,
+    key: string
+  ): Promise<ScoutPayload | null> {
+    const cache = loadCache();
+    const hit = cache[key];
+    const dateKey = aiscoreDayKey(match.kickoffAt);
 
     // day_card ids are `aiscore_<match_id>` — skip resolve (saves +1.7s spawn).
     const embeddedId = match.id.startsWith('aiscore_') ? match.id.slice('aiscore_'.length) : undefined;
@@ -690,12 +761,14 @@ export class AiscoreService {
 
     const scout = await this.getScout(aiscoreId);
     const kickoffMs = match.kickoffAt || parseKickoffMs(scout.kickoff);
-    const context = scoutToMatchContext(scout, kickoffMs);
 
+    // [AS-6] Merge (e não substituição): a entrada pode já ter `tables`/
+    // `lineups`/`advanced` e não se perdem.
     cache[key] = {
+      ...(hit || {}),
       at: Date.now(),
       aiscoreMatchId: aiscoreId,
-      context,
+      context: scoutToMatchContext(scout, kickoffMs),
       scout,
     };
     saveCache();
@@ -716,7 +789,7 @@ export class AiscoreService {
   /** Extras (tables/lineups) já em cache para o jogo, sem chamadas. */
   private getCachedExtras(match: MatchItem): { tables?: any; lineups?: any } {
     try {
-      const key = cacheKey(match.home, match.away, aiscoreDateKey(match.kickoffAt));
+      const key = cacheKey(match.home, match.away, aiscoreDayKey(match.kickoffAt));
       const hit = loadCache()[key];
       if (fresh(hit)) return { tables: hit.tables, lineups: hit.lineups };
     } catch {
@@ -728,7 +801,7 @@ export class AiscoreService {
   /** Funde patch (advanced/tables/lineups) na entrada de cache do jogo. */
   private updateCacheEntry(match: MatchItem, patch: Partial<CacheEntry>): void {
     try {
-      const key = cacheKey(match.home, match.away, aiscoreDateKey(match.kickoffAt));
+      const key = cacheKey(match.home, match.away, aiscoreDayKey(match.kickoffAt));
       const cache = loadCache();
       const hit = cache[key];
       if (hit) {
@@ -804,12 +877,27 @@ export class AiscoreService {
     const deadlineMs = opts?.deadlineMs ?? ENRICH_DEADLINE_MS;
     const includeLineups = opts?.includeLineups ?? false;
     const startedAt = Date.now();
-    // Prefer day_card matches (known id → single scout call) over resolve+scout.
+    // [AS-1] Um dado que já foi pedido e não existe não se pede outra vez a
+    // cada ciclo: `advanced`/`tables` são re-pedidos para sempre quando a
+    // API devolve `null` (e `null` é falsy).
+    const RECHECK_MS = Math.max(60_000, envInt('AISCORE_RECHECK_MINUTES', 60) * 60_000);
+    const due = (t?: number): boolean => !t || Date.now() - t > RECHECK_MS;
+
+    // [AS-2] Preferir day_card matches (known id → single scout call) e, de
+    // seguida, os jogos mais próximos: um jogo que falha às 03:00 não pode
+    // ficar sempre à frente da fila.
     const pending = matches
-      .filter((m) => !m.context || !m.scout)
-      .sort((a, b) => Number(b.id.startsWith('aiscore_')) - Number(a.id.startsWith('aiscore_')));
+      .filter((m) => (!m.context || !m.scout) && due(m.enrichFailedAt))
+      .sort(
+        (a, b) =>
+          Number(b.id.startsWith('aiscore_')) - Number(a.id.startsWith('aiscore_')) ||
+          a.kickoffAt - b.kickoffAt
+      );
 
     let enriched = 0;
+    // [AS-2] Disjuntor: se o Cloudflare bloquear, o ciclo percorre todos os
+    // jogos a 1,7 s cada. Quatro falhas seguidas → para.
+    let consecutiveFails = 0;
     for (const m of pending) {
       if (enriched >= maxMatches) break;
       if (Date.now() - startedAt > deadlineMs) break;
@@ -821,13 +909,22 @@ export class AiscoreService {
           const kickoffMs = m.kickoffAt || parseKickoffMs(scout.kickoff);
           m.context = scoutToMatchContext(scout, kickoffMs);
           m.sourceProvider = m.sourceProvider || 'aiscore';
+          m.enrichFailedAt = undefined;
           const extras = this.getCachedExtras(m);
           if (!m.tables && extras.tables) m.tables = extras.tables;
           if (!m.lineups && extras.lineups) m.lineups = extras.lineups;
           enriched += 1;
+          consecutiveFails = 0;
+        } else {
+          m.enrichFailedAt = Date.now();
+          consecutiveFails += 1;
+          if (consecutiveFails >= 4) break;
         }
       } catch (err: any) {
+        m.enrichFailedAt = Date.now();
+        consecutiveFails += 1;
         console.warn(`[AiScore] enrich failed for ${m.home} vs ${m.away}:`, err?.message);
+        if (consecutiveFails >= 4) break;
       }
     }
     // Second pass: advanced variables (goal windows etc.) while budget lasts.
@@ -836,10 +933,13 @@ export class AiscoreService {
     // that already carry scout+advanced — o motor local usa-os quando presentes.
     if (Date.now() - startedAt < deadlineMs) {
       const needAdv = matches.filter(
-        (m) => m.scout && !m.advanced && m.id.startsWith('aiscore_')
+        (m) => m.scout && !m.advanced && m.id.startsWith('aiscore_') && due(m.advancedCheckedAt)
       );
       for (const m of needAdv) {
         if (Date.now() - startedAt > deadlineMs) break;
+        // [AS-1] Marca ANTES do pedido: se falhar, não se repete no ciclo
+        // seguinte.
+        m.advancedCheckedAt = Date.now();
         try {
           const adv = await this.getAdvanced(m.id.slice('aiscore_'.length));
           if (adv) {
@@ -854,13 +954,17 @@ export class AiscoreService {
     }
     if (Date.now() - startedAt < deadlineMs) {
       const needExtra = matches.filter(
-        (m) => m.scout && m.id.startsWith('aiscore_') && (!m.tables || (includeLineups && !m.lineups))
+        (m) =>
+          m.scout &&
+          m.id.startsWith('aiscore_') &&
+          ((!m.tables && due(m.tablesCheckedAt)) || (includeLineups && !m.lineups))
       );
       for (const m of needExtra) {
         if (Date.now() - startedAt > deadlineMs) break;
         const aiscoreId = m.id.slice('aiscore_'.length);
         try {
           if (!m.tables) {
+            m.tablesCheckedAt = Date.now();
             const seasonId = firstSeasonId(m.advanced) || firstSeasonId((m.scout as any)?.advanced);
             const tables = await this.getTables(
               aiscoreId, (m.scout as any)?.competition_id, seasonId || undefined);

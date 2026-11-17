@@ -139,6 +139,28 @@ export function devigPower(odds: number[]): number[] {
   return q.map((x) => Math.pow(x, c));
 }
 
+/** Resíduo máximo aceitável do IPF (desvio entre marginais e alvos). */
+export const IPF_MAX_RESIDUAL = 0.02;
+
+/**
+ * Resíduo do IPF: maior desvio entre os marginais da matriz e os alvos.
+ * Serve para detetar uma matriz que não convergiu (e que, usada como se
+ * tivesse convergido, daria probabilidades incoerentes).
+ */
+export function ipfResidual(
+  M: number[][],
+  t: { home: number; draw: number; away: number; over25: number; btts: number }
+): number {
+  const m = marketsFromMatrix(M);
+  return Math.max(
+    Math.abs(m.home - t.home),
+    Math.abs(m.draw - t.draw),
+    Math.abs(m.away - t.away),
+    Math.abs(m.over25 - t.over25),
+    Math.abs(m.btts_yes - t.btts)
+  );
+}
+
 /**
  * Reajusta a matriz por IPF até os marginais 1X2, over 2.5 e BTTS baterem
  * certo. Mantém as proporções internas da matriz original.

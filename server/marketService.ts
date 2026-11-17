@@ -1,15 +1,25 @@
-﻿import fs from 'fs';
+import fs from 'fs';
 import path from 'path';
 import { MatchItem, MatchOdds, MarketType, MarketProviderStatus, SimpleMarket } from './types.js';
-import { compostaLabel, compostaOutcome, isCompostaMarket } from './compostas.js';
+import { compostaLabel, isCompostaMarket } from './compostas.js';
+import { marketOutcomeFor } from './outcomes.js';
+import { devigPower } from './scoreModel.js';
 import {
   aiscoreClient,
-  aiscoreYmd,
-  aiscoreDateKey,
   parseKickoffMs,
 } from './aiscoreService.js';
-import { getDayKey } from './time.js';
+import {
+  getDayKey,
+  appDayStartMs,
+  aiscoreDayKey,
+  aiscoreDatesCovering,
+} from './time.js';
 import { envInt } from './config.js';
+import { writeJsonAtomicSync } from './atomicFile.js';
+
+export { aiscoreDayKey as aiscoreDateKey };
+
+export { marketOutcomeFor };
 
 /** Ligas principais primeiro na ingestão/seleção (peso espelha ticketEngine). */
 export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: string }> = [
@@ -18,7 +28,7 @@ export const LEAGUE_PRIORITY: Array<{ test: RegExp; exclude?: RegExp; label: str
   // "Premier League del Norte", U21, Butão, etc. NÃO são a Premier League inglesa.
   {
     test: /premier league|liga premier de inglaterra|premier league inglesa/i,
-    exclude: /del norte|northern|del sur|southern|copa|internacional|u ?21|sub ?21|s21|femen|feminin|women|mujer|kenya|kenia|bhutan|but[aã]o|mongol|nigeria|ghana|jamaica|burundi|shillong|mizoram|goa|kerala|calcutt|estonia|irlanda|ireland|wales|gales|scotland|escocia|egip|siria|iraq|catar|qatar|libia|argelia|tunez|jordania|kuwait|bahrein|barein|oman|libano|yemen|sudan|etiopia|uganda|tanzania|zambia|malaui|botsuana|sierra|gana|senegal|mali|niger|burkina|benin|togo|guine|maurit|ruanda|angola|mozambique|zimbabue|camboja|vietnam|indonesia|filipinas|singapur|malasia|myanmar|tailandia|laos|mongolia|nepal|butao|maldivas|sri lanka|bangladesh|india|paquistao|tajiquistao|turcomenistao|uzbequistao|quirguistao|cazaquistao|armenia|azerbaijao|georgia|moldavia|letonia|lituania|finlandia|islandia|noruega|suecia|dinamarca|belgica|holanda|austria|suica|polonia|chequia|eslovaquia|hungria|romenia|bulgaria|servia|croacia|eslovenia|bosnia|macedonia|albania|grecia|turquia|chipre|malta|luxemburgo|andorra|gibraltar|feroe|kosovo|montenegro/i,
+    exclude: /\bdel norte\b|\bnorthern\b|\bdel sur\b|\bsouthern\b|\bcopa\b|\binternacional\b|\bu ?21\b|\bsub ?21\b|\bs21\b|\bfemen\b|\bfeminin\b|\bwomen\b|\bmujer\b|\bkenya\b|\bkenia\b|\bbhutan\b|\bbut[aã]o\b|\bmongol\b|\bnigeria\b|\bghana\b|\bjamaica\b|\bburundi\b|\bshillong\b|\bmizoram\b|\bgoa\b|\bkerala\b|\bcalcutt\b|\bestonia\b|\birlanda\b|\bireland\b|\bwales\b|\bgales\b|\bscotland\b|\bescocia\b|\begip\b|\bsiria\b|\biraq\b|\bcatar\b|\bqatar\b|\blibia\b|\bargelia\b|\btunez\b|\bjordania\b|\bkuwait\b|\bbahrein\b|\bbarein\b|\boman\b|\blibano\b|\byemen\b|\bsudan\b|\betiopia\b|\buganda\b|\btanzania\b|\bzambia\b|\bmalaui\b|\bbotsuana\b|\bsierra\b|\bgana\b|\bsenegal\b|\bmali\b|\bniger\b|\bburkina\b|\bbenin\b|\btogo\b|\bguine\b|\bmaurit\b|\bruanda\b|\bangola\b|\bmozambique\b|\bzimbabue\b|\bcamboja\b|\bvietnam\b|\bindonesia\b|\bfilipinas\b|\bsingapur\b|\bmalasia\b|\bmyanmar\b|\btailandia\b|\blaos\b|\bmongolia\b|\bnepal\b|\bbutao\b|\bmaldivas\b|\bsri lanka\b|\bbangladesh\b|\bindia\b|\bpaquistao\b|\btajiquistao\b|\bturcomenistao\b|\buzbequistao\b|\bquirguistao\b|\bcazaquistao\b|\barmenia\b|\bazerbaijao\b|\bgeorgia\b|\bmoldavia\b|\bletonia\b|\blituania\b|\bfinlandia\b|\bislandia\b|\bnoruega\b|\bsuecia\b|\bdinamarca\b|\bbelgica\b|\bholanda\b|\baustria\b|\bsuica\b|\bpolonia\b|\bchequia\b|\beslovaquia\b|\bhungria\b|\bromenia\b|\bbulgaria\b|\bservia\b|\bcroacia\b|\beslovenia\b|\bbosnia\b|\bmacedonia\b|\balbania\b|\bgrecia\b|\bturquia\b|\bchipre\b|\bmalta\b|\bluxemburgo\b|\bandorra\b|\bgibraltar\b|\bferoe\b|\bkosovo\b|\bmontenegro\b/i,
     label: 'Premier League',
   },
   // "Copa de la Liga" (Peru/Bolívia/Catar) não é a La Liga espanhola.
@@ -176,6 +186,71 @@ function impliedProb(odd: number): number {
   return (1 / odd) * 100;
 }
 
+/** Normaliza o nome de uma equipa (sem acentos, minúsculas, só alfanuméricos). */
+function normTeam(name?: string | null): string {
+  return (name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * [#5] Equipas equivalentes com grafias diferentes entre fontes
+ * ("Man City" vs "Manchester City"). Conservador: exige que o primeiro e o
+ * último token coincidam e que o inicial seja compatível.
+ */
+function sameTeam(a: string, b: string): boolean {
+  const ta = normTeam(a).split(' ').filter(Boolean);
+  const tb = normTeam(b).split(' ').filter(Boolean);
+  if (!ta.length || !tb.length) return false;
+  if (ta.join(' ') === tb.join(' ')) return true;
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  // Com um só token exige igualdade exata (evita "Chelsea" ≈ "Chelsea FC").
+  if (shorter.length < 2) return false;
+  // O último token (cidade/clube) tem de coincidir.
+  if (shorter[shorter.length - 1] !== longer[longer.length - 1]) return false;
+  // O primeiro token é compatível: "man" ⊂ "manchester".
+  const s0 = shorter[0];
+  const l0 = longer[0];
+  const firstOk =
+    s0 === l0 ||
+    (s0.length >= 3 && l0.startsWith(s0)) ||
+    (l0.length >= 3 && s0.startsWith(l0));
+  if (!firstOk) return false;
+  // Os tokens do meio têm de coincidir.
+  const midS = shorter.slice(1, -1);
+  const midL = longer.slice(1, -1);
+  if (midS.length !== midL.length) return false;
+  return midS.every((t, i) => t === midL[i]);
+}
+
+/** [#5] Mesma fixture (equipas + janela de kickoff)? */
+export function sameFixture(a: MatchItem, b: MatchItem): boolean {
+  if (!sameTeam(a.home, b.home) || !sameTeam(a.away, b.away)) return false;
+  return Math.abs(a.kickoffAt - b.kickoffAt) < 3 * 60 * 60 * 1000;
+}
+
+/**
+ * [#4] Merge de odds: SÓ os mercados com odd real do `fresh` substituem o
+ * `old`. Um merge simples (`{...old, ...fresh}`) faria as estimativas
+ * sintéticas pisarem odds reais de over15/DC enquanto `realMarkets`
+ * continuava a listá-las como reais.
+ */
+export function mergeOdds(old: MatchOdds, fresh: MatchOdds): MatchOdds {
+  const out: MatchOdds = { ...old };
+  for (const mk of fresh.realMarkets ?? []) {
+    (out as any)[mk] = (fresh as any)[mk];
+  }
+  out.realMarkets = Array.from(
+    new Set([...(old.realMarkets ?? []), ...(fresh.realMarkets ?? [])])
+  );
+  out.comboOdds = { ...old.comboOdds, ...fresh.comboOdds };
+  return out;
+}
+
 export const MARKET_LABELS: Record<SimpleMarket, (ctx: { home: string; away: string }) => string> = {
   home: ({ home }) => `Vitória ${home} (1)`,
   draw: () => 'Empate (X)',
@@ -206,40 +281,14 @@ export function labelForMarket(
 /**
  * Resultado de um mercado para um placar final. Usado tanto no match como
  * por perna de ficha (cada perna pode ter um tip diferente do match).
- * DNB com empate = push (conta como acerto para não derrubar o bilhete).
+ *
+ * A implementação está em `outcomes.ts` (módulo puro): a liquidação das
+ * fichas importa-a de lá, sem arrastar cache nem timers do marketService.
+ *
+ * DNB com empate = push (reembolso): conta como perna neutra, NUNCA como
+ * vitória (uma perna anulada não pode inflar as estatísticas de acerto).
  */
-export function marketOutcomeFor(
-  market: MarketType,
-  homeScore: number,
-  awayScore: number
-): { won: boolean; pushed: boolean } {
-  if (isCompostaMarket(market)) {
-    return { won: compostaOutcome(market, homeScore, awayScore), pushed: false };
-  }
-  const isHomeWin = homeScore > awayScore;
-  const isAwayWin = awayScore > homeScore;
-  const isDraw = homeScore === awayScore;
-  const total = homeScore + awayScore;
-  const actual: Record<SimpleMarket, boolean> = {
-    home: isHomeWin,
-    draw: isDraw,
-    away: isAwayWin,
-    double_chance_1x: isHomeWin || isDraw,
-    double_chance_x2: isAwayWin || isDraw,
-    double_chance_12: isHomeWin || isAwayWin,
-    over15: total >= 2,
-    over25: total >= 3,
-    over35: total >= 4,
-    under25: total <= 2,
-    under35: total <= 3,
-    btts_yes: homeScore > 0 && awayScore > 0,
-    btts_no: homeScore === 0 || awayScore === 0,
-    dnb_home: isHomeWin,
-    dnb_away: isAwayWin,
-  };
-  const pushed = isDraw && (market === 'dnb_home' || market === 'dnb_away');
-  return { won: pushed ? true : !!actual[market], pushed };
-}
+
 
 export function deriveCompleteOdds(odds: MatchOdds): Record<SimpleMarket, number> {
   const pHome = (1 / odds.home) * 100;
@@ -291,21 +340,49 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
   reason: string;
 } {
   const { odds, home, away } = match;
-  const pHome = impliedProb(odds.home);
-  const pDraw = impliedProb(odds.draw);
-  const pAway = impliedProb(odds.away);
-  const pOver = impliedProb(odds.over25);
-  const pUnder = impliedProb(odds.under25);
-  const pBtts = impliedProb(odds.btts_yes);
-
-  const candidates: { market: MarketType; prob: number; odds: number; reason: string }[] = [];
-  // Só mercados com odds reais entram na dica. Sem `realMarkets` (dados
-  // antigos) assume-se apenas 1X2: nunca usar um preço sem proveniência.
   const realMarkets = odds.realMarkets;
   const allows = (market: MarketType): boolean =>
     realMarkets
       ? realMarkets.includes(market)
       : market === 'home' || market === 'draw' || market === 'away';
+
+  // [#21] Devig das probabilidades implícitas 1X2: `1/odd` carrega a margem
+  // da casa e infla a "probabilidade" de todas as tips derivadas.
+  let pHome = impliedProb(odds.home);
+  let pDraw = impliedProb(odds.draw);
+  let pAway = impliedProb(odds.away);
+  if (
+    allows('home') &&
+    allows('draw') &&
+    allows('away') &&
+    odds.home > 1.01 &&
+    odds.draw > 1.01 &&
+    odds.away > 1.01
+  ) {
+    const devig = devigPower([odds.home, odds.draw, odds.away]);
+    if (devig.length === 3) {
+      pHome = devig[0] * 100;
+      pDraw = devig[1] * 100;
+      pAway = devig[2] * 100;
+    }
+  }
+  const pOver = impliedProb(odds.over25);
+  const pUnder = impliedProb(odds.under25);
+  const pBtts = impliedProb(odds.btts_yes);
+
+  // [#21] Preço real quando existe (a lista `realMarkets` só contém
+  // mercados com odd real); caso contrário, valor derivado.
+  const realPrice = (market: MarketType, fallback: number): number => {
+    const provided = (odds as any)[market] as number | undefined;
+    if (allows(market) && Number.isFinite(provided) && (provided as number) > 1.01) {
+      return Number((provided as number).toFixed(2));
+    }
+    return fallback;
+  };
+
+  const candidates: { market: MarketType; prob: number; odds: number; reason: string }[] = [];
+  // Só mercados com odds reais entram na dica. Sem `realMarkets` (dados
+  // antigos) assume-se apenas 1X2: nunca usar um preço sem proveniência.
 
   // 1X2 real
   if (allows('home')) {
@@ -333,10 +410,13 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
     });
   }
 
-  // Dupla Chance 1X (mercado derivado: só quando não há restrição de odds reais)
+  // Dupla Chance 1X (preço real quando existe; senão derivado)
   if (allows('double_chance_1x')) {
     const p1X = pHome + pDraw * 0.55;
-    const odds1X = Number(Math.max(1.10, Math.min(1.80, 1 / (p1X / 100) * 1.05)).toFixed(2));
+    const odds1X = realPrice(
+      'double_chance_1x',
+      Number(Math.max(1.10, Math.min(1.80, 1 / (p1X / 100) * 1.05)).toFixed(2))
+    );
     candidates.push({
       market: 'double_chance_1x',
       prob: Math.min(88, Math.round(p1X)),
@@ -345,10 +425,13 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
     });
   }
 
-  // Dupla Chance X2 (mercado derivado)
+  // Dupla Chance X2 (preço real quando existe; senão derivado)
   if (allows('double_chance_x2')) {
     const pX2 = pAway + pDraw * 0.55;
-    const oddsX2 = Number(Math.max(1.10, Math.min(1.85, 1 / (pX2 / 100) * 1.05)).toFixed(2));
+    const oddsX2 = realPrice(
+      'double_chance_x2',
+      Number(Math.max(1.10, Math.min(1.85, 1 / (pX2 / 100) * 1.05)).toFixed(2))
+    );
     candidates.push({
       market: 'double_chance_x2',
       prob: Math.min(85, Math.round(pX2)),
@@ -357,10 +440,13 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
     });
   }
 
-  // +1.5 Golos (derivado)
+  // +1.5 Golos (preço real quando existe; senão derivado)
   if (allows('over15')) {
     const pOver15 = pOver * 1.35;
-    const oddsOver15 = Number(Math.max(1.12, Math.min(1.65, 1 / (Math.min(85, pOver15) / 100) * 1.05)).toFixed(2));
+    const oddsOver15 = realPrice(
+      'over15',
+      Number(Math.max(1.12, Math.min(1.65, 1 / (Math.min(85, pOver15) / 100) * 1.05)).toFixed(2))
+    );
     candidates.push({
       market: 'over15',
       prob: Math.min(85, Math.round(pOver15)),
@@ -369,10 +455,13 @@ export function scoreMatch(match: Omit<MatchItem, 'tip' | 'status' | 'result'>):
     });
   }
 
-  // -3.5 Golos (derivado)
+  // -3.5 Golos (preço real quando existe; senão derivado)
   if (allows('under35')) {
     const pUnder35 = pUnder * 1.30;
-    const oddsUnder35 = Number(Math.max(1.12, Math.min(1.60, 1 / (Math.min(85, pUnder35) / 100) * 1.05)).toFixed(2));
+    const oddsUnder35 = realPrice(
+      'under35',
+      Number(Math.max(1.12, Math.min(1.60, 1 / (Math.min(85, pUnder35) / 100) * 1.05)).toFixed(2))
+    );
     candidates.push({
       market: 'under35',
       prob: Math.min(85, Math.round(pUnder35)),
@@ -461,6 +550,12 @@ export function getCalendarDayDiff(targetMs: number, timezone = 'Africa/Luanda')
 
   const CACHE_FILE_PATH = path.join(process.cwd(), '.data', 'odds_api_cache.json');
 
+/** [#1] Intervalo mínimo entre dois syncs FORÇADOS do dia. */
+const FORCED_SYNC_MIN_INTERVAL_MS = 10 * 60 * 1000;
+/** [#2] Depois disto, o jogo deixa de ser resolvido pelo endpoint "live". */
+const GIVE_UP_LIVE_AFTER_MS = 36 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 interface PersistedCache {
   lastFetchTime: number;
   rateLimitInfo?: {
@@ -479,6 +574,10 @@ export class MarketService {
   private aiscoreLastSync = 0;
   private aiscoreLastDayKey = '';
   private aiscoreSyncDayKey = '';
+  /** [#1] Último sync FORÇADO (dia trocou ou não há jogos hoje). */
+  private lastForcedSyncAt = 0;
+  /** [#1] O backfill +1..+8 já está a correr (não empilhar). */
+  private backfillRunning = false;
   /** Callbacks chamados quando o backfill +1..+8 termina (o scheduler repõe quotas). */
   private backfillCallbacks: Array<() => void> = [];
   private readonly AISCORE_TTL_MS = Math.max(1, envInt('AISCORE_SYNC_INTERVAL_MINUTES', 15)) * 60_000;
@@ -549,11 +648,34 @@ export class MarketService {
         matches: realMatchesOnly,
       };
       fs.mkdirSync(path.dirname(CACHE_FILE_PATH), { recursive: true });
-      fs.writeFileSync(CACHE_FILE_PATH, JSON.stringify(data), 'utf-8');
+      // Escrita atómica: um ficheiro truncado fazia o cache ser ignorado
+      // (e perdia-se todo o enriquecimento) sem qualquer aviso.
+      writeJsonAtomicSync(CACHE_FILE_PATH, data);
       this.lastCacheSaveAt = Date.now();
     } catch (e: any) {
       console.warn('[MarketService] Erro ao gravar cache em disco:', e?.message);
     }
+  }
+
+  /**
+   * [#18] Limpa os jogos resolvidos e antigos: `this.matches` crescia sem
+   * limite e o ficheiro de cache com eles. Nunca remove um jogo que seja
+   * perna de uma ficha pendente.
+   */
+  public pruneMatches(keepIds?: Set<string>): number {
+    const cutoff = Date.now() - GIVE_UP_LIVE_AFTER_MS;
+    const before = this.matches.length;
+    this.matches = this.matches.filter((m) => {
+      if (m.status !== 'resolved') return true;
+      if (m.kickoffAt >= cutoff) return true;
+      if (keepIds?.has(m.id)) return true;
+      return false;
+    });
+    const removed = before - this.matches.length;
+    if (removed > 0) {
+      console.log(`[MarketService] Cache podado: ${removed} jogo(s) resolvido(s) antigo(s).`);
+    }
+    return removed;
   }
 
   /** Grava o cache (jogos + calibração) com um intervalo mínimo entre writes. */
@@ -564,7 +686,6 @@ export class MarketService {
 
   public getProviderStatus(): MarketProviderStatus {
     const oddsKey = process.env.ODDS_API_KEY?.trim();
-    const fbKey = process.env.FOOTBALL_DATA_API_KEY?.trim();
 
     let provider: MarketProviderStatus['provider'] = 'the-odds-api';
     let providerName = 'The Odds API (Dados Reais ao Vivo)';
@@ -577,12 +698,10 @@ export class MarketService {
       message = remaining !== undefined
         ? `API Real ativa (Quota restante: ${remaining} requisições). Dados 100% oficiais de mercado.`
         : 'Chave ODDS_API_KEY ativa no servidor. Apenas dados reais da API são exibidos.';
-    } else if (fbKey && fbKey.length > 5) {
-      provider = 'football-data';
-      providerName = 'Football-Data.org';
-      apiKeyConfigured = true;
-      message = 'Chave FOOTBALL_DATA_API_KEY ativa no servidor.';
     } else {
+      // [Limpeza] O Football-Data.org não é usado por nenhum fetcher: só
+      // aparecia no estado do fornecedor e dava uma falsa sensação de
+      // "fonte ativa".
       apiKeyConfigured = Boolean(this.aiscoreLastSync > 0);
       if (apiKeyConfigured) {
         provider = 'aiscore';
@@ -649,8 +768,14 @@ export class MarketService {
         m.kickoffAt > now - 2 * 60 * 60 * 1000
     );
     const aiscoreStale = now - this.aiscoreLastSync > this.AISCORE_TTL_MS;
-    if (forceRefresh || dayChanged || !hasToday || aiscoreStale) {
-      await this.syncFromAiscore(forceRefresh || dayChanged || !hasToday);
+    // [#1] "Não há jogos hoje" é normal à noite: sem este limite, cada
+    // getMatches() forçava um day_card completo (30 odds ≈ 50 s de Python).
+    const forcedDue =
+      (forceRefresh || dayChanged || !hasToday) &&
+      now - this.lastForcedSyncAt > FORCED_SYNC_MIN_INTERVAL_MS;
+    if (forceRefresh || dayChanged || aiscoreStale || forcedDue) {
+      if (forcedDue) this.lastForcedSyncAt = now;
+      await this.syncFromAiscore(forcedDue);
     }
 
     const refreshedNow = Date.now();
@@ -712,7 +837,14 @@ export class MarketService {
         // A prioridade do bridge inclui Conference, J1, Süper Lig, Saudi Pro
         // League, SuperLiga sérvia e Eredivisie, para que estas ligas não sejam
         // cortadas pelo odds_limit.
-        await this.syncAiscoreDay(0, { limit: 200, oddsLimit: 30 });
+        //
+        // [X-3] O dia 0 em Luanda pode abranger DUAS datas do AiScore (UTC−3):
+        // os jogos das 00:00–05:00 de Luanda pertencem a D−1 para o AiScore.
+        // As odds reais vão para a data principal; a secundária entra sem
+        // odds (o bridge chama ~1,7 s por jogo com odds).
+        for (const d of this.aiscoreTodayDates()) {
+          await this.syncAiscoreDay(d.ymd, { limit: 200, oddsLimit: d.withOdds ? 30 : 0 });
+        }
         this.aiscoreLastSync = Date.now();
         this.aiscoreLastDayKey = dayKey;
         console.log(
@@ -724,25 +856,36 @@ export class MarketService {
         // (nos dias futuros quase nunca existem): as odds reais entram depois
         // na geração, via Premier Bet. Assim cada dia leva segundos e não
         // estoura o timeout de 120s do bridge.
-        void (async () => {
-          for (let d = 1; d <= 8; d++) {
-            try {
-              await this.syncAiscoreDay(d, { limit: 200, oddsLimit: 0 });
-            } catch (err: any) {
-              console.warn(`[MarketService] AiScore dia +${d} falhou:`, err?.message);
+        // [#1] Só um backfill de cada vez: dois em paralelo duplicam todas as
+        // chamadas ao bridge.
+        if (!this.backfillRunning) {
+          this.backfillRunning = true;
+          void (async () => {
+            // [X-3] Datas AiScore que cobrem de amanhã a +8 dias.
+            const future = aiscoreDatesCovering(now + DAY_MS, now + 8 * DAY_MS);
+            for (const ymd of future) {
+              try {
+                await this.syncAiscoreDay(ymd, { limit: 200, oddsLimit: 0 });
+              } catch (err: any) {
+                console.warn(`[MarketService] AiScore dia ${ymd} falhou:`, err?.message);
+              }
             }
-          }
-          console.log('[MarketService] AiScore multi-dia (+1..+8) concluído.');
-          this.saveDiskCache();
-          // Avisa o agendador para repor as quotas agora que há jogos futuros.
-          this.backfillCallbacks.forEach((cb) => {
-            try {
-              cb();
-            } catch (err: any) {
-              console.warn('[MarketService] callback de backfill falhou:', err?.message);
-            }
-          });
-        })().catch(() => undefined);
+            console.log('[MarketService] AiScore multi-dia (+1..+8) concluído.');
+            this.saveDiskCache();
+            // Avisa o agendador para repor as quotas agora que há jogos futuros.
+            this.backfillCallbacks.forEach((cb) => {
+              try {
+                cb();
+              } catch (err: any) {
+                console.warn('[MarketService] callback de backfill falhou:', err?.message);
+              }
+            });
+          })()
+            .catch(() => undefined)
+            .finally(() => {
+              this.backfillRunning = false;
+            });
+        }
       } catch (err: any) {
         console.warn('[MarketService] AiScore sync falhou:', err?.message);
       } finally {
@@ -756,13 +899,27 @@ export class MarketService {
     await this.activeAiscorePromise;
   }
 
-  /** Busca e funde o day card de UM dia (offset a partir de hoje). */
+  /**
+   * [X-3] Datas do AiScore (UTC−3) que cobrem o dia de hoje em Angola.
+   * A principal é a data do AiScore que contém o meio-dia de hoje; a
+   * secundária é a data em que "agora" está (durante a madrugada é D−1, e
+   * é lá que estão os jogos das 00:00–05:00).
+   */
+  private aiscoreTodayDates(): Array<{ ymd: string; withOdds: boolean }> {
+    const now = Date.now();
+    const primary = aiscoreDayKey(appDayStartMs(now) + 12 * 3600_000).replace(/-/g, '');
+    const secondary = aiscoreDayKey(now).replace(/-/g, '');
+    const out: Array<{ ymd: string; withOdds: boolean }> = [{ ymd: primary, withOdds: true }];
+    if (secondary !== primary) out.push({ ymd: secondary, withOdds: false });
+    return out;
+  }
+
+  /** Busca e funde o day card de UM dia (data AiScore YYYYMMDD). */
   private async syncAiscoreDay(
-    offsetDays: number,
+    ymd: string,
     opts: { limit: number; oddsLimit: number }
   ): Promise<number> {
     const now = Date.now();
-    const ymd = aiscoreYmd(offsetDays);
     const card = await aiscoreClient.getDayCard(ymd, {
       upcoming: true,
       limit: opts.limit,
@@ -868,7 +1025,16 @@ export class MarketService {
       };
 
       const scoredTip = hasReal ? scoreMatch(rawItem) : null;
-      const existing = existingByKey.get(dedupeKey);
+      // [#5] Chave exata (data+liga) ou, em falta, a mesma fixture vista de
+      // outra fonte (nomes/liga diferentes, mesmo jogo).
+      const existing =
+        existingByKey.get(dedupeKey) ??
+        this.matches.find(
+          (x) =>
+            sameTeam(home, x.home) &&
+            sameTeam(away, x.away) &&
+            Math.abs(x.kickoffAt - kickoffAt) < 3 * 60 * 60 * 1000
+        );
       if (existing) {
         existing.league = league;
         existing.competitionId = meta.competition_id ?? null;
@@ -881,15 +1047,9 @@ export class MarketService {
         existing.kickoffAt = kickoffAt;
         const existingHasReal = (existing.odds.realMarkets?.length || 0) > 0;
         if (hasReal) {
-          existing.odds = {
-            ...existing.odds,
-            home: odds.home,
-            draw: odds.draw,
-            away: odds.away,
-            realMarkets: Array.from(
-              new Set([...(existing.odds.realMarkets || []), ...(odds.realMarkets || [])])
-            ),
-          };
+          // [#4] Só as odds REAIS do dia card substituem as existentes: as
+          // odds reais da Premier Bet (over15/DC/DNB) sobrevivem.
+          existing.odds = mergeOdds(existing.odds, odds);
           if (scoredTip) existing.tip = scoredTip;
         } else if (!existingHasReal) {
           existing.odds = odds;
@@ -1166,11 +1326,41 @@ export class MarketService {
       }
       for (const m of newMatches) {
         const existing = matchMap.get(m.id);
-        if (!existing || existing.status === 'pending') {
+        if (!existing) {
           matchMap.set(m.id, m);
+        } else if (existing.status === 'pending') {
+          // [#4] Odds reais do `fresh` sobrepõem as do `existing`; o resto
+          // (scout, calibração, contexto) do `existing` sobrevive.
+          existing.odds = mergeOdds(existing.odds, m.odds);
+          existing.kickoffAt = m.kickoffAt;
+          existing.kickoffInSeconds = m.kickoffInSeconds;
+          existing.time = m.time;
+          existing.dateStr = m.dateStr ?? existing.dateStr;
         }
       }
-      this.matches = Array.from(matchMap.values());
+      // [#5] O mesmo jogo chega do Odds API e do AiScore com ids diferentes.
+      // Fica um só: o canónico é o AiScore (id estável + scout), e as odds
+      // do Odds API fundem-se nele.
+      const deduped: MatchItem[] = [];
+      for (const m of matchMap.values()) {
+        const idx = deduped.findIndex((x) => sameFixture(x, m));
+        if (idx === -1) {
+          deduped.push(m);
+          continue;
+        }
+        const dup = deduped[idx];
+        // Canónico: o AiScore (id estável + scout), salvo se o `dup` já
+        // estiver resolvido — nesse caso fica o `dup` e só se fundem as odds.
+        let canonical = dup;
+        let other = m;
+        if (m.id.startsWith('aiscore_') && dup.status !== 'resolved') {
+          canonical = m;
+          other = dup;
+        }
+        canonical.odds = mergeOdds(canonical.odds, other.odds);
+        if (canonical !== dup) deduped[idx] = canonical;
+      }
+      this.matches = deduped;
     }
   }
 
@@ -1211,6 +1401,12 @@ export class MarketService {
       m.modelBasis = ev.modelBasis;
       m.priced = ev.priced;
       m.forcedApplied = ev.forcedApplied;
+      // [#16] A decisão do JEV é preservada enquanto as odds não mudarem:
+      // reescrever a calibração apagava o jevPick e obrigava a pagar uma nova
+      // ronda de decisões ao JEV.
+      const prev = m.calibration;
+      const oddsHash = oddsSignature(m.odds);
+      const jevPick = prev && prev.oddsHash === oddsHash ? prev.jevPick : undefined;
       m.calibration = {
         tips: ev.tips,
         recommendedMarket: ev.recommendedMarket,
@@ -1218,8 +1414,9 @@ export class MarketService {
         calibratedProb: ev.calibratedProb,
         expectedValueEdge: ev.expectedValueEdge,
         highRiskTip: ev.highRiskTip,
-        oddsHash: oddsSignature(m.odds),
+        oddsHash,
         at: Date.now(),
+        ...(jevPick ? { jevPick } : {}),
       };
       m.tips = ev.tips;
       updated.set(m.id, m);
@@ -1292,17 +1489,29 @@ export class MarketService {
   public async resolveFromDayResults(
     opts: { offsets?: number[]; allowIds?: Set<string> } = {}
   ): Promise<MatchItem[]> {
-    const offsets = opts.offsets ?? [0, -1];
     const allowIds = opts.allowIds ?? new Set<string>();
     const resolved: MatchItem[] = [];
 
-    for (const offset of offsets) {
+    // [X-3] As datas do AiScore (UTC−3) que cobrem a janela dos jogos que
+    // podem já ter terminado (36 h). Com o fuso certo, um jogo acabado às
+    // 02:00 de Luanda aparece na data D−1 do AiScore.
+    const now = Date.now();
+    const dates = new Set<string>(aiscoreDatesCovering(now - 2 * DAY_MS, now));
+    if (opts.offsets) {
+      for (const off of opts.offsets) {
+        dates.add(
+          aiscoreDayKey(appDayStartMs(now) + off * DAY_MS + 12 * 3600_000).replace(/-/g, '')
+        );
+      }
+    }
+
+    for (const ymd of dates) {
       let metas: Awaited<ReturnType<typeof aiscoreClient.getMatchesForDate>> = [];
       try {
-        metas = await aiscoreClient.getMatchesForDate(aiscoreYmd(offset));
+        metas = await aiscoreClient.getMatchesForDate(ymd);
       } catch (err: any) {
         console.warn(
-          `[Resultados] matches?date (offset ${offset}) falhou:`,
+          `[Resultados] matches?date (${ymd}) falhou:`,
           err?.message
         );
         continue;
@@ -1394,7 +1603,7 @@ export class MarketService {
     const cached = this.aiscoreIdCache.get(match.id);
     if (cached) return cached;
     try {
-      const dateKey = aiscoreDateKey(match.kickoffAt);
+      const dateKey = aiscoreDayKey(match.kickoffAt);
       const meta = await aiscoreClient.resolveMatchId(match.home, match.away, dateKey);
       if (meta?.match_id) {
         this.aiscoreIdCache.set(match.id, meta.match_id);
@@ -1426,15 +1635,22 @@ export class MarketService {
     const outcomeOU = totalGoals >= 3 ? 'over25' : 'under25';
     const outcomeBtts = homeScore > 0 && awayScore > 0 ? 'btts_yes' : 'btts_no';
 
-    // Empate no DNB = push (reembolso). Sem modelo de void no BetSlip, a perna
-    // conta como acerto para não derrubar injustamente o bilhete inteiro.
-    const tipOutcome = marketOutcomeFor(
-      match.tip.market,
-      homeScore,
-      awayScore
-    );
-    const tipWon = tipOutcome.won;
-    const pushed = tipOutcome.pushed;
+    // Empate no DNB = push (reembolso): a perna é neutra, não ganha.
+    // Um mercado desconhecido NÃO pode virar derrota silenciosa: o jogo
+    // fica por resolver e o erro fica registado.
+    let tipWon = false;
+    let pushed = false;
+    try {
+      const tipOutcome = marketOutcomeFor(match.tip.market, homeScore, awayScore);
+      tipWon = tipOutcome.won;
+      pushed = tipOutcome.pushed;
+    } catch (err: any) {
+      console.warn(
+        `[MarketService] ${match.home} vs ${match.away}: mercado inválido "${match.tip.market}":`,
+        err?.message
+      );
+      return null;
+    }
 
     match.status = 'resolved';
     match.result = {
@@ -1478,6 +1694,10 @@ export class MarketService {
    * Varredura periódica: resolve com placar real apenas jogos terminados.
    * Limitado a N partidas por tick (cada consulta ~1.7s de throttle).
    * Partidas que falham 3x seguidas são puladas por 30min (sem head-of-line).
+   *
+   * [#2] Uma tentativa que devolve `null` (sem dados) conta como falha: de
+   * outro modo um jogo adiado bloqueia os 8 slots para sempre. Depois de 36 h
+   * o jogo deixa de ser resolvido por aqui (a varredura do dia trata dele).
    */
   public async resolveDueMatches(
     maxPerTick = 8,
@@ -1487,6 +1707,7 @@ export class MarketService {
     const resolved: MatchItem[] = [];
     const due = this.matches.filter((m) => {
       if (m.status === 'resolved' || now < m.kickoffAt) return false;
+      if (now - m.kickoffAt > GIVE_UP_LIVE_AFTER_MS) return false;
       const fail = this.resolveFails.get(m.id);
       if (fail && fail.n >= 3 && now - fail.at < 30 * 60 * 1000) return false;
       return true;
@@ -1505,12 +1726,14 @@ export class MarketService {
         if (res) {
           resolved.push(res);
           this.resolveFails.delete(m.id);
+          continue;
         }
       } catch (err: any) {
         console.warn(`[MarketService] Falha ao resolver ${m.home} vs ${m.away}:`, err?.message);
-        const fail = this.resolveFails.get(m.id);
-        this.resolveFails.set(m.id, { n: (fail?.n || 0) + 1, at: Date.now() });
       }
+      // Falhou (erro OU sem dados): conta para o backoff.
+      const fail = this.resolveFails.get(m.id);
+      this.resolveFails.set(m.id, { n: (fail?.n || 0) + 1, at: Date.now() });
     }
     return resolved;
   }

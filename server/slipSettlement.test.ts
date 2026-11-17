@@ -120,4 +120,85 @@ describe('slipSettlement', () => {
     settleSlip(s, { graceHours: 6, now: Date.now() });
     expect(s.status).toBe('expirado');
   });
+
+  // [SS-1] Uma perna `resolved` SEM `result` não tem resultado: contá-la
+  // como ganha dava fichas "ganhou" indevidamente.
+  it('perna resolved sem result continua pendente (SS-1)', () => {
+    const semResultado = leg({ id: 'nr', status: 'resolved', result: null });
+    expect(legState(semResultado)).toBe('pending');
+    const s = slip([semResultado]);
+    settleSlip(s, { graceHours: 6, now: Date.now() });
+    expect(s.status).toBe('pendente');
+  });
+
+  it('tipWon undefined nunca conta como vitória (SS-1)', () => {
+    const indefinido = leg({
+      id: 'undef',
+      result: {
+        homeScore: 1,
+        awayScore: 0,
+        outcome1x2: 'home',
+        outcomeOU: 'under25',
+        outcomeBtts: 'btts_no',
+        tipWon: undefined as unknown as boolean,
+      },
+    });
+    expect(legState(indefinido)).toBe('lost');
+  });
+
+  // [SS-2] `tip.odds` nulo não pode virar 0 (a odd efetiva ficava 0).
+  it('odd nula na perna não zera a odd efetiva (SS-2)', () => {
+    const comOddNula = leg({
+      id: 'odd-null',
+      tip: { market: 'home', odds: null as unknown as number },
+      result: {
+        homeScore: 2,
+        awayScore: 0,
+        outcome1x2: 'home',
+        outcomeOU: 'under25',
+        outcomeBtts: 'btts_no',
+        tipWon: true,
+      },
+    });
+    const s = slip([comOddNula]);
+    settleSlip(s, { graceHours: 6, now: Date.now() });
+    expect(s.effectiveOdds).toBeGreaterThan(0);
+    expect(s.effectiveOdds).toBeCloseTo(1);
+  });
+
+  // [SS-3] Uma ficha sem pernas não é "anulada" por acidente.
+  it('ficha sem pernas não muda de estado (SS-3)', () => {
+    const s = slip([]);
+    const res = settleSlip(s, { graceHours: 6, now: Date.now() });
+    expect(s.status).toBe('pendente');
+    expect(res.changed).toBe(false);
+    expect(res.allSettled).toBe(false);
+  });
+
+  // [SS-3] Uma ficha terminal não muda de estado no tick normal.
+  it('ficha terminal fica terminal com lockTerminal (SS-3)', () => {
+    const s = slip([
+      leg({ id: 'lost', tip: { market: 'home' }, result: {
+        homeScore: 0,
+        awayScore: 1,
+        outcome1x2: 'away',
+        outcomeOU: 'under25',
+        outcomeBtts: 'btts_no',
+        tipWon: false,
+      } }),
+    ]);
+    settleSlip(s, { graceHours: 6, now: Date.now() });
+    expect(s.status).toBe('perdeu');
+    // Reparár o resultado (a perna passou a ganha) não muda a ficha já terminal.
+    s.legs[0].result = {
+      homeScore: 2,
+      awayScore: 0,
+      outcome1x2: 'home',
+      outcomeOU: 'under25',
+      outcomeBtts: 'btts_no',
+      tipWon: true,
+    };
+    settleSlip(s, { graceHours: 6, now: Date.now(), lockTerminal: true });
+    expect(s.status).toBe('perdeu');
+  });
 });

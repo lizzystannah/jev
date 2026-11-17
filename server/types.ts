@@ -108,9 +108,12 @@ export interface TeamH2H {
   awayWins: number;
   avgGoals: number;
   bothScoredPct: number;
+  /** Nº de confrontos usados na amostra (0 = sem dados). */
+  sample: number;
   lastEncounters: Array<{
     date: string;
     score: string;
+    /** 'home' = a EQUIPA FOCAL ganhou (não o mandante de então). */
     winner: 'home' | 'away' | 'draw';
   }>;
 }
@@ -120,6 +123,8 @@ export interface TeamForm {
   goalsScoredAvg5: number;
   goalsConcededAvg5: number;
   cleanSheetPct: number;
+  /** Nº de jogos usados na amostra (0 = sem dados, os valores acima são 0). */
+  sample: number;
 }
 
 export interface MatchContext {
@@ -209,6 +214,18 @@ export interface MatchItem {
   sourceProvider?: string;
   /** Ja se tentou obter odds compostas na Premier Bet para este jogo. */
   compostaOddsChecked?: boolean;
+  /** Última consulta à Premier Bet para este jogo (ms). */
+  pbCheckedAt?: number;
+  /** Última tentativa falhada de enriquecimento AiScore (ms) — backoff. */
+  enrichFailedAt?: number;
+  /** Última consulta a `advanced` (ms): evita repetir o pedido para sempre. */
+  advancedCheckedAt?: number;
+  /** Última consulta a `tables` (ms): idem. */
+  tablesCheckedAt?: number;
+  /** Nº de falhas seguidas na resolução do placar. */
+  resolveFails?: number;
+  /** Timestamp da próxima tentativa de resolução. */
+  resolveNextTryAt?: number;
 }
 
 export type SlipScope = 'dia' | '2_3_dias' | 'longo';

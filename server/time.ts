@@ -3,9 +3,50 @@
  *
  * Regra de negócio: todas as fichas do dia são criadas/renovadas no fuso
  * de Angola (Africa/Luanda, UTC+1, sem horário de verão).
+ *
+ * [X-3] Uma única fonte de verdade para os fusos:
+ *  - APP: Africa/Luanda (UTC+1, sem DST) — dias de ficha, janelas;
+ *  - AISCORE: UTC−3 — o fuso que o bridge envia ao AiScore. Um jogo às
+ *    01:30 de Luanda do dia D pertence ao dia D−1 para o AiScore, e com as
+ *    duas convenções o mesmo jogo recebia duas datas diferentes (a chave de
+ *    cache e o `resolveMatchId` usavam uma, o sync usava a outra).
  */
 
 export const DAY_TIMEZONE = 'Africa/Luanda';
+export const APP_TZ_OFFSET_MIN = 60; // Africa/Luanda, sem DST
+export const AISCORE_TZ_OFFSET_MIN = -180; // tz enviado ao bridge
+const DAY_MS = 86_400_000;
+
+/** Data-calendário (YYYY-MM-DD) de um timestamp num fuso de offset fixo. */
+const keyAt = (ms: number, offMin: number): string =>
+  new Date(ms + offMin * 60_000).toISOString().slice(0, 10);
+
+/** Dia-calendário no fuso do app (Angola). */
+export const appDayKey = (ms: number = Date.now()): string => keyAt(ms, APP_TZ_OFFSET_MIN);
+
+/** Dia-calendário no fuso do AiScore (UTC−3). */
+export const aiscoreDayKey = (ms: number): string => keyAt(ms, AISCORE_TZ_OFFSET_MIN);
+
+/** Início (ms) do dia do app que contém `ms`. */
+export function appDayStartMs(ms: number = Date.now()): number {
+  const key = appDayKey(ms);
+  return Date.parse(`${key}T00:00:00Z`) - APP_TZ_OFFSET_MIN * 60_000;
+}
+
+/**
+ * Datas AiScore (YYYYMMDD) que cobrem o intervalo [fromMs, toMs].
+ * De madrugada, a data D−1 da AiScore ainda tem jogos futuros: pedi-la
+ * evita perder o horizonte.
+ */
+export function aiscoreDatesCovering(fromMs: number, toMs: number): string[] {
+  const out: string[] = [];
+  for (let t = fromMs; ; t += DAY_MS) {
+    const k = aiscoreDayKey(Math.min(t, toMs)).replace(/-/g, '');
+    if (!out.includes(k)) out.push(k);
+    if (t >= toMs) break;
+  }
+  return out;
+}
 
 /** Devolve a data-calendário (YYYY-MM-DD) de um timestamp no fuso de Angola. */
 export function getDayKey(timestampMs: number = Date.now(), timeZone: string = DAY_TIMEZONE): string {

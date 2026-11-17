@@ -24,13 +24,15 @@
 import type { MarketType, MatchOdds, MatchTip, SimpleMarket, SlipScope, SlipTier, TipOption } from './types.js';
 import { deriveCompleteOdds, labelForMarket } from './marketService.js';
 import { compostaProbsFromMatrix, isCompostaMarket } from './compostas.js';
-import { CFG, tierFromProb } from './config.js';
+import { CFG, tierFromProb, AISCORE_ENGINE_VERSION } from './config.js';
 import {
   type Adjustment, applyAdjustments, betaShrink, blend, devigPower,
-  fitMatrix, fitTotalScale, marketsFromMatrix, scoreMatrix, shiftLogit,
+  fitMatrix, fitTotalScale, ipfResidual, IPF_MAX_RESIDUAL, marketsFromMatrix,
+  scoreMatrix, shiftLogit,
 } from './scoreModel.js';
 
-export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v5';
+/** Versão do motor: fonte única em `config.ts` (evita divergência). */
+export { AISCORE_ENGINE_VERSION };
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
@@ -39,6 +41,12 @@ let nanFallbacks = 0;
 export interface LocalDecisionInput {
   scope: SlipScope;
   horizonDays: number;
+  /**
+   * [Métricas] Não contar esta passagem nas métricas cumulativas. A 2ª
+   * passagem (JEV) re-avalia os mesmos jogos: contá-los outra vez inflava
+   * as estatísticas (o dobro de inferências para os mesmos jogos).
+   */
+  skipMetrics?: boolean;
   matches: Array<{
     id: string;
     league: string;
@@ -455,10 +463,20 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): XgResult {
     adjA.push({ key, pct: -x });
   };
 
+  // Canal único por fenómeno (ver [#11]):
+  //  - FORMA → λ (ajuste 'momentum' acima). Não se repete no 1X2.
+  //  - CASA/FORA → `perGame` (55% venue) + 'mando_vitorias'. Sem bónus
+  //    plano de mando: seria contagem dupla.
+  //  - NÍVEL DA EQUIPA → 'tabela_ppg' (classificação). Posição/motivação
+  //    vêm da mesma tabela: repetir o mesmo sinal é redundante.
   adjH.push({ key: 'momentum', pct: streakBonus(H.form) + Math.min(0.06, 0.02 * (H.unbeaten || 0)) });
   adjA.push({ key: 'momentum', pct: streakBonus(A.form) + Math.min(0.06, 0.02 * (A.unbeaten || 0)) });
-  sym('remates', clamp(((H.shots || 0) - (A.shots || 0)) / 10, -0.08, 0.08));
-  adjH.push({ key: 'residuo_mando', pct: 0.03 });
+  // [#9] Remates: só quando AMBAS as equipas têm o valor (um 0 sintético
+  // distorce) e com uma escala que não satura: /10 dava o teto de ±8%
+  // com 0,8 de diferença.
+  if ((H.shots || 0) > 0 && (A.shots || 0) > 0) {
+    sym('remates', clamp((H.shots - A.shots) / 40, -1, 1) * 0.08);
+  }
 
   const venueEdge = (b: TeamBlock): number => {
     if (!b.venueN || b.venueN < 2) return 0;
@@ -476,14 +494,8 @@ function estimateXg(scout: any, advanced: any, extra?: EngineExtra): XgResult {
     const sA = ra ? tableStrength(ra) : null;
     if (sH != null && sA != null) sym('tabela_ppg', clamp((sH - sA) * 0.12, -0.06, 0.06));
 
-    const tiH = tableInfo(rh, trows);
-    const tiA = tableInfo(ra, trows);
-    if (tiH && tiA) {
-      const n = Math.max(tiH.groupSize, tiA.groupSize, 1);
-      const posAdj = clamp(((tiA.pos - tiH.pos) / Math.max(1, n - 1)) * 0.02, -0.02, 0.02);
-      const motAdj = clamp((motivationScore(tiH) - motivationScore(tiA)) * 0.01, -0.02, 0.02);
-      sym('posicao_motivacao', clamp(posAdj + motAdj, -0.04, 0.04));
-    }
+    // [#11] Posição e motivação vêm da MESMA tabela que o ppg: aplicar os
+    // dois é contagem dupla do mesmo sinal. Fica só o `tabela_ppg`.
   }
 
   const lin = ex.lineups;
@@ -559,9 +571,9 @@ export function localModel(scout: any, advanced: any, extra?: EngineExtra): Loca
 
   // Deslocamentos em logit sobre o alvo de over 2.5.
   const overShifts: Array<{ key: string; logit: number }> = [];
-  const underGame = (Math.min(1, (H.underCards + H.underCorners) / 20)
-    + Math.min(1, (A.underCards + A.underCorners) / 20)) / 2;
-  if (underGame > 0.85) overShifts.push({ key: 'jogo_travado', logit: -0.07 });
+  // [#12] `underCards`/`underCorners` são CARTÕES e CANTOS: não dizem nada
+  // sobre golos. A inferência "jogo travado" a partir deles era falsa — o
+  // deslocamento foi removido.
   const closed = ctx.importance === 'derby' || ctx.importance === 'decisiva';
   if (closed) overShifts.push({ key: 'jogo_fechado', logit: -0.09 });
   if (CFG.flags.htAdj && x.htAdj) overShifts.push({ key: 'ritmo_1a_parte', logit: 4 * x.htAdj });
@@ -581,10 +593,9 @@ export function localModel(scout: any, advanced: any, extra?: EngineExtra): Loca
   if (closed) btts = shiftLogit(btts, -0.06);
   btts = clamp(btts, 0.02, Math.min(0.95, mk.over15 - 0.01));
 
-  // 1X2: forma e H2H como ajustes em log-espaço com teto.
-  const [pfH] = formPoints(H.form);
-  const [pfA] = formPoints(A.form);
-  const formEdge = clamp((pfH - pfA) * 0.35, -0.12, 0.12);
+  // 1X2: H2H como ajuste em log-espaço com teto.
+  // [#11] A FORMA já entra por λ (ajuste 'momentum'): repetir a forma aqui
+  // era contagem dupla. Só o H2H ajusta o 1X2.
   let h2hEdge = 0;
   const totH2 = H2.W + H2.D + H2.L;
   if (totH2 >= 2) h2hEdge = clamp(((H2.W + 0.5 * H2.D) / totH2 - 0.5) * 0.5, -0.1, 0.1);
@@ -592,16 +603,28 @@ export function localModel(scout: any, advanced: any, extra?: EngineExtra): Loca
     h2hEdge = clamp(h2hEdge + Math.min(0.05, 0.015 * (H2.unbeatenLongest - 2)), -0.1, 0.1);
   }
   let pH = clamp(applyAdjustments(mk.home,
-    [{ key: 'forma', pct: formEdge }, { key: 'h2h', pct: h2hEdge }], resultCap).value, 0.02, 0.93);
+    [{ key: 'h2h', pct: h2hEdge }], resultCap).value, 0.02, 0.93);
   let pA = clamp(applyAdjustments(mk.away,
-    [{ key: 'forma', pct: -formEdge }, { key: 'h2h', pct: -h2hEdge }], resultCap).value, 0.02, 0.93);
+    [{ key: 'h2h', pct: -h2hEdge }], resultCap).value, 0.02, 0.93);
   const s = pH + mk.draw + pA;
   pH /= s; pA /= s;
   const pD = mk.draw / s;
 
   // V6: a matriz final tem de respeitar 1X2, over 2.5 e BTTS ao mesmo tempo.
   // IPF reescala as células; todos os mercados (incluindo compostas) saem de F.
-  const F = fitMatrix(M, { home: pH, draw: pD, away: pA, over25: tgtO25, btts });
+  // [#13] Os clamps são aplicados aos ALVOS (antes do IPF), não depois: um
+  // clamp posterior quebra a coerência que o IPF acabou de criar. E se o IPF
+  // não convergiu, fica a matriz original (uma matriz mal ajustada dava
+  // probabilidades incoerentes entre mercados).
+  const targets = {
+    home: clamp(pH, 0.02, 0.93),
+    draw: clamp(pD, 0.02, 0.93),
+    away: clamp(pA, 0.02, 0.93),
+    over25: clamp(tgtO25, 0.02, 0.97),
+    btts: clamp(btts, 0.02, 0.95),
+  };
+  const fitted = fitMatrix(M, targets);
+  const F = ipfResidual(fitted, targets) > IPF_MAX_RESIDUAL ? M : fitted;
   const fm = marketsFromMatrix(F);
 
   const o15 = clamp(fm.over15, 0.01, 0.99);
@@ -746,15 +769,20 @@ function noDataEvaluation(matchId: string): LocalEvaluatedMatch {
   };
 }
 
+/** Nº de jogos na amostra de uma equipa (form). */
+function sampleSize(f: any): number {
+  const n = num(f?.n);
+  if (n > 0) return n;
+  if (Array.isArray(f?.matches)) return f.matches.length;
+  return 0;
+}
+
 /** Há sinal suficiente para o modelo, apesar de `scout` poder ser um objeto vazio. */
 function hasModelData(scout: any, advanced: any): boolean {
   if (!scout && !advanced) return false;
   if (scout?._fromContext) return true;
   const adv = advanced || scout?.advanced || {};
-  const hasForm = (f: any): boolean =>
-    num(f?.n) > 0 ||
-    (Array.isArray(f?.matches) && f.matches.length > 0) ||
-    String(f?.form || '').length > 0;
+  const hasForm = (f: any): boolean => sampleSize(f) > 0;
   const hasTrend = (t: any): boolean => num(t?.matches) > 0;
   return hasForm(scout?.home_form) ||
     hasForm(scout?.away_form) ||
@@ -786,8 +814,13 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const model = hasModelData(scout, advanced)
     ? localModel(scout || {}, advanced, extra)
     : null;
-  const modelBasis: LocalEvaluatedMatch['modelBasis'] = model ? 'model' : 'market';
-  const P: Record<string, number> = model
+  // [#10] A base do modelo só é 'model' com amostra de forma nos DOIS lados:
+  // um único H2H dava 'model' com o xG vindo dos priors (1,45/1,15).
+  const nH = sampleSize(scout?.home_form);
+  const nA = sampleSize(scout?.away_form);
+  const enoughForm = nH > 0 && nA > 0;
+  const modelBasis: LocalEvaluatedMatch['modelBasis'] = model && enoughForm ? 'model' : 'market';
+  const P: Record<string, number> = model && modelBasis === 'model'
     ? model.probs
     : marketOnlyProbs(compOdds as unknown as Record<string, number>, realMarkets);
 
@@ -842,11 +875,11 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const mc = CFG.maluca;
   const pool = cands.filter((x) => x.odd > 1.01);
   const grounded = pool.filter(
-    (x) => x.p * 100 >= mc.minProb && x.odd >= mc.minLegOdd && x.odd <= mc.maxLegOdd
+    (x) => x.p * 100 >= mc.minProbPct && x.odd >= mc.minLegOdd && x.odd <= mc.maxLegOdd
   );
   const hrCands = grounded.length
     ? grounded
-    : pool.filter((x) => x.p >= mc.fallback.minP && x.odd >= mc.fallback.minOdd && x.odd <= mc.fallback.maxOdd);
+    : pool.filter((x) => x.p >= mc.fallback.minPFrac && x.odd >= mc.fallback.minOdd && x.odd <= mc.fallback.maxOdd);
   const hr = [...hrCands].sort(
     (a, c) => Math.abs(a.odd - mc.idealLegOdd) - Math.abs(c.odd - mc.idealLegOdd)
       || c.p - a.p || c.odd - a.odd
@@ -864,7 +897,18 @@ export function evaluateOne(match: LocalDecisionInput['matches'][number]): Local
   const pSel = clamp(b.p, 0.01, 0.99);
   const calib = Math.round(pSel * 100);
 
-  let confidence = modelBasis === 'market' ? 0.3 : scout?._fromContext ? 0.55 : 0.8;
+  // [#10] A confiança segue a COBERTURA dos dados, e não um 0,8 fixo:
+  // 0.35 (base) + 0.45 × cobertura. Sem amostra, a confiança desce.
+  const hasH2H =
+    num(scout?.h2h_summary?.W) + num(scout?.h2h_summary?.D) + num(scout?.h2h_summary?.L) > 0;
+  const coverage = Math.min(
+    1,
+    (Math.min(nH, 5) / 5) * 0.5 +
+      (Math.min(nA, 5) / 5) * 0.5 +
+      (hasH2H ? 0.1 : 0) +
+      (advanced ? 0.1 : 0)
+  );
+  let confidence = modelBasis === 'market' ? 0.3 : 0.35 + 0.45 * coverage;
   const lin = match.lineups;
   if (lin && lin.available && lin.confirmed !== 1) confidence = Math.max(0.1, confidence - 0.05);
   if (modelBasis === 'market') confidence = Math.min(0.3, confidence);
@@ -965,7 +1009,9 @@ export async function callLocalInferenceEngine(
       return noDataEvaluation(m.id);
     }
   });
-  for (const ev of evaluations) metrics.record(ev);
+  if (!input.skipMetrics) {
+    for (const ev of evaluations) metrics.record(ev);
+  }
   const latencyMs = Math.round((performance.now() - t0) * 100) / 100;
   if (CFG.log) {
     const mo = evaluations.filter((e) => e.modelBasis === 'market').length;

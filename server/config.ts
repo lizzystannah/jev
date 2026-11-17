@@ -50,6 +50,8 @@ const longo = Object.freeze({
   minLegs: longoMinLegs,
   maxLegs: Math.max(longoMinLegs, envInt('TICKETS_LONGO_MAX_LEGS', 22)),
   minProb: Math.min(95, envInt('TICKETS_LONGO_MIN_PROB', 55)),
+  /** Horizonte (dias) do escopo "longo prazo" a partir de hoje. */
+  horizonDays: Math.max(1, envInt('TICKETS_LONGO_HORIZON_DAYS', 7)),
 });
 
 const manual = Object.freeze({
@@ -62,8 +64,11 @@ const antiCorrelation = Object.freeze({
   maxReusedLegs: envInt('TICKETS_MAX_REUSED_LEGS', 8),
 });
 
+/** Versão do motor local (fonte única — o engine re-exporta este valor). */
+export const AISCORE_ENGINE_VERSION = 'local/aiscore-engine-v5';
+
 export const CFG = {
-  engineVersion: 'local/aiscore-engine-v5',
+  engineVersion: AISCORE_ENGINE_VERSION,
   band: {
     lo: 0.55,
     hi: 0.75,
@@ -79,8 +84,10 @@ export const CFG = {
     minLegOdd: MALUCA_MIN,
     maxLegOdd: MALUCA_MAX,
     idealLegOdd: (MALUCA_MIN + MALUCA_MAX) / 2,
-    minProb: Math.min(95, envInt('TICKETS_MALUCA_MIN_PROB', 25)),
-    fallback: { minP: 0.2, minOdd: 1.5, maxOdd: 3.25 },
+    /** Probabilidade mínima da perna, em PERCENTAGEM (0–100). */
+    minProbPct: Math.min(95, envInt('TICKETS_MALUCA_MIN_PROB', 25)),
+    /** Fallback sem base: probabilidades em FRAÇÃO (0–1) e odds em unidades x. */
+    fallback: { minPFrac: 0.2, minOdd: 1.5, maxOdd: 3.25 },
   },
   model: {
     rho: -0.09,        // Dixon-Coles
@@ -100,6 +107,27 @@ export const CFG = {
   excludeMarketOnly: envBool('TICKETS_EXCLUDE_MARKET_ONLY', true),
   log: envBool('AISCORE_LOG', true),
 } as const;
+
+/**
+ * Valida as invariantes da configuração na carga do módulo: uma config
+ * incoerente (alvo máximo < mínimo, pernas mínimas > máximas) produzia
+ * fichas impossíveis sem nenhum erro visível.
+ */
+function assertConfig(c: typeof CFG): void {
+  const e: string[] = [];
+  if (composta.targetMax < composta.targetMin) e.push('composta.targetMax < targetMin');
+  if (composta.maxLegs < composta.minLegs) e.push('composta.maxLegs < minLegs');
+  if (composta.maxLegOdd < composta.minLegOdd) e.push('composta.maxLegOdd < minLegOdd');
+  if (TICKET_TARGETS.maluca.maxLegs < 4) e.push('maluca.maxLegs < 4');
+  if (c.maluca.maxLegOdd < c.maluca.minLegOdd) e.push('maluca.maxLegOdd < minLegOdd');
+  if (c.maluca.minProbPct < 0 || c.maluca.minProbPct > 100) {
+    e.push('maluca.minProbPct fora de 0..100');
+  }
+  if (c.maluca.fallback.minPFrac < 0 || c.maluca.fallback.minPFrac > 1) {
+    e.push('maluca.fallback.minPFrac fora de 0..1');
+  }
+  if (e.length) throw new Error(`Config inválida: ${e.join('; ')}`);
+}
 
 export const TICKET_TARGETS = Object.freeze({
   segura: Object.freeze({
@@ -187,7 +215,7 @@ export const MANUAL_MAX_LEGS = manual.maxLegs;
 export const NON_MALUCA_MIN_PROB = Math.min(95, envInt('TICKETS_NON_MALUCA_MIN_PROB', 40));
 export const MALUCA_MIN_LEG_ODD = CFG.maluca.minLegOdd;
 export const MALUCA_MAX_LEG_ODD = CFG.maluca.maxLegOdd;
-export const MALUCA_MIN_PROB = CFG.maluca.minProb;
+export const MALUCA_MIN_PROB = CFG.maluca.minProbPct;
 export const MALUCA_IDEAL_LEG_ODD = CFG.maluca.idealLegOdd;
 export const MAX_SLIPS_PER_MATCH = antiCorrelation.maxSlipsPerMatch;
 export const MAX_REUSED_LEGS = antiCorrelation.maxReusedLegs;
@@ -201,3 +229,7 @@ export const COMPOSTA_TARGET_MAX = composta.targetMax;
 export const COMPOSTA_MIN_TIP_PROB = composta.minTipProb;
 export const COMPOSTA_MAX_LEGS = composta.maxLegs;
 export const COMPOSTA_MIN_LEGS = composta.minLegs;
+export const LONGO_HORIZON_DAYS = longo.horizonDays;
+
+// Validação final: corre depois de TICKET_TARGETS existir.
+assertConfig(CFG);

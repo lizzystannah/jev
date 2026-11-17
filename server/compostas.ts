@@ -70,8 +70,32 @@ for (const base of DOUBLE_CHANCES) {
 export const COMPOSTA_MARKETS: readonly CompostaMarket[] = ALL;
 const COMPOSTA_SET = new Set<string>(ALL);
 
+/**
+ * [CP-1] Combinações degeneradas: impossíveis ou idênticas a um mercado
+ * simples (a "composta" seria só o mercado simples com outro nome).
+ *  - btts_yes_under15: impossível (BTTS exige ≥2 golos);
+ *  - btts_yes_over15:  igual a btts_yes;
+ *  - btts_no_under15:  igual a under15.
+ *
+ * Continuam em `PARTS` (para liquidar fichas antigas) mas não são geradas.
+ */
+const DEGENERATE = new Set<string>([
+  'btts_yes_under15',
+  'btts_yes_over15',
+  'btts_no_under15',
+]);
+
+export const COMPOSTA_CANDIDATES: readonly CompostaMarket[] = ALL.filter(
+  (m) => !DEGENERATE.has(m)
+);
+
 export function isCompostaMarket(market: MarketType | string): market is CompostaMarket {
   return COMPOSTA_SET.has(market);
+}
+
+/** True para mercados compostos que fazem sentido gerar. */
+export function isDegenerateComposta(market: string): boolean {
+  return DEGENERATE.has(market);
 }
 
 export function compostaLabel(
@@ -169,19 +193,49 @@ export function poissonCompostaProbs(
   return out as Record<CompostaMarket, number>;
 }
 
-/** Probabilidades compostas lidas diretamente da matriz de placares final. */
-export function compostaProbsFromMatrix(M: number[][]): Record<CompostaMarket, number> {
-  const out: Record<string, number> = {};
-  for (const market of ALL) out[market] = 0;
-  for (let i = 0; i < M.length; i++) {
-    for (let j = 0; j < M[i].length; j++) {
-      const p = M[i][j];
-      if (p <= 0) continue;
-      for (const market of ALL) {
-        const parts = PARTS.get(market)!;
-        if (partsOutcome(parts, i, j)) out[market] += p;
-      }
+/**
+ * Probabilidades compostas lidas diretamente da matriz de placares final.
+ *
+ * [CP-2] A matriz é normalizada (divide-se pelo total) e usa máscaras
+ * pré-calculadas: `partsOutcome` já não é chamado 76 × células por jogo.
+ */
+const GRID = 13;
+const MASK = new Map<CompostaMarket, Uint8Array>();
+for (const market of ALL) {
+  const parts = PARTS.get(market)!;
+  const mask = new Uint8Array(GRID * GRID);
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      mask[i * GRID + j] = partsOutcome(parts, i, j) ? 1 : 0;
     }
   }
-  return out as Record<CompostaMarket, number>;
+  MASK.set(market, mask);
+}
+
+export function compostaProbsFromMatrix(M: number[][]): Record<CompostaMarket, number> {
+  const out = {} as Record<CompostaMarket, number>;
+  for (const market of ALL) out[market] = 0;
+
+  const n = Math.min(M.length, GRID);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const row = M[i];
+    const width = Math.min(row.length, GRID);
+    for (let j = 0; j < width; j++) total += row[j];
+  }
+  if (!(total > 0)) return out;
+
+  for (const market of ALL) {
+    const mask = MASK.get(market)!;
+    let s = 0;
+    for (let i = 0; i < n; i++) {
+      const row = M[i];
+      const width = Math.min(row.length, GRID);
+      for (let j = 0; j < width; j++) {
+        if (mask[i * GRID + j]) s += row[j];
+      }
+    }
+    out[market] = s / total;
+  }
+  return out;
 }
